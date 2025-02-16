@@ -19,6 +19,9 @@ src_paths = ["mailtrace"]
 include = ["mailtrace"]
 reportMissingImports = "error"
 
+[tool.black]
+line-length = 79
+
 [tool.poetry.dependencies]
 python = "^3.9"
 paramiko = "^3.5.1"
