@@ -1,0 +1,13 @@
+---
+method: ssh
+ssh_config:
+  username: phkoan
+  password: ""
+  private_key: /home/siriuskoan/.ssh/id_rsa
+  sudo_pass: ""
+  sudo: true
+host_config:
+  log_files:
+    # - /var/log/mail.log
+    - /data/log/mail.log
+  time_format: "%Y-%m-%dT%H:%M:%S"
