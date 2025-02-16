@@ -1,0 +1,36 @@
+[project]
+name = "mailtrace"
+version = "0.1.0"
+description = ""
+authors = [{ name = "SiriusKoan", email = "me@siriuskoan.one" }]
+readme = "README.md"
+
+[tool.poetry.scripts]
+mailtrace = "mailtrace.__main__:cli"
+
+[tool.flake8]
+ignore = ['E501', 'E704']
+
+[tool.isort]
+profile = "black"
+src_paths = ["mailtrace"]
+
+[tool.pyright]
+include = ["mailtrace"]
+reportMissingImports = "error"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+paramiko = "^3.5.1"
+click = "^8.1.8"
+pyyaml = "^6.0.2"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.1.0"
+flake8 = "^7.1.1"
+pyright = "^1.1.394"
+isort = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
