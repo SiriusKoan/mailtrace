@@ -3,7 +3,7 @@ import re
 
 import click
 
-from mailtrace.utils import LogQuery, PostfixServiceType, SSHSession
+from mailtrace.utils import LogQuery, PostfixServiceType, SSHSession, do_trace
 
 from .config import load_config
 
@@ -40,6 +40,12 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
     if ask_sudo_pass:
         sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
     config = load_config()
+    if time:
+        time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        if not time_pattern.match(time):
+            raise ValueError(
+                f"Time {time} should be in format YYYY-MM-DD HH:MM:SS"
+            )
     if time and not time_range or time_range and not time:
         raise ValueError("Time and time-range must be provided together")
     time_range_pattern = re.compile(r"^\d+[dhm]$")
@@ -52,37 +58,39 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         )
     print("Running mailtrace...")
     session = SSHSession(start_host, config)
-    base_logs = session.query_by(LogQuery(key, time, time_range))
-    # print(logs)
-    ids = session.get_mail_id(base_logs)
+    base_logs = session.query_by(
+        LogQuery(keywords=key, time=time, time_range=time_range)
+    )
+    print(len(base_logs))
+    ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     print(ids)
     logs_by_id = {}
     for mail_id in ids:
-        logs_by_id[mail_id] = session.query_by(LogQuery([mail_id]))
-    for mail_id, logs in logs_by_id.items():
-        print(f"Mail ID: {mail_id}")
-        result = ""
-        for entry in logs:
-            # print(f"{entry.service} {entry.message}")
-            if (
-                entry.service == PostfixServiceType.SMTP.value
-                or entry.service == PostfixServiceType.LMTP.value
-            ):
-                msg = entry.message
-                match = re.search(r".*([0-9]{3})\s2\.0\.0.*", msg)
-                if match:
-                    code = int(match.group(1))
-                    if code == 250:
-                        mail_id_match = re.search(
-                            r"250.*queued as ([0-9A-Z]+).*", msg
-                        )
-                        if mail_id_match:
-                            mail_id = mail_id_match.group(1)
-                            print(f"Queued as mail ID: {mail_id}")
-                        relay_match = re.search(r".*relay=([^\s]+),.*", msg)
-                        if relay_match:
-                            mail_relay_host = relay_match.group(1)
-                            print(f"Relay host: {mail_relay_host}")
+        logs_by_id[mail_id] = session.query_by(LogQuery(mail_id=mail_id))
+        print(f"== Mail ID: {mail_id} ==")
+        for log in logs_by_id[mail_id]:
+            print(str(log))
+        print("==============")
+    trace_id = input("Enter trace ID: ")
+    if trace_id not in logs_by_id:
+        print(f"Trace ID {trace_id} not found in logs")
+        return
+    while True:
+        next_mail_id, next_hop = do_trace(trace_id, session)
+        if next_hop == "":
+            print("No more hops")
+            break
+        trace_next_hop: bool = (
+            input(f"Trace next hop: {next_hop}? (y/n): ")
+            .lower()
+            .startswith("y")
+        )
+        if trace_next_hop:
+            trace_id = next_mail_id
+            session = SSHSession(next_hop, config)
+        else:
+            print("Trace stopped")
+            break
 
 
 if __name__ == "__main__":

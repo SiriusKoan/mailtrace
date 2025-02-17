@@ -1,10 +1,12 @@
 import datetime
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 
 import paramiko
 
 from .config import Config
+from .parser import PARSERS, LogEntry
 
 
 def time_range_to_timedelta(time_range: str) -> datetime.timedelta:
@@ -28,29 +30,13 @@ class PostfixServiceType(Enum):
 @dataclass
 class LogQuery:
     keywords: list[str] = field(default_factory=list)
+    mail_id: str | None = None
     time: str | None = None
     time_range: str | None = None
 
 
-@dataclass
-class PostfixLogEntry:
-    datetime: str
-    hostname: str
-    service: str
-    message: str
-
-
-class PostfixLogParser:
-    def __init__(self): ...
-
-    def parse(self, log: str) -> PostfixLogEntry:
-        datetime, hostname, service, message = log.split(" ", 3)
-        service = service.split("[")[0]
-        return PostfixLogEntry(datetime, hostname, service, message)
-
-
 class SSHSession:
-    def __init__(self, host, config: Config):
+    def __init__(self, host: str, config: Config):
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
@@ -69,18 +55,6 @@ class SSHSession:
                 password=self.ssh_config.password,
             )
 
-    @staticmethod
-    def get_mail_id(logs: list[PostfixLogEntry]) -> list[str]:
-        ids = set()
-        for entry in logs:
-            possible_id = entry.message.split()[0].strip()
-            if possible_id[-1] != ":":
-                continue
-            possible_id = possible_id[:-1]
-            if all(char.isdigit() or char.isupper() for char in possible_id):
-                ids.add(possible_id)
-        return list(ids)
-
     def _execute_command(
         self, command: str, sudo: bool = False
     ) -> tuple[str, str]:
@@ -96,7 +70,7 @@ class SSHSession:
         stderr_content = stderr.read().decode().strip()
         return stdout_content, stderr_content
 
-    def query_by(self, query: LogQuery) -> list[PostfixLogEntry]:
+    def query_by(self, query: LogQuery) -> list[LogEntry]:
         logs: str = ""
         # get logs by time
         if query.time and query.time_range:
@@ -112,7 +86,7 @@ class SSHSession:
             end_time_str = end_time.strftime(
                 self.config.host_config.time_format
             )
-            awk_command = f'{{if ($1 >= "{start_time_str}" && $1 <= "{end_time_str}") {{ print $0 }} }}'
+            awk_command = f'{{if ($0 >= "{start_time_str}" && $0 <= "{end_time_str}") {{ print $0 }} }}'
             for log_file in self.config.host_config.log_files:
                 command = f"awk '{awk_command}' {log_file}"
                 for keyword in query.keywords:
@@ -130,8 +104,48 @@ class SSHSession:
                 if stderr:
                     raise ValueError(f"Error executing command: {stderr}")
                 logs += stdout
-        parser = PostfixLogParser()
-        return [parser.parse(line) for line in logs.splitlines() if line]
+        parser = PARSERS[self.config.host_config.log_parser]()
+        parsed_logs = [
+            parser.parse(line) for line in logs.splitlines() if line
+        ]
+        if query.mail_id:
+            return [log for log in parsed_logs if log.mail_id == query.mail_id]
+        else:
+            return parsed_logs
 
     def close(self):
         self.client.close()
+
+
+def do_trace(mail_id: str, session: SSHSession) -> tuple[str, str]:
+    print(f"Tracing mail ID: {mail_id}")
+    log = session.query_by(LogQuery(mail_id=mail_id))
+    next_hop: str = ""
+    next_mail_id: str = ""
+    for entry in log:
+        if (
+            entry.service == PostfixServiceType.SMTP.value
+            or entry.service == PostfixServiceType.LMTP.value
+        ):
+            msg = entry.message
+            match = re.search(r".*([0-9]{3})\s2\.0\.0.*", msg)
+            if match:
+                code = int(match.group(1))
+                if code == 250:
+                    mail_id_match = re.search(
+                        r"250.*queued as ([0-9A-Z]+).*", msg
+                    )
+                    if mail_id_match:
+                        next_mail_id = mail_id_match.group(1)
+                        print(f"Queued as mail ID: {next_mail_id}")
+                    relay_match = re.search(
+                        r".*relay=([^\s]+)\[([^\]]+)\]:([0-9]+).*", msg
+                    )
+                    if relay_match:
+                        mail_relay_host = relay_match.group(1)
+                        domain = relay_match.group(1)
+                        ip = relay_match.group(2)
+                        port = relay_match.group(3)
+                        print(f"Relay host: {domain}, {ip}, {port}")
+                        next_hop = domain
+    return next_mail_id, next_hop
