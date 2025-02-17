@@ -9,5 +9,9 @@ ssh_config:
 host_config:
   log_files:
     # - /var/log/mail.log
-    - /data/log/mail.log
-  time_format: "%Y-%m-%dT%H:%M:%S"
+    # - /data/log/mail.log
+    - /data/log/postfix/maillog
+  # log_parser: NoSpaceInDatetimeParser
+  log_parser: DayOfWeekParser
+  # time_format: "%Y-%m-%dT%H:%M:%S"
+  time_format: "%b %d %H:%M:%S"
