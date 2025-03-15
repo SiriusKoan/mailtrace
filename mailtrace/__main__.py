@@ -3,6 +3,7 @@ import re
 
 import click
 
+from mailtrace.parser import LogEntry
 from mailtrace.utils import LogQuery, SSHSession, do_trace
 
 from .config import load_config
@@ -56,23 +57,30 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         print(
             "Warning: empty sudo password is provided, no password will be used for sudo"
         )
+
     print("Running mailtrace...")
+
+    # Get and list all mail IDs with given query
     session = SSHSession(start_host, config)
     base_logs = session.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
-    logs_by_id = {}
+    logs_by_id: dict[str, list[LogEntry]] = {}
     for mail_id in ids:
         logs_by_id[mail_id] = session.query_by(LogQuery(mail_id=mail_id))
         print(f"== Mail ID: {mail_id} ==")
         for log in logs_by_id[mail_id]:
             print(str(log))
         print("==============")
+
+    # Get the wanted mail ID
     trace_id = input("Enter trace ID: ")
     if trace_id not in logs_by_id:
         print(f"Trace ID {trace_id} not found in logs")
         return
+
+    # Trace the mail
     while True:
         next_mail_id, next_hop = do_trace(trace_id, session)
         if next_hop == "":

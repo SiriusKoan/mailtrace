@@ -75,34 +75,45 @@ class SSHSession:
         stdout_content, stderr_content = self._execute_command(command)
         return stdout_content != ""
 
-    def _get_awk_command(self, query: LogQuery) -> str:
-        if not query.time or not query.time_range:
+    def _get_read_command(self, query: LogQuery) -> str:
+        if query.time and query.time_range:
+            # get logs by time
+            timestamp = datetime.datetime.strptime(
+                query.time, "%Y-%m-%d %H:%M:%S"
+            )
+            time_range = time_range_to_timedelta(query.time_range)
+            start_time = timestamp - time_range
+            end_time = timestamp + time_range
+            start_time_str = start_time.strftime(
+                self.config.host_config.time_format
+            )
+            end_time_str = end_time.strftime(
+                self.config.host_config.time_format
+            )
+            awk_command = f'{{if ($0 >= "{start_time_str}" && $0 <= "{end_time_str}") {{ print $0 }} }}'
+            command = f"awk '{awk_command}'"
+        else:
+            command = "cat"
+        return command
+
+    def _get_keyword_command(self, keywords: list[str]) -> str:
+        if not keywords:
             return ""
-        timestamp = datetime.datetime.strptime(query.time, "%Y-%m-%d %H:%M:%S")
-        time_range = time_range_to_timedelta(query.time_range)
-        start_time = timestamp - time_range
-        end_time = timestamp + time_range
-        start_time_str = start_time.strftime(
-            self.config.host_config.time_format
-        )
-        end_time_str = end_time.strftime(self.config.host_config.time_format)
-        awk_command = f'{{if ($0 >= "{start_time_str}" && $0 <= "{end_time_str}") {{ print $0 }} }}'
-        return awk_command
+        command = ""
+        for keyword in keywords:
+            command += f"| grep -iE {keyword}"
+        return command
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         logs: str = ""
-        # get logs by time
-        awk_command = self._get_awk_command(query)
+        command = self._get_read_command(query)
         for log_file in self.config.host_config.log_files:
             if not self._check_file_exists(log_file):
                 continue
-            if awk_command:
-                command = f"awk '{awk_command}' {log_file}"
-            else:
-                command = f"cat {log_file}"
-            for keyword in query.keywords:
-                command += f" | grep -iE '{keyword}'"
-            stdout, stderr = self._execute_command(command)
+            complete_command = " ".join(
+                [command, log_file, self._get_keyword_command(query.keywords)]
+            )
+            stdout, stderr = self._execute_command(complete_command)
             if stderr:
                 raise ValueError(f"Error executing command: {stderr}")
             logs += stdout
