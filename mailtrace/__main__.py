@@ -3,7 +3,7 @@ import re
 
 import click
 
-from mailtrace.utils import LogQuery, PostfixServiceType, SSHSession, do_trace
+from mailtrace.utils import LogQuery, SSHSession, do_trace
 
 from .config import load_config
 
@@ -61,9 +61,7 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
     base_logs = session.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
-    print(len(base_logs))
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
-    print(ids)
     logs_by_id = {}
     for mail_id in ids:
         logs_by_id[mail_id] = session.query_by(LogQuery(mail_id=mail_id))

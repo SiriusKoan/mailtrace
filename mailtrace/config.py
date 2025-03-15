@@ -1,6 +1,5 @@
 import os
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
 
 import yaml
 
@@ -22,7 +21,7 @@ class SSHConfig:
 
 @dataclass
 class HostConfig:
-    log_files: List[str]
+    log_files: list[str]
     log_parser: str
     time_format: str = "%Y-%m-%d %H:%M:%S"
 
