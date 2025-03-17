@@ -3,6 +3,7 @@ import re
 
 import click
 
+from mailtrace.config import Method
 from mailtrace.parser import LogEntry
 from mailtrace.utils import LogQuery, SSHSession, do_trace
 
@@ -38,9 +39,11 @@ def cli():
     help="The time range, e.g. 1d, 10m",
 )
 def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
+    config = load_config()
+    if config.method != Method.SSH:
+        raise ValueError("Unsupported method")
     if ask_sudo_pass:
         sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
-    config = load_config()
     if time:
         time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         if not time_pattern.match(time):

@@ -1,7 +1,14 @@
 import os
 from dataclasses import dataclass
+from enum import Enum
 
 import yaml
+
+
+class Method(Enum):
+    SSH = "ssh"
+    OPENSEARCH = "opensearch"
+    LOGHOST = "loghost"
 
 
 @dataclass
@@ -28,11 +35,13 @@ class HostConfig:
 
 @dataclass
 class Config:
-    method: str
+    method: Method
     ssh_config: SSHConfig
     host_config: HostConfig
 
     def __post_init__(self):
+        if isinstance(self.method, str):
+            self.method = Method(self.method)
         if isinstance(self.ssh_config, dict):
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.host_config, dict):
