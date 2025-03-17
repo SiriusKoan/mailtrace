@@ -4,6 +4,8 @@ from enum import Enum
 
 import yaml
 
+from .parser import PARSERS
+
 
 class Method(Enum):
     SSH = "ssh"
@@ -31,6 +33,10 @@ class HostConfig:
     log_files: list[str]
     log_parser: str
     time_format: str = "%Y-%m-%d %H:%M:%S"
+
+    def __post_init__(self):
+        if self.log_parser not in PARSERS:
+            raise ValueError(f"Invalid log parser: {self.log_parser}")
 
 
 @dataclass
