@@ -1,9 +1,9 @@
 ---
 method: ssh
 ssh_config:
-  username: phkoan
+  username: username
   password: ""
-  private_key: /home/siriuskoan/.ssh/id_rsa
+  private_key: /home/username/.ssh/id_rsa
   sudo_pass: ""
   sudo: true
 host_config:
@@ -11,7 +11,9 @@ host_config:
     - /var/log/mail.log
     - /data/log/mail.log
     - /data/log/postfix/maillog
-  # log_parser: NoSpaceInDatetimeParser
-  log_parser: DayOfWeekParser
-  # time_format: "%Y-%m-%dT%H:%M:%S"
-  time_format: "%b %d %H:%M:%S"
+  log_parser: NoSpaceInDatetimeParser
+  time_format: "%Y-%m-%dT%H:%M:%S"
+hosts:
+  mail-server.mydomain.com:
+    log_parser: DayOfWeekParser
+    time_format: "%b %d %H:%M:%S"

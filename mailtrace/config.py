@@ -1,5 +1,6 @@
+from __future__ import annotations
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 import yaml
@@ -15,10 +16,10 @@ class Method(Enum):
 
 @dataclass
 class SSHConfig:
-    username: str
-    password: str
-    private_key: str
-    sudo_pass: str
+    username: str = ""
+    password: str = ""
+    private_key: str = ""
+    sudo_pass: str = ""
     sudo: bool = True
 
     def __post_init__(self):
@@ -30,20 +31,20 @@ class SSHConfig:
 
 @dataclass
 class HostConfig:
-    log_files: list[str]
-    log_parser: str
+    log_files: list[str] = field(default_factory=list)
+    log_parser: str = ""
     time_format: str = "%Y-%m-%d %H:%M:%S"
 
     def __post_init__(self):
         if self.log_parser not in PARSERS:
             raise ValueError(f"Invalid log parser: {self.log_parser}")
 
-
 @dataclass
 class Config:
     method: Method
     ssh_config: SSHConfig
     host_config: HostConfig
+    hosts: dict[str, HostConfig]
 
     def __post_init__(self):
         if isinstance(self.method, str):
@@ -52,7 +53,17 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.host_config, dict):
             self.host_config = HostConfig(**self.host_config)
+        for hostname, host_config in self.hosts.items():
+            if isinstance(host_config, dict):
+                self.hosts[hostname] = HostConfig(**host_config)
 
+    def get_host_config(self, hostname: str) -> HostConfig:
+        host_config = self.hosts.get(hostname, self.host_config)
+        return HostConfig(
+            log_files=host_config.log_files or self.host_config.log_files,
+            log_parser=host_config.log_parser or self.host_config.log_parser,
+            time_format=host_config.time_format or self.host_config.time_format
+        )
 
 def load_config():
     config_path = os.getenv("MAILTRACE_CONFIG", "config.yaml")

@@ -40,6 +40,7 @@ class SSHSession:
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
+        self.host_config = config.get_host_config(host)
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         if self.ssh_config.private_key:
@@ -85,10 +86,10 @@ class SSHSession:
             start_time = timestamp - time_range
             end_time = timestamp + time_range
             start_time_str = start_time.strftime(
-                self.config.host_config.time_format
+                self.host_config.time_format
             )
             end_time_str = end_time.strftime(
-                self.config.host_config.time_format
+                self.host_config.time_format
             )
             awk_command = f'{{if ($0 >= "{start_time_str}" && $0 <= "{end_time_str}") {{ print $0 }} }}'
             command = f"awk '{awk_command}'"
@@ -107,7 +108,7 @@ class SSHSession:
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         logs: str = ""
         command = self._get_read_command(query)
-        for log_file in self.config.host_config.log_files:
+        for log_file in self.host_config.log_files:
             if not self._check_file_exists(log_file):
                 continue
             complete_command = " ".join(
@@ -117,7 +118,7 @@ class SSHSession:
             if stderr:
                 raise ValueError(f"Error executing command: {stderr}")
             logs += stdout
-        parser = PARSERS[self.config.host_config.log_parser]()
+        parser = PARSERS[self.host_config.log_parser]()
         parsed_logs = [
             parser.parse(line) for line in logs.splitlines() if line
         ]
