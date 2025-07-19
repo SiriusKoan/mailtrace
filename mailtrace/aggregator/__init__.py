@@ -1,11 +1,13 @@
 import re
+
+from ..log import logger
 from ..models import LogQuery, PostfixServiceType
 from .base import LogAggregator
 from .ssh_host import SSHHost
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> tuple[str, str]:
-    print(f"Tracing mail ID: {mail_id}")
+    logger.info(f"Tracing mail ID: {mail_id}")
     log = aggregator.query_by(LogQuery(mail_id=mail_id))
     next_hop: str = ""
     next_mail_id: str = ""

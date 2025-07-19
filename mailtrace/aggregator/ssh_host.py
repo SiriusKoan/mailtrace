@@ -3,6 +3,7 @@ import datetime
 import paramiko
 
 from ..config import Config
+from ..log import logger
 from ..models import LogEntry, LogQuery
 from ..parser import PARSERS
 from ..utils import time_range_to_timedelta
@@ -36,7 +37,7 @@ class SSHHost(LogAggregator):
         run_with_sudo = sudo or self.ssh_config.sudo
         if run_with_sudo:
             command = f"sudo -S -p '' {command}"
-        print(f"Executing command: {command}")
+        logger.debug(f"Executing command: {command}")
         stdin, stdout, stderr = self.client.exec_command(command)
         if run_with_sudo:
             stdin.write(self.ssh_config.sudo_pass + "\n")

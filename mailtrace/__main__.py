@@ -5,6 +5,7 @@ import click
 
 from .aggregator import SSHHost, do_trace
 from .config import Method, load_config
+from .log import logger
 from .models import LogQuery
 from .parser import LogEntry
 
@@ -56,11 +57,11 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         raise ValueError("time_range should be in format [0-9]+[dhm]")
     config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
     if not sudo_pass:
-        print(
+        logger.warning(
             "Warning: empty sudo password is provided, no password will be used for sudo"
         )
 
-    print("Running mailtrace...")
+    logger.info("Running mailtrace...")
 
     # Get and list all mail IDs with given query
     aggregator = SSHHost(start_host, config)
@@ -69,7 +70,7 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
     )
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     if not ids:
-        print("No mail IDs found")
+        logger.info("No mail IDs found")
         return
     logs_by_id: dict[str, list[LogEntry]] = {}
     for mail_id in ids:
@@ -77,19 +78,19 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         print(f"== Mail ID: {mail_id} ==")
         for log in logs_by_id[mail_id]:
             print(str(log))
-        print("==============")
+        print("==============\n")
 
     # Get the wanted mail ID
     trace_id = input("Enter trace ID: ")
     if trace_id not in logs_by_id:
-        print(f"Trace ID {trace_id} not found in logs")
+        logger.info(f"Trace ID {trace_id} not found in logs")
         return
 
     # Trace the mail
     while True:
         next_mail_id, next_hop = do_trace(trace_id, aggregator)
         if next_hop == "":
-            print("No more hops")
+            logger.info("No more hops")
             break
         trace_next_hop: bool = (
             input(f"Trace next hop: {next_hop}? (y/n): ")
@@ -100,7 +101,7 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
             trace_id = next_mail_id
             aggregator = SSHHost(next_hop, config)
         else:
-            print("Trace stopped")
+            logger.info("Trace stopped")
             break
 
 

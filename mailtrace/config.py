@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 import yaml
 
@@ -42,11 +43,24 @@ class HostConfig:
 @dataclass
 class Config:
     method: Method
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     ssh_config: SSHConfig
     host_config: HostConfig
     hosts: dict[str, HostConfig]
 
     def __post_init__(self):
+        # value checking
+        if self.log_level not in [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+            "CRITICAL",
+        ]:
+            raise ValueError(f"Invalid log level: {self.log_level}")
+        if self.method not in [method.value for method in Method]:
+            raise ValueError(f"Invalid method: {self.method}")
+        # type checking
         if isinstance(self.method, str):
             self.method = Method(self.method)
         if isinstance(self.ssh_config, dict):

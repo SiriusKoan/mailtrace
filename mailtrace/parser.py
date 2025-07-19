@@ -1,4 +1,5 @@
 import re
+from abc import ABC, abstractmethod
 from typing import Type
 
 from .models import LogEntry
@@ -8,9 +9,10 @@ def check_mail_id_valid(mail_id: str) -> bool:
     return bool(re.match(r"^[0-9A-Z]+$", mail_id))
 
 
-class LogParser:
+class LogParser(ABC):
+    @abstractmethod
     def parse(self, log: str) -> LogEntry:
-        raise NotImplementedError("Subclasses must implement parse method")
+        pass
 
 
 class NoSpaceInDatetimeParser(LogParser):
