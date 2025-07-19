@@ -3,11 +3,10 @@ import re
 
 import click
 
-from .aggregator import SSHHost
+from .aggregator import SSHHost, do_trace
 from .config import Method, load_config
 from .models import LogQuery
 from .parser import LogEntry
-from .utils import do_trace
 
 
 @click.group()
@@ -69,6 +68,9 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
+    if not ids:
+        print("No mail IDs found")
+        return
     logs_by_id: dict[str, list[LogEntry]] = {}
     for mail_id in ids:
         logs_by_id[mail_id] = aggregator.query_by(LogQuery(mail_id=mail_id))
