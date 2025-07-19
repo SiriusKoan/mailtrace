@@ -1,4 +1,3 @@
-from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -39,6 +38,7 @@ class HostConfig:
         if self.log_parser not in PARSERS:
             raise ValueError(f"Invalid log parser: {self.log_parser}")
 
+
 @dataclass
 class Config:
     method: Method
@@ -62,8 +62,10 @@ class Config:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format or self.host_config.time_format
+            time_format=host_config.time_format
+            or self.host_config.time_format,
         )
+
 
 def load_config():
     config_path = os.getenv("MAILTRACE_CONFIG", "config.yaml")

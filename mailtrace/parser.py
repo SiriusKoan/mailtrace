@@ -1,18 +1,7 @@
 import re
-from dataclasses import dataclass
 from typing import Type
 
-
-@dataclass
-class LogEntry:
-    datetime: str
-    hostname: str
-    service: str
-    mail_id: str | None
-    message: str
-
-    def __str__(self) -> str:
-        return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"
+from .models import LogEntry
 
 
 def check_mail_id_valid(mail_id: str) -> bool:

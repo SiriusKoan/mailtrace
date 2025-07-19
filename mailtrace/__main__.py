@@ -3,11 +3,11 @@ import re
 
 import click
 
-from mailtrace.config import Method
-from mailtrace.parser import LogEntry
-from mailtrace.utils import LogQuery, SSHSession, do_trace
-
-from .config import load_config
+from .aggregator import SSHHost
+from .config import Method, load_config
+from .models import LogQuery
+from .parser import LogEntry
+from .utils import do_trace
 
 
 @click.group()
@@ -64,14 +64,14 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
     print("Running mailtrace...")
 
     # Get and list all mail IDs with given query
-    session = SSHSession(start_host, config)
-    base_logs = session.query_by(
+    aggregator = SSHHost(start_host, config)
+    base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     logs_by_id: dict[str, list[LogEntry]] = {}
     for mail_id in ids:
-        logs_by_id[mail_id] = session.query_by(LogQuery(mail_id=mail_id))
+        logs_by_id[mail_id] = aggregator.query_by(LogQuery(mail_id=mail_id))
         print(f"== Mail ID: {mail_id} ==")
         for log in logs_by_id[mail_id]:
             print(str(log))
@@ -85,7 +85,7 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
 
     # Trace the mail
     while True:
-        next_mail_id, next_hop = do_trace(trace_id, session)
+        next_mail_id, next_hop = do_trace(trace_id, aggregator)
         if next_hop == "":
             print("No more hops")
             break
@@ -96,7 +96,7 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
         )
         if trace_next_hop:
             trace_id = next_mail_id
-            session = SSHSession(next_hop, config)
+            aggregator = SSHHost(next_hop, config)
         else:
             print("Trace stopped")
             break
