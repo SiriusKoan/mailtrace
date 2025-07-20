@@ -48,7 +48,7 @@ class SSHHost(LogAggregator):
 
     def _check_file_exists(self, file_path: str) -> bool:
         command = f"stat {file_path}"
-        stdout_content, stderr_content = self._execute_command(command)
+        stdout_content, _ = self._execute_command(command)
         return stdout_content != ""
 
     def _compose_read_command(self, query: LogQuery) -> str:
@@ -68,13 +68,11 @@ class SSHHost(LogAggregator):
             command = "cat"
         return command
 
-    def _compose_keyword_command(self, keywords: list[str]) -> str:
+    @staticmethod
+    def _compose_keyword_command(keywords: list[str]) -> str:
         if not keywords:
             return ""
-        command = ""
-        for keyword in keywords:
-            command += f"| grep -iE {keyword}"
-        return command
+        return "".join(f"| grep -iE {keyword}" for keyword in keywords)
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         logs: str = ""
@@ -99,5 +97,4 @@ class SSHHost(LogAggregator):
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
-        else:
-            return parsed_logs
+        return parsed_logs
