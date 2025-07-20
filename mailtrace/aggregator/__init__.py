@@ -3,6 +3,7 @@ import re
 from ..log import logger
 from ..models import LogQuery, PostfixServiceType
 from .base import LogAggregator
+from .opensearch import Opensearch
 from .ssh_host import SSHHost
 
 
@@ -38,7 +39,4 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> tuple[str, str]:
     return next_mail_id, next_hop
 
 
-__all__ = [
-    "do_trace",
-    "SSHHost",
-]
+__all__ = ["do_trace", "SSHHost", "Opensearch"]

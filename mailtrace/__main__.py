@@ -1,15 +1,13 @@
 import getpass
-import re
 
 import click
 
-from mailtrace.aggregator.opensearch import Opensearch
-
-from .aggregator import SSHHost, do_trace
-from .config import load_config
+from .aggregator import Opensearch, SSHHost, do_trace
+from .config import Method, load_config
 from .log import logger
 from .models import LogQuery
 from .parser import LogEntry
+from .utils import time_validation
 
 
 @click.group()
@@ -62,6 +60,14 @@ def run(
 ):
     config = load_config()
 
+    # log aggregator
+    if config.method == Method.SSH:
+        aggregator_class = SSHHost
+    elif config.method == Method.OPENSEARCH:
+        aggregator_class = Opensearch
+    else:
+        raise ValueError(f"Unsupported method: {config.method}")
+
     # sudo pass
     if ask_sudo_pass:
         sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
@@ -82,23 +88,14 @@ def run(
             "Warning: empty opensearch password is provided, no password will be used for opensearch"
         )
 
-    # time filter
-    if time:
-        time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
-        if not time_pattern.match(time):
-            raise ValueError(
-                f"Time {time} should be in format YYYY-MM-DD HH:MM:SS"
-            )
-    if time and not time_range or time_range and not time:
-        raise ValueError("Time and time-range must be provided together")
-    time_range_pattern = re.compile(r"^\d+[dhm]$")
-    if time_range and not time_range_pattern.match(time_range):
-        raise ValueError("time_range should be in format [0-9]+[dhm]")
+    time_validation_results = time_validation(time, time_range)
+    if time_validation_results:
+        raise ValueError(time_validation_results)
 
     logger.info("Running mailtrace...")
 
     # Get and list all mail IDs with given query
-    aggregator = Opensearch(start_host, config)
+    aggregator = aggregator_class(start_host, config)
     base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
@@ -126,14 +123,15 @@ def run(
         if next_hop == "":
             logger.info("No more hops")
             break
-        trace_next_hop: bool = (
-            input(f"Trace next hop: {next_hop}? (y/n): ")
-            .lower()
-            .startswith("y")
-        )
-        if trace_next_hop:
+        trace_next_hop_ans: str = input(
+            f"Trace next hop: {next_hop}? (y/n/local): "
+        ).lower()
+        if trace_next_hop_ans == "y":
             trace_id = next_mail_id
-            aggregator = SSHHost(next_hop, config)
+            aggregator = aggregator_class(next_hop, config)
+        elif trace_next_hop_ans == "local":
+            trace_id = next_mail_id
+            aggregator = aggregator_class(aggregator.host, config)
         else:
             logger.info("Trace stopped")
             break
