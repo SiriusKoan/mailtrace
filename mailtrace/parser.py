@@ -58,6 +58,23 @@ class DayOfWeekParser(LogParser):
 
 
 class OpensearchParser(LogParser):
+    """
+    This parser is designed to handle log entries from Opensearch/Elasticsearch format.
+    Example log format (dict structure):
+    {
+        "_source": {
+            "@timestamp": "2025-01-01T10:00:00.123Z",
+            "log": {
+                "syslog": {
+                    "hostname": "mailer1.example.com",
+                    "appname": "postfix/qmgr"
+                }
+            },
+            "message": "A2DE917F931: from=<abc@example.com>, size=12345, nrcpt=1 (queue active)"
+        }
+    }
+    """
+
     def parse(self, log: dict) -> LogEntry:
         log = log["_source"]
         datetime = log["@timestamp"]

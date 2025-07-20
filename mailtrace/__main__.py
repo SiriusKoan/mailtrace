@@ -124,17 +124,20 @@ def run(
             logger.info("No more hops")
             break
         trace_next_hop_ans: str = input(
-            f"Trace next hop: {next_hop}? (y/n/local): "
+            f"Trace next hop: {next_hop}? (Y/n/local/<next hop>): "
         ).lower()
-        if trace_next_hop_ans == "y":
+        if trace_next_hop_ans == "y" or trace_next_hop_ans == "":
             trace_id = next_mail_id
             aggregator = aggregator_class(next_hop, config)
+        elif trace_next_hop_ans == "n":
+            logger.info("Trace stopped")
+            break
         elif trace_next_hop_ans == "local":
             trace_id = next_mail_id
             aggregator = aggregator_class(aggregator.host, config)
         else:
-            logger.info("Trace stopped")
-            break
+            trace_id = next_mail_id
+            aggregator = aggregator_class(trace_next_hop_ans, config)
 
 
 if __name__ == "__main__":
