@@ -30,6 +30,17 @@ class SSHConfig:
 
 
 @dataclass
+class OpensearchConfig:
+    host: str = ""
+    port: int = 9200
+    username: str = ""
+    password: str = ""
+    use_ssl: bool = False
+    verify_certs: bool = False
+    index: str = ""
+
+
+@dataclass
 class HostConfig:
     log_files: list[str] = field(default_factory=list)
     log_parser: str = ""
@@ -45,6 +56,7 @@ class Config:
     method: Method
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     ssh_config: SSHConfig
+    opensearch_config: OpensearchConfig
     host_config: HostConfig
     hosts: dict[str, HostConfig]
 
@@ -65,6 +77,8 @@ class Config:
             self.method = Method(self.method)
         if isinstance(self.ssh_config, dict):
             self.ssh_config = SSHConfig(**self.ssh_config)
+        if isinstance(self.opensearch_config, dict):
+            self.opensearch_config = OpensearchConfig(**self.opensearch_config)
         if isinstance(self.host_config, dict):
             self.host_config = HostConfig(**self.host_config)
         for hostname, host_config in self.hosts.items():

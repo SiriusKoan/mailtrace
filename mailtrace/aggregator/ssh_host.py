@@ -51,7 +51,7 @@ class SSHHost(LogAggregator):
         stdout_content, stderr_content = self._execute_command(command)
         return stdout_content != ""
 
-    def _get_read_command(self, query: LogQuery) -> str:
+    def _compose_read_command(self, query: LogQuery) -> str:
         if query.time and query.time_range:
             # get logs by time
             timestamp = datetime.datetime.strptime(
@@ -68,7 +68,7 @@ class SSHHost(LogAggregator):
             command = "cat"
         return command
 
-    def _get_keyword_command(self, keywords: list[str]) -> str:
+    def _compose_keyword_command(self, keywords: list[str]) -> str:
         if not keywords:
             return ""
         command = ""
@@ -78,12 +78,16 @@ class SSHHost(LogAggregator):
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         logs: str = ""
-        command = self._get_read_command(query)
+        command = self._compose_read_command(query)
         for log_file in self.host_config.log_files:
             if not self._check_file_exists(log_file):
                 continue
             complete_command = " ".join(
-                [command, log_file, self._get_keyword_command(query.keywords)]
+                [
+                    command,
+                    log_file,
+                    self._compose_keyword_command(query.keywords),
+                ]
             )
             stdout, stderr = self._execute_command(complete_command)
             if stderr:

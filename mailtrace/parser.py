@@ -1,6 +1,6 @@
 import re
 from abc import ABC, abstractmethod
-from typing import Type
+from typing import Any, Type
 
 from .models import LogEntry
 
@@ -11,7 +11,7 @@ def check_mail_id_valid(mail_id: str) -> bool:
 
 class LogParser(ABC):
     @abstractmethod
-    def parse(self, log: str) -> LogEntry:
+    def parse(self, log: Any) -> LogEntry:
         pass
 
 
@@ -57,7 +57,28 @@ class DayOfWeekParser(LogParser):
         return LogEntry(datetime, hostname, service, mail_id, message)
 
 
+class OpensearchParser(LogParser):
+    def parse(self, log: dict) -> LogEntry:
+        log = log["_source"]
+        datetime = log["@timestamp"]
+        hostname = log["log"]["syslog"]["hostname"]
+        service = log["log"]["syslog"]["appname"]
+        _mail_id_candidate = log["message"].split(":")[0]
+        mail_id = (
+            _mail_id_candidate
+            if check_mail_id_valid(_mail_id_candidate)
+            else None
+        )
+        message = (
+            " ".join(log["message"].split()[1:])
+            if check_mail_id_valid(_mail_id_candidate)
+            else log["message"]
+        )
+        return LogEntry(datetime, hostname, service, mail_id, message)
+
+
 PARSERS: dict[str, Type[LogParser]] = {
     NoSpaceInDatetimeParser.__name__: NoSpaceInDatetimeParser,
     DayOfWeekParser.__name__: DayOfWeekParser,
+    OpensearchParser.__name__: OpensearchParser,
 }

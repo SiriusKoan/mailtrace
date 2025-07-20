@@ -3,8 +3,10 @@ import re
 
 import click
 
+from mailtrace.aggregator.opensearch import Opensearch
+
 from .aggregator import SSHHost, do_trace
-from .config import Method, load_config
+from .config import load_config
 from .log import logger
 from .models import LogQuery
 from .parser import LogEntry
@@ -30,7 +32,17 @@ def cli():
 @click.option(
     "-K", "--sudo-pass", type=str, required=False, help="The sudo password"
 )
+@click.option(
+    "--opensearch-pass",
+    type=str,
+    required=False,
+    help="The opensearch password",
+)
+# todo: ask login pass
 @click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password")
+@click.option(
+    "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
+)
 @click.option("--time", type=str, required=False, help="The time")
 @click.option(
     "--time-range",
@@ -38,12 +50,39 @@ def cli():
     required=False,
     help="The time range, e.g. 1d, 10m",
 )
-def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
+def run(
+    start_host,
+    key,
+    sudo_pass,
+    opensearch_pass,
+    ask_sudo_pass,
+    ask_opensearch_pass,
+    time,
+    time_range,
+):
     config = load_config()
-    if config.method != Method.SSH:
-        raise ValueError("Unsupported method")
+
+    # sudo pass
     if ask_sudo_pass:
         sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
+    config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
+    if not sudo_pass:
+        logger.warning(
+            "Warning: empty sudo password is provided, no password will be used for sudo"
+        )
+
+    # opensearch pass
+    if ask_opensearch_pass:
+        opensearch_pass = getpass.getpass(prompt="Enter opensearch password: ")
+    config.opensearch_config.password = (
+        opensearch_pass or config.opensearch_config.password
+    )
+    if not opensearch_pass:
+        logger.warning(
+            "Warning: empty opensearch password is provided, no password will be used for opensearch"
+        )
+
+    # time filter
     if time:
         time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         if not time_pattern.match(time):
@@ -55,16 +94,11 @@ def run(start_host, key, sudo_pass, ask_sudo_pass, time, time_range):
     time_range_pattern = re.compile(r"^\d+[dhm]$")
     if time_range and not time_range_pattern.match(time_range):
         raise ValueError("time_range should be in format [0-9]+[dhm]")
-    config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
-    if not sudo_pass:
-        logger.warning(
-            "Warning: empty sudo password is provided, no password will be used for sudo"
-        )
 
     logger.info("Running mailtrace...")
 
     # Get and list all mail IDs with given query
-    aggregator = SSHHost(start_host, config)
+    aggregator = Opensearch(start_host, config)
     base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )

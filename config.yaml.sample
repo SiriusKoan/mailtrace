@@ -6,6 +6,14 @@ ssh_config:
   private_key: /home/username/.ssh/id_rsa
   sudo_pass: ""
   sudo: true
+opensearch_config:
+  host: ""
+  port: 9200
+  username: username
+  password: ""
+  index: ""
+  use_ssl: false
+  verify_certs: false
 host_config:
   log_files:
     - /var/log/mail.log
