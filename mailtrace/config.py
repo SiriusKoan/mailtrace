@@ -38,6 +38,7 @@ class OpensearchConfig:
     use_ssl: bool = False
     verify_certs: bool = False
     index: str = ""
+    time_zone: str = "+00:00"
 
 
 @dataclass

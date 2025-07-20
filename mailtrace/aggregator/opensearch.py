@@ -45,10 +45,18 @@ class Opensearch(LogAggregator):
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
             time_range = time_range_to_timedelta(query.time_range)
-            start_time = (time - time_range).strftime("%Y-%m-%dT%H:%M:%SZ")
-            end_time = (time + time_range).strftime("%Y-%m-%dT%H:%M:%SZ")
+            start_time = (time - time_range).strftime("%Y-%m-%dT%H:%M:%S")
+            end_time = (time + time_range).strftime("%Y-%m-%dT%H:%M:%S")
             opensearch_query["query"]["bool"]["must"].append(
-                {"range": {"@timestamp": {"gte": start_time, "lte": end_time}}}
+                {
+                    "range": {
+                        "@timestamp": {
+                            "gte": start_time,
+                            "lte": end_time,
+                            "time_zone": self.config.time_zone,
+                        }
+                    }
+                }
             )
         if query.keywords:
             for keyword in query.keywords:

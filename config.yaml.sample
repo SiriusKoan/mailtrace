@@ -14,6 +14,7 @@ opensearch_config:
   index: ""
   use_ssl: false
   verify_certs: false
+  time_zone: "+00:00"
 host_config:
   log_files:
     - /var/log/mail.log
