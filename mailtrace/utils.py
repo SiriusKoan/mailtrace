@@ -23,3 +23,11 @@ def time_range_to_timedelta(time_range: str) -> datetime.timedelta:
     if time_range.endswith("m"):
         return datetime.timedelta(minutes=int(time_range[:-1]))
     raise ValueError("Invalid time range")
+
+
+def print_blue(text: str):
+    print(f"\033[94m{text}\033[0m")
+
+
+def print_red(text: str):
+    print(f"\033[91m{text}\033[0m")

@@ -8,12 +8,12 @@ from .ssh_host import SSHHost
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> tuple[str, str]:
-    # todo: show logs even not matched
     logger.info(f"Tracing mail ID: {mail_id}")
-    log = aggregator.query_by(LogQuery(mail_id=mail_id))
+    logs = aggregator.query_by(LogQuery(mail_id=mail_id))
     next_hop: str = ""
     next_mail_id: str = ""
-    for entry in log:
+    for entry in logs:
+        print(str(entry))
         if (entry.service == PostfixServiceType.SMTP.value) or (
             entry.service == PostfixServiceType.LMTP.value
         ):

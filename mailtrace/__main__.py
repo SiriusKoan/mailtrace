@@ -7,7 +7,7 @@ from .config import Method, load_config
 from .log import logger
 from .models import LogQuery
 from .parser import LogEntry
-from .utils import time_validation
+from .utils import print_blue, time_validation
 
 
 @click.group()
@@ -88,6 +88,7 @@ def run(
             "Warning: empty opensearch password is provided, no password will be used for opensearch"
         )
 
+    # Validate time filter
     time_validation_results = time_validation(time, time_range)
     if time_validation_results:
         raise ValueError(time_validation_results)
@@ -106,10 +107,10 @@ def run(
     logs_by_id: dict[str, list[LogEntry]] = {}
     for mail_id in ids:
         logs_by_id[mail_id] = aggregator.query_by(LogQuery(mail_id=mail_id))
-        print(f"== Mail ID: {mail_id} ==")
+        print_blue(f"== Mail ID: {mail_id} ==")
         for log in logs_by_id[mail_id]:
             print(str(log))
-        print("==============\n")
+        print_blue("==============\n")
 
     # Get the wanted mail ID
     trace_id = input("Enter trace ID: ")
