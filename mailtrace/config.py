@@ -9,13 +9,24 @@ from .parser import PARSERS
 
 
 class Method(Enum):
+    """Enumeration of supported connection methods for log collection."""
+
     SSH = "ssh"
     OPENSEARCH = "opensearch"
-    LOGHOST = "loghost"
 
 
 @dataclass
 class SSHConfig:
+    """Configuration for SSH connections.
+
+    Attributes:
+        username: SSH username for authentication
+        password: SSH password (alternative to private_key)
+        private_key: Path to SSH private key file (alternative to password)
+        sudo_pass: Password for sudo operations
+        sudo: Whether to use sudo for log file access
+    """
+
     username: str = ""
     password: str = ""
     private_key: str = ""
@@ -30,7 +41,20 @@ class SSHConfig:
 
 
 @dataclass
-class OpensearchConfig:
+class OpenSearchConfig:
+    """Configuration for OpenSearch connections.
+
+    Attributes:
+        host: OpenSearch host address
+        port: OpenSearch port number
+        username: Username for OpenSearch authentication
+        password: Password for OpenSearch authentication
+        use_ssl: Whether to use SSL/TLS encryption
+        verify_certs: Whether to verify SSL certificates
+        index: OpenSearch index name for log storage
+        time_zone: Timezone offset for log timestamps
+    """
+
     host: str = ""
     port: int = 9200
     username: str = ""
@@ -43,6 +67,14 @@ class OpensearchConfig:
 
 @dataclass
 class HostConfig:
+    """Configuration for host-specific log settings.
+
+    Attributes:
+        log_files: List of log file paths to monitor
+        log_parser: Parser type to use for log processing
+        time_format: Time format string for parsing timestamps
+    """
+
     log_files: list[str] = field(default_factory=list)
     log_parser: str = ""
     time_format: str = "%Y-%m-%d %H:%M:%S"
@@ -54,10 +86,21 @@ class HostConfig:
 
 @dataclass
 class Config:
+    """Main configuration class for the mail tracing application.
+
+    Attributes:
+        method: Connection method to use for log collection
+        log_level: Logging level for the application
+        ssh_config: SSH connection configuration
+        opensearch_config: OpenSearch connection configuration
+        host_config: Default host configuration
+        hosts: Per-host configuration overrides
+    """
+
     method: Method
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     ssh_config: SSHConfig
-    opensearch_config: OpensearchConfig
+    opensearch_config: OpenSearchConfig
     host_config: HostConfig
     hosts: dict[str, HostConfig]
 
@@ -79,7 +122,7 @@ class Config:
         if isinstance(self.ssh_config, dict):
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
-            self.opensearch_config = OpensearchConfig(**self.opensearch_config)
+            self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
         if isinstance(self.host_config, dict):
             self.host_config = HostConfig(**self.host_config)
         for hostname, host_config in self.hosts.items():
@@ -87,6 +130,18 @@ class Config:
                 self.hosts[hostname] = HostConfig(**host_config)
 
     def get_host_config(self, hostname: str) -> HostConfig:
+        """Get effective configuration for a specific host.
+
+        Merges host-specific configuration with default configuration,
+        with host-specific values taking precedence.
+
+        Args:
+            hostname: Name of the host to get configuration for
+
+        Returns:
+            HostConfig object with merged configuration
+        """
+
         host_config = self.hosts.get(hostname, self.host_config)
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
@@ -97,6 +152,19 @@ class Config:
 
 
 def load_config():
+    """Load configuration from YAML file.
+
+    Loads configuration from the file specified by MAILTRACE_CONFIG
+    environment variable, or 'config.yaml' if not set.
+
+    Returns:
+        Config object with loaded configuration
+
+    Raises:
+        FileNotFoundError: If the configuration file doesn't exist
+        ValueError: If the configuration file contains invalid data
+    """
+
     config_path = os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")

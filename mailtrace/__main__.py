@@ -2,7 +2,7 @@ import getpass
 
 import click
 
-from .aggregator import Opensearch, SSHHost, do_trace
+from .aggregator import OpenSearch, SSHHost, do_trace
 from .config import Method, load_config
 from .log import logger
 from .models import LogQuery
@@ -63,13 +63,18 @@ def run(
     time,
     time_range,
 ):
+    """
+    Trace email messages through mail server logs.
+    The entrypoiny of this program.
+    """
+
     config = load_config()
 
     # log aggregator
     if config.method == Method.SSH:
         aggregator_class = SSHHost
     elif config.method == Method.OPENSEARCH:
-        aggregator_class = Opensearch
+        aggregator_class = OpenSearch
     else:
         raise ValueError(f"Unsupported method: {config.method}")
 

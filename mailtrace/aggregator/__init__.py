@@ -3,17 +3,44 @@ import re
 from ..log import logger
 from ..models import LogQuery, PostfixServiceType
 from .base import LogAggregator
-from .opensearch import Opensearch
+from .opensearch import OpenSearch
 from .ssh_host import SSHHost
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> tuple[str, str]:
+    """
+    Trace a mail message through Postfix logs to find the next hop and mail ID.
+
+    This function queries log entries for a given mail ID and analyzes SMTP/LMTP
+    service entries to determine where the mail was relayed to next and what
+    new mail ID it was assigned.
+
+    Args:
+        mail_id: The mail ID to trace through the logs
+        aggregator: LogAggregator instance to query logs from
+
+    Returns:
+        A tuple containing (next_mail_id, next_hop) where:
+        - next_mail_id: The new mail ID assigned when queued at next hop
+        - next_hop: The domain name of the relay host the mail was sent to
+
+    Example:
+        >>> next_id, next_host = do_trace("ABC123", aggregator)
+        >>> print(f"Mail relayed to {next_host} with ID {next_id}")
+    """
+
     logger.info(f"Tracing mail ID: {mail_id}")
     logs = aggregator.query_by(LogQuery(mail_id=mail_id))
     next_hop: str = ""
     next_mail_id: str = ""
     for entry in logs:
         print(str(entry))
+
+        if next_hop:
+            # if next_hop is found, no logs should be further analyzed
+            continue
+
+        # Find the log messages with next hop information
         if entry.service in [
             PostfixServiceType.SMTP.value,
             PostfixServiceType.LMTP.value,
@@ -41,4 +68,4 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> tuple[str, str]:
     return next_mail_id, next_hop
 
 
-__all__ = ["do_trace", "SSHHost", "Opensearch"]
+__all__ = ["do_trace", "SSHHost", "OpenSearch"]

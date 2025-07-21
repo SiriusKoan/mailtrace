@@ -6,12 +6,34 @@ from .models import LogEntry
 
 
 def check_mail_id_valid(mail_id: str) -> bool:
+    """
+    Check if a mail ID is valid.
+
+    Args:
+        mail_id: The mail ID string to validate
+
+    Returns:
+        bool: True if the mail ID contains only alphanumeric characters (0-9, A-Z), False otherwise
+    """
+
     return bool(re.match(r"^[0-9A-Z]+$", mail_id))
 
 
 class LogParser(ABC):
+    """Abstract base class for log parsers."""
+
     @abstractmethod
     def parse(self, log: Any) -> LogEntry:
+        """
+        Parse a log entry into a LogEntry object.
+
+        Args:
+            log: The log data to parse (format depends on concrete implementation)
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+
         pass
 
 
@@ -23,6 +45,16 @@ class NoSpaceInDatetimeParser(LogParser):
     """
 
     def parse(self, log: str) -> LogEntry:
+        """
+        Parse a log entry with space-free datetime format.
+
+        Args:
+            log: The log string to parse
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+
         log_split = log.split(" ", 4)
         datetime = log_split[0]
         hostname = log_split[1]
@@ -44,6 +76,16 @@ class DayOfWeekParser(LogParser):
     """
 
     def parse(self, log: str) -> LogEntry:
+        """
+        Parse a log entry with day-of-week datetime format.
+
+        Args:
+            log: The log string to parse
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+
         log_split = log.split(" ", 6)
         datetime = " ".join(log_split[:3])
         hostname = log_split[3]
@@ -76,6 +118,16 @@ class OpensearchParser(LogParser):
     """
 
     def parse(self, log: dict) -> LogEntry:
+        """
+        Parse a log entry from Opensearch/Elasticsearch format.
+
+        Args:
+            log: The log dictionary to parse
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+
         log = log["_source"]
         datetime = log["@timestamp"]
         hostname = log["log"]["syslog"]["hostname"]

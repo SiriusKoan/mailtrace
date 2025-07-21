@@ -4,6 +4,17 @@ from enum import Enum
 
 @dataclass
 class LogEntry:
+    """Represents a single log entry from a mail server log file.
+
+    Attributes:
+        datetime: Timestamp of the log entry
+        hostname: Name of the host that generated the log entry
+        service: Service that generated the log entry (e.g., postfix/smtp)
+        mail_id: Unique identifier for the mail message, if available
+        message: The actual log message content
+    """
+
+    # todo: datetime field should be converted to datetime object
     datetime: str
     hostname: str
     service: str
@@ -15,6 +26,8 @@ class LogEntry:
 
 
 class PostfixServiceType(Enum):
+    """Enumeration of common Postfix service types found in log files."""
+
     SMTP = "postfix/smtp"
     LMTP = "postfix/lmtp"
     SMTPD = "postfix/smtpd"
@@ -24,6 +37,15 @@ class PostfixServiceType(Enum):
 
 @dataclass
 class LogQuery:
+    """Query parameters for filtering log entries.
+
+    Attributes:
+        keywords: List of keywords to search for in log messages
+        mail_id: Specific mail ID to filter by
+        time: Specific timestamp to filter by
+        time_range: Time range specification for filtering entries
+    """
+
     keywords: list[str] = field(default_factory=list)
     mail_id: str | None = None
     time: str | None = None

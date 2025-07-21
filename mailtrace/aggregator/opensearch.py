@@ -2,7 +2,7 @@ import copy
 from datetime import datetime
 
 import urllib3
-from opensearchpy import OpenSearch
+from opensearchpy import OpenSearch as OpenSearchClient
 
 from mailtrace.parser import OpensearchParser
 
@@ -15,7 +15,18 @@ from .base import LogAggregator
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-class Opensearch(LogAggregator):
+class OpenSearch(LogAggregator):
+    """
+    OpenSearch log aggregator for querying mail system logs.
+
+    This class provides functionality to search and retrieve mail-related log entries
+    from an OpenSearch cluster. It constructs queries based on various criteria such as
+    time ranges, keywords, and mail IDs.
+
+    Attributes:
+        _query (dict): Base query template for OpenSearch requests.
+    """
+
     _query = {
         "query": {
             "bool": {
@@ -28,9 +39,17 @@ class Opensearch(LogAggregator):
     }
 
     def __init__(self, host: str, config: Config):
+        """
+        Initialize the OpenSearch log aggregator.
+
+        Args:
+            host (str): The hostname to filter logs for.
+            config (Config): Configuration object.
+        """
+
         self.host = host
         self.config = config.opensearch_config
-        self.client = OpenSearch(
+        self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
             use_ssl=self.config.use_ssl,
@@ -38,6 +57,21 @@ class Opensearch(LogAggregator):
         )
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
+        """
+        Query OpenSearch for log entries matching the specified criteria.
+
+        Builds an OpenSearch query based on the provided LogQuery parameters and
+        executes it against the configured index. The query filters for mail facility
+        logs from the specified host and applies additional filters for time range,
+        keywords, and mail IDs as specified.
+
+        Args:
+            query (LogQuery): Query parameters including time range, keywords, and mail ID.
+
+        Returns:
+            list[LogEntry]: List of parsed log entries matching the query criteria.
+        """
+
         opensearch_query = copy.deepcopy(self._query)
         opensearch_query["query"]["bool"]["must"].append(
             {"match": {"host.name": self.host}}

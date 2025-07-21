@@ -11,7 +11,23 @@ from .base import LogAggregator
 
 
 class SSHHost(LogAggregator):
+    """
+    A log aggregator that connects to remote hosts via SSH to query log files.
+
+    This establishes SSH connections to remote hosts and executes commands
+    to read and filter log files based on query parameters such as time ranges,
+    keywords, and mail IDs.
+    """
+
     def __init__(self, host: str, config: Config):
+        """
+        Initialize SSH connection to the specified host.
+
+        Args:
+            host: The hostname or IP address to connect to
+            config: Configuration object
+        """
+
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
@@ -34,6 +50,17 @@ class SSHHost(LogAggregator):
     def _execute_command(
         self, command: str, sudo: bool = False
     ) -> tuple[str, str]:
+        """
+        Execute a command on the remote host via SSH.
+
+        Args:
+            command: The command to execute
+            sudo: Whether to run the command with sudo privileges
+
+        Returns:
+            A tuple containing (stdout_content, stderr_content)
+        """
+
         run_with_sudo = sudo or self.ssh_config.sudo
         if run_with_sudo:
             command = f"sudo -S -p '' {command}"
@@ -47,11 +74,31 @@ class SSHHost(LogAggregator):
         return stdout_content, stderr_content
 
     def _check_file_exists(self, file_path: str) -> bool:
+        """
+        Check if a file exists on the remote host.
+
+        Args:
+            file_path: Path to the file to check
+
+        Returns:
+            True if the file exists, False otherwise
+        """
+
         command = f"stat {file_path}"
         stdout_content, _ = self._execute_command(command)
         return stdout_content != ""
 
     def _compose_read_command(self, query: LogQuery) -> str:
+        """
+        Compose the appropriate command to read log files based on query parameters.
+
+        Args:
+            query: LogQuery object containing time and time_range parameters
+
+        Returns:
+            Command string
+        """
+
         if query.time and query.time_range:
             # get logs by time
             timestamp = datetime.datetime.strptime(
@@ -70,11 +117,34 @@ class SSHHost(LogAggregator):
 
     @staticmethod
     def _compose_keyword_command(keywords: list[str]) -> str:
+        """
+        Compose grep commands to filter logs by keywords.
+
+        Args:
+            keywords: List of keywords to search for
+
+        Returns:
+            String containing chained grep commands or empty string if no keywords
+        """
+
         if not keywords:
             return ""
         return "".join(f"| grep -iE {keyword}" for keyword in keywords)
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
+        """
+        Query log files based on the provided query parameters.
+
+        Args:
+            query: LogQuery object containing search parameters
+
+        Returns:
+            List of LogEntry objects matching the query criteria
+
+        Raises:
+            ValueError: If there's an error executing the command on the remote host
+        """
+
         logs: str = ""
         command = self._compose_read_command(query)
         for log_file in self.host_config.log_files:
