@@ -20,5 +20,3 @@ class LogAggregator(ABC):
         Returns:
             list[LogEntry]: A list of log entries matching the query criteria.
         """
-
-        pass

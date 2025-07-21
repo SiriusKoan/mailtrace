@@ -31,7 +31,7 @@ class SSHHost(LogAggregator):
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
-        self.host_config = config.get_host_config(host)
+        self.host_config = self.ssh_config.get_host_config(host)
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         if self.ssh_config.private_key:

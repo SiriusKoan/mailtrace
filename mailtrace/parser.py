@@ -34,8 +34,6 @@ class LogParser(ABC):
             LogEntry: The parsed log entry
         """
 
-        pass
-
 
 class NoSpaceInDatetimeParser(LogParser):
     """

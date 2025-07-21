@@ -16,6 +16,25 @@ class Method(Enum):
 
 
 @dataclass
+class HostConfig:
+    """Configuration for host-specific log settings.
+
+    Attributes:
+        log_files: List of log file paths to monitor
+        log_parser: Parser type to use for log processing
+        time_format: Time format string for parsing timestamps
+    """
+
+    log_files: list[str] = field(default_factory=list)
+    log_parser: str = ""
+    time_format: str = "%Y-%m-%d %H:%M:%S"
+
+    def __post_init__(self):
+        if self.log_parser not in PARSERS:
+            raise ValueError(f"Invalid log parser: {self.log_parser}")
+
+
+@dataclass
 class SSHConfig:
     """Configuration for SSH connections.
 
@@ -32,12 +51,40 @@ class SSHConfig:
     private_key: str = ""
     sudo_pass: str = ""
     sudo: bool = True
+    host_config: HostConfig = field(default_factory=HostConfig)
+    hosts: dict[str, HostConfig] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.username:
             raise ValueError("Username must be provided")
         if not self.password and not self.private_key:
             raise ValueError("Either password or private_key must be provided")
+        if isinstance(self.host_config, dict):
+            self.host_config = HostConfig(**self.host_config)
+        for hostname, host_config in self.hosts.items():
+            if isinstance(host_config, dict):
+                self.hosts[hostname] = HostConfig(**host_config)
+
+    def get_host_config(self, hostname: str) -> HostConfig:
+        """Get effective configuration for a specific host.
+
+        Merges host-specific configuration with default configuration,
+        with host-specific values taking precedence.
+
+        Args:
+            hostname: Name of the host to get configuration for
+
+        Returns:
+            HostConfig object with merged configuration
+        """
+
+        host_config = self.hosts.get(hostname, self.host_config)
+        return HostConfig(
+            log_files=host_config.log_files or self.host_config.log_files,
+            log_parser=host_config.log_parser or self.host_config.log_parser,
+            time_format=host_config.time_format
+            or self.host_config.time_format,
+        )
 
 
 @dataclass
@@ -66,25 +113,6 @@ class OpenSearchConfig:
 
 
 @dataclass
-class HostConfig:
-    """Configuration for host-specific log settings.
-
-    Attributes:
-        log_files: List of log file paths to monitor
-        log_parser: Parser type to use for log processing
-        time_format: Time format string for parsing timestamps
-    """
-
-    log_files: list[str] = field(default_factory=list)
-    log_parser: str = ""
-    time_format: str = "%Y-%m-%d %H:%M:%S"
-
-    def __post_init__(self):
-        if self.log_parser not in PARSERS:
-            raise ValueError(f"Invalid log parser: {self.log_parser}")
-
-
-@dataclass
 class Config:
     """Main configuration class for the mail tracing application.
 
@@ -101,8 +129,6 @@ class Config:
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     ssh_config: SSHConfig
     opensearch_config: OpenSearchConfig
-    host_config: HostConfig
-    hosts: dict[str, HostConfig]
 
     def __post_init__(self):
         # value checking
@@ -123,32 +149,6 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
-        if isinstance(self.host_config, dict):
-            self.host_config = HostConfig(**self.host_config)
-        for hostname, host_config in self.hosts.items():
-            if isinstance(host_config, dict):
-                self.hosts[hostname] = HostConfig(**host_config)
-
-    def get_host_config(self, hostname: str) -> HostConfig:
-        """Get effective configuration for a specific host.
-
-        Merges host-specific configuration with default configuration,
-        with host-specific values taking precedence.
-
-        Args:
-            hostname: Name of the host to get configuration for
-
-        Returns:
-            HostConfig object with merged configuration
-        """
-
-        host_config = self.hosts.get(hostname, self.host_config)
-        return HostConfig(
-            log_files=host_config.log_files or self.host_config.log_files,
-            log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format
-            or self.host_config.time_format,
-        )
 
 
 def load_config():
