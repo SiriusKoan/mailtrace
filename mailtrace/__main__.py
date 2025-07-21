@@ -28,7 +28,10 @@ def cli():
     multiple=True,
 )
 @click.option(
-    "-K", "--sudo-pass", type=str, required=False, help="The sudo password"
+    "--login-pass", type=str, required=False, help="The login password"
+)
+@click.option(
+    "--sudo-pass", type=str, required=False, help="The sudo password"
 )
 @click.option(
     "--opensearch-pass",
@@ -36,7 +39,7 @@ def cli():
     required=False,
     help="The opensearch password",
 )
-# todo: ask login pass
+@click.option("--ask-login-pass", is_flag=True, help="Ask for login password")
 @click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password")
 @click.option(
     "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
@@ -51,8 +54,10 @@ def cli():
 def run(
     start_host,
     key,
+    login_pass,
     sudo_pass,
     opensearch_pass,
+    ask_login_pass,
     ask_sudo_pass,
     ask_opensearch_pass,
     time,
@@ -67,6 +72,15 @@ def run(
         aggregator_class = Opensearch
     else:
         raise ValueError(f"Unsupported method: {config.method}")
+
+    # login pass
+    if ask_login_pass:
+        login_pass = getpass.getpass(prompt="Enter login password: ")
+    config.ssh_config.password = login_pass or config.ssh_config.password
+    if not login_pass:
+        logger.warning(
+            "Warning: empty login password is provided, no password will be used for login"
+        )
 
     # sudo pass
     if ask_sudo_pass:
