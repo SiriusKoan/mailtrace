@@ -15,7 +15,15 @@ def cli():
     pass
 
 
-def handle_passwords(config, ask_login_pass, login_pass, ask_sudo_pass, sudo_pass, ask_opensearch_pass, opensearch_pass):
+def handle_passwords(
+    config,
+    ask_login_pass,
+    login_pass,
+    ask_sudo_pass,
+    sudo_pass,
+    ask_opensearch_pass,
+    opensearch_pass,
+):
     """
     Handles password input and assignment for SSH, sudo, and OpenSearch connections.
 
@@ -115,7 +123,9 @@ def query_and_print_logs(aggregator, key, time, time_range):
     return logs_by_id, ids
 
 
-def trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, aggregator):
+def trace_mail_loop(
+    trace_id, logs_by_id, aggregator_class, config, aggregator
+):
     """
     Interactively traces mail hops starting from the given trace ID.
 
@@ -135,24 +145,27 @@ def trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, aggregator):
         return
 
     while True:
-        next_mail_id, next_hop = do_trace(trace_id, aggregator)
-        if next_hop == "":
+        result = do_trace(trace_id, aggregator)
+        if result is None:
             logger.info("No more hops")
             break
+        print_blue(
+            f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) with new ID {result.mail_id} (SMTP {result.smtp_code})"
+        )
         trace_next_hop_ans: str = input(
-            f"Trace next hop: {next_hop}? (Y/n/local/<next hop>): "
+            f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
         ).lower()
         if trace_next_hop_ans in ["", "y"]:
-            trace_id = next_mail_id
-            aggregator = aggregator_class(next_hop, config)
+            trace_id = result.mail_id
+            aggregator = aggregator_class(result.relay_host, config)
         elif trace_next_hop_ans == "n":
             logger.info("Trace stopped")
             break
         elif trace_next_hop_ans == "local":
-            trace_id = next_mail_id
+            trace_id = result.mail_id
             aggregator = aggregator_class(aggregator.host, config)
         else:
-            trace_id = next_mail_id
+            trace_id = result.mail_id
             aggregator = aggregator_class(trace_next_hop_ans, config)
 
 
@@ -209,7 +222,15 @@ def run(
     The entrypoiny of this program.
     """
     config = load_config()
-    handle_passwords(config, ask_login_pass, login_pass, ask_sudo_pass, sudo_pass, ask_opensearch_pass, opensearch_pass)
+    handle_passwords(
+        config,
+        ask_login_pass,
+        login_pass,
+        ask_sudo_pass,
+        sudo_pass,
+        ask_opensearch_pass,
+        opensearch_pass,
+    )
     time_validation_results = time_validation(time, time_range)
     if time_validation_results:
         raise ValueError(time_validation_results)
