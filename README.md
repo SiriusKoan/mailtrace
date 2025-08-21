@@ -104,3 +104,9 @@ opensearch_config:
 - `use_ssl`: Whether to use SSL for communication.
 - `verify_certs`: Whether to verify SSL certificates.
 - `time_zone`: Time zone of the OpenSearch server.
+
+## How It Works
+
+An aggregator can read the logs and find out the related ones. It then extracts information from the logs, including `hostname`, `mail_id`, etc.
+
+With the information extracted, it can find out the next stop of the mail flow. The tracing is performed by the `do_trace` function in `aggregator/__init__.py`, the core of this tool.
