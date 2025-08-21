@@ -151,7 +151,7 @@ class Config:
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
 
 
-def load_config():
+def load_config(config_path: str | None = None):
     """Load configuration from YAML file.
 
     Loads configuration from the file specified by MAILTRACE_CONFIG
@@ -165,7 +165,7 @@ def load_config():
         ValueError: If the configuration file contains invalid data
     """
 
-    config_path = os.getenv("MAILTRACE_CONFIG", "config.yaml")
+    config_path = config_path or os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path) as f:

@@ -4,7 +4,7 @@ import click
 
 from .aggregator import OpenSearch, SSHHost, do_trace
 from .config import Method, load_config
-from .log import logger
+from .log import init_logger, logger
 from .models import LogQuery
 from .parser import LogEntry
 from .utils import print_blue, time_validation
@@ -39,33 +39,42 @@ def handle_passwords(
         opensearch_pass: The OpenSearch password (may be None).
     """
 
-    # login pass
-    if ask_login_pass:
-        login_pass = getpass.getpass(prompt="Enter login password: ")
-    config.ssh_config.password = login_pass or config.ssh_config.password
-    if not login_pass:
-        logger.warning(
-            "Warning: empty login password is provided, no password will be used for login"
-        )
+    # Check method before handling passwords
+    if config.method == Method.SSH:
+        # login pass
+        if ask_login_pass:
+            login_pass = getpass.getpass(prompt="Enter login password: ")
+        config.ssh_config.password = login_pass or config.ssh_config.password
+        if not login_pass:
+            logger.warning(
+                "Warning: empty login password is provided, no password will be used for login"
+            )
 
-    # sudo pass
-    if ask_sudo_pass:
-        sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
-    config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
-    if not sudo_pass:
-        logger.warning(
-            "Warning: empty sudo password is provided, no password will be used for sudo"
-        )
+        # sudo pass
+        if ask_sudo_pass:
+            sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
+        config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
+        if not sudo_pass:
+            logger.warning(
+                "Warning: empty sudo password is provided, no password will be used for sudo"
+            )
 
-    # opensearch pass
-    if ask_opensearch_pass:
-        opensearch_pass = getpass.getpass(prompt="Enter opensearch password: ")
-    config.opensearch_config.password = (
-        opensearch_pass or config.opensearch_config.password
-    )
-    if not opensearch_pass:
+    elif config.method == Method.OPENSEARCH:
+        # opensearch pass
+        if ask_opensearch_pass:
+            opensearch_pass = getpass.getpass(
+                prompt="Enter opensearch password: "
+            )
+        config.opensearch_config.password = (
+            opensearch_pass or config.opensearch_config.password
+        )
+        if not opensearch_pass:
+            logger.warning(
+                "Warning: empty opensearch password is provided, no password will be used for opensearch"
+            )
+    else:
         logger.warning(
-            "Warning: empty opensearch password is provided, no password will be used for opensearch"
+            f"Unknown method: {config.method}. No password handling performed."
         )
 
 
@@ -171,6 +180,14 @@ def trace_mail_loop(
 
 @cli.command()
 @click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file",
+)
+@click.option(
     "-h", "--start-host", type=str, required=True, help="The starting host"
 )
 @click.option(
@@ -206,6 +223,7 @@ def trace_mail_loop(
     help="The time range, e.g. 1d, 10m",
 )
 def run(
+    config_path,
     start_host,
     key,
     login_pass,
@@ -221,7 +239,9 @@ def run(
     Trace email messages through mail server logs.
     The entrypoiny of this program.
     """
-    config = load_config()
+
+    config = load_config(config_path)
+    init_logger(config)
     handle_passwords(
         config,
         ask_login_pass,
