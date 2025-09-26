@@ -5,7 +5,7 @@ from typing import Literal
 
 import yaml
 
-from .parser import PARSERS
+from mailtrace.parser import PARSERS
 
 
 class Method(Enum):

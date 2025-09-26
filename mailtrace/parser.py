@@ -2,7 +2,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Type
 
-from .models import LogEntry
+from mailtrace.models import LogEntry
 
 
 def check_mail_id_valid(mail_id: str) -> bool:

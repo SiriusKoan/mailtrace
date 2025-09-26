@@ -2,12 +2,12 @@ import getpass
 
 import click
 
-from .aggregator import OpenSearch, SSHHost, do_trace
-from .config import Method, load_config
-from .log import init_logger, logger
-from .models import LogQuery
-from .parser import LogEntry
-from .utils import print_blue, time_validation
+from mailtrace.aggregator import OpenSearch, SSHHost, do_trace
+from mailtrace.config import Method, load_config
+from mailtrace.log import init_logger, logger
+from mailtrace.models import LogQuery
+from mailtrace.parser import LogEntry
+from mailtrace.utils import print_blue, time_validation
 
 
 @click.group()

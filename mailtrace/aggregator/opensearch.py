@@ -4,13 +4,12 @@ from datetime import datetime
 import urllib3
 from opensearchpy import OpenSearch as OpenSearchClient
 
+from mailtrace.aggregator.base import LogAggregator
+from mailtrace.config import Config
+from mailtrace.log import logger
+from mailtrace.models import LogEntry, LogQuery
 from mailtrace.parser import OpensearchParser
-
-from ..config import Config
-from ..log import logger
-from ..models import LogEntry, LogQuery
-from ..utils import time_range_to_timedelta
-from .base import LogAggregator
+from mailtrace.utils import time_range_to_timedelta
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
