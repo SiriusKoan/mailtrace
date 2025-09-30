@@ -15,9 +15,13 @@ ssh_config:
     log_parser: NoSpaceInDatetimeParser
     time_format: "%Y-%m-%dT%H:%M:%S"
   hosts:
-    mail-server.mydomain.com:
+    mx1.mydomain.com:
       log_parser: DayOfWeekParser
       time_format: "%b %d %H:%M:%S"
+    # mx2.mydomain.com will use default host_config
+    backup-mail.mydomain.com:
+      log_parser: NoSpaceInDatetimeParser
+      time_format: "%Y-%m-%d %H:%M:%S"
 opensearch_config:
   host: ""
   port: 9200
@@ -27,3 +31,7 @@ opensearch_config:
   use_ssl: false
   verify_certs: false
   time_zone: "+00:00"
+clusters:
+  mx-cluster:
+    - mx-cluster.mydomain.com
+    - mx-cluster.mydomain.com

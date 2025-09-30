@@ -121,14 +121,14 @@ class Config:
         log_level: Logging level for the application
         ssh_config: SSH connection configuration
         opensearch_config: OpenSearch connection configuration
-        host_config: Default host configuration
-        hosts: Per-host configuration overrides
+        clusters: Dictionary mapping cluster names to lists of host names for HA
     """
 
     method: Method
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     ssh_config: SSHConfig
     opensearch_config: OpenSearchConfig
+    clusters: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         # value checking
@@ -149,6 +149,18 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
+
+    def cluster_to_hosts(self, name: str) -> list[str] | None:
+        """Get list of hosts for a given cluster name.
+
+        Args:
+            name: Name of the cluster
+
+        Returns:
+            List of host names in the cluster, or None if cluster not found
+        """
+
+        return self.clusters.get(name)
 
 
 def load_config(config_path: str | None = None):

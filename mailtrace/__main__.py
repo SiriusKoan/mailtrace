@@ -1,9 +1,11 @@
 import getpass
+from typing import Tuple, Type
 
 import click
 
 from mailtrace.aggregator import OpenSearch, SSHHost, do_trace
-from mailtrace.config import Method, load_config
+from mailtrace.aggregator.base import LogAggregator
+from mailtrace.config import Config, Method, load_config
 from mailtrace.log import init_logger, logger
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -16,14 +18,14 @@ def cli():
 
 
 def handle_passwords(
-    config,
-    ask_login_pass,
-    login_pass,
-    ask_sudo_pass,
-    sudo_pass,
-    ask_opensearch_pass,
-    opensearch_pass,
-):
+    config: Config,
+    ask_login_pass: bool,
+    login_pass: str | None,
+    ask_sudo_pass: bool,
+    sudo_pass: str | None,
+    ask_opensearch_pass: bool,
+    opensearch_pass: str | None,
+) -> None:
     """
     Handles password input and assignment for SSH, sudo, and OpenSearch connections.
 
@@ -78,7 +80,7 @@ def handle_passwords(
         )
 
 
-def select_aggregator(config):
+def select_aggregator(config: Config) -> Type[LogAggregator]:
     """
     Selects and returns the appropriate log aggregator class based on the config method.
 
@@ -100,7 +102,12 @@ def select_aggregator(config):
         raise ValueError(f"Unsupported method: {config.method}")
 
 
-def query_and_print_logs(aggregator, key, time, time_range):
+def query_and_print_logs(
+    aggregator: LogAggregator,
+    key: list[str],
+    time: str,
+    time_range: str,
+) -> dict[str, Tuple[str, list[LogEntry]]]:
     """
     Queries logs using the aggregator and prints logs grouped by mail ID.
 
@@ -112,7 +119,6 @@ def query_and_print_logs(aggregator, key, time, time_range):
 
     Returns:
         logs_by_id: Dictionary mapping mail IDs to lists of LogEntry objects.
-        ids: List of mail IDs found.
     """
 
     base_logs = aggregator.query_by(
@@ -121,20 +127,27 @@ def query_and_print_logs(aggregator, key, time, time_range):
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     if not ids:
         logger.info("No mail IDs found")
-        return {}, ids
-    logs_by_id: dict[str, list[LogEntry]] = {}
+        return {}
+    logs_by_id: dict[str, Tuple[str, list[LogEntry]]] = {}
     for mail_id in ids:
-        logs_by_id[mail_id] = aggregator.query_by(LogQuery(mail_id=mail_id))
+        logs_by_id[mail_id] = (
+            aggregator.host,
+            aggregator.query_by(LogQuery(mail_id=mail_id)),
+        )
         print_blue(f"== Mail ID: {mail_id} ==")
-        for log in logs_by_id[mail_id]:
+        for log in logs_by_id[mail_id][1]:
             print(str(log))
         print_blue("==============\n")
-    return logs_by_id, ids
+    return logs_by_id
 
 
 def trace_mail_loop(
-    trace_id, logs_by_id, aggregator_class, config, aggregator
-):
+    trace_id: str,
+    logs_by_id: dict[str, Tuple[str, list[LogEntry]]],
+    aggregator_class: Type[LogAggregator],
+    config: Config,
+    host: str,
+) -> None:
     """
     Interactively traces mail hops starting from the given trace ID.
 
@@ -143,7 +156,7 @@ def trace_mail_loop(
         logs_by_id: Dictionary mapping mail IDs to lists of LogEntry objects.
         aggregator_class: The aggregator class to instantiate for each hop.
         config: The configuration object for aggregator instantiation.
-        aggregator: The current aggregator instance.
+        host: The current host.
 
     Returns:
         None
@@ -152,6 +165,8 @@ def trace_mail_loop(
     if trace_id not in logs_by_id:
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
+
+    aggregator = aggregator_class(host, config)
 
     while True:
         result = do_trace(trace_id, aggregator)
@@ -172,7 +187,7 @@ def trace_mail_loop(
             break
         elif trace_next_hop_ans == "local":
             trace_id = result.mail_id
-            aggregator = aggregator_class(aggregator.host, config)
+            aggregator = aggregator_class(host, config)
         else:
             trace_id = result.mail_id
             aggregator = aggregator_class(trace_next_hop_ans, config)
@@ -188,7 +203,11 @@ def trace_mail_loop(
     help="Path to configuration file",
 )
 @click.option(
-    "-h", "--start-host", type=str, required=True, help="The starting host"
+    "-h",
+    "--start-host",
+    type=str,
+    required=True,
+    help="The starting host or cluster name",
 )
 @click.option(
     "-k",
@@ -215,25 +234,25 @@ def trace_mail_loop(
 @click.option(
     "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
 )
-@click.option("--time", type=str, required=False, help="The time")
+@click.option("--time", type=str, required=True, help="The time")
 @click.option(
     "--time-range",
     type=str,
-    required=False,
+    required=True,
     help="The time range, e.g. 1d, 10m",
 )
 def run(
-    config_path,
-    start_host,
-    key,
-    login_pass,
-    sudo_pass,
-    opensearch_pass,
-    ask_login_pass,
-    ask_sudo_pass,
-    ask_opensearch_pass,
-    time,
-    time_range,
+    config_path: str | None,
+    start_host: str,
+    key: list[str],
+    login_pass: str | None,
+    sudo_pass: str | None,
+    opensearch_pass: str | None,
+    ask_login_pass: bool,
+    ask_sudo_pass: bool,
+    ask_opensearch_pass: bool,
+    time: str,
+    time_range: str,
 ):
     """
     Trace email messages through mail server logs.
@@ -254,14 +273,31 @@ def run(
     time_validation_results = time_validation(time, time_range)
     if time_validation_results:
         raise ValueError(time_validation_results)
+
     logger.info("Running mailtrace...")
     aggregator_class = select_aggregator(config)
-    aggregator = aggregator_class(start_host, config)
-    logs_by_id, ids = query_and_print_logs(aggregator, key, time, time_range)
-    if not ids:
+    hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
+    logger.info(f"Using hosts: {hosts}")
+    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
+    aggregator: LogAggregator | None = None
+    for host in hosts:
+        print(host)
+        aggregator = aggregator_class(host, config)
+        logs_by_id_from_host = query_and_print_logs(
+            aggregator, key, time, time_range
+        )
+        logs_by_id.update(logs_by_id_from_host)
+    if aggregator is None:
+        logger.error("No aggregator created, exiting...")
         return
     trace_id = input("Enter trace ID: ")
-    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, aggregator)
+    if trace_id not in logs_by_id:
+        logger.info(f"Trace ID {trace_id} not found in logs")
+        return
+    host_for_trace = logs_by_id[trace_id][0]
+    trace_mail_loop(
+        trace_id, logs_by_id, aggregator_class, config, host_for_trace
+    )
 
 
 if __name__ == "__main__":

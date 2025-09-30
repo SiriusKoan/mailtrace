@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
+from mailtrace.config import Config
 from mailtrace.models import LogEntry, LogQuery
 
 
@@ -9,6 +11,18 @@ class LogAggregator(ABC):
     This class defines the interface for log aggregation implementations
     that can query log entries based on specified criteria.
     """
+
+    host: str
+    config: Any
+
+    @abstractmethod
+    def __init__(self, host: str, config: Config):
+        """Initialize the log aggregator with the specified host and configuration.
+
+        Args:
+            host (str): The hostname or identifier for the log source.
+            config (Config): Configuration object containing connection and query settings.
+        """
 
     @abstractmethod
     def query_by(self, query: LogQuery) -> list[LogEntry]:
