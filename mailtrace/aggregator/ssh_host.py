@@ -1,9 +1,16 @@
+"""SSH-based log aggregator for the mailtrace application.
+
+This module provides functionality to connect to remote hosts via SSH,
+execute log queries, and retrieve log entries for email tracing.
+"""
+
 import datetime
 
 import paramiko
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config
+from mailtrace.exceptions import SSHCommandError, SSHConnectionError
 from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
 from mailtrace.parser import PARSERS
@@ -34,18 +41,43 @@ class SSHHost(LogAggregator):
         self.host_config = self.ssh_config.get_host_config(host)
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        if self.ssh_config.private_key:
-            self.client.connect(
-                hostname=self.host,
-                username=self.ssh_config.username,
-                key_filename=self.ssh_config.private_key,
-            )
-        else:
-            self.client.connect(
-                hostname=self.host,
-                username=self.ssh_config.username,
-                password=self.ssh_config.password,
-            )
+
+        try:
+            if self.ssh_config.private_key:
+                logger.debug(f"Connecting to {host} using private key")
+                self.client.connect(
+                    hostname=self.host,
+                    username=self.ssh_config.username,
+                    key_filename=self.ssh_config.private_key,
+                )
+            else:
+                logger.debug(f"Connecting to {host} using password")
+                self.client.connect(
+                    hostname=self.host,
+                    username=self.ssh_config.username,
+                    password=self.ssh_config.password,
+                )
+            logger.info(f"Successfully connected to {host}")
+        except paramiko.AuthenticationException as e:
+            raise SSHConnectionError(
+                f"Authentication failed for {host}",
+                "Check your SSH credentials (username, password, or private key path)",
+            ) from e
+        except paramiko.SSHException as e:
+            raise SSHConnectionError(
+                f"SSH connection failed to {host}: {e}",
+                "Verify the host is reachable and SSH service is running",
+            ) from e
+        except FileNotFoundError as e:
+            raise SSHConnectionError(
+                f"SSH private key file not found: {self.ssh_config.private_key}",
+                "Check the private_key path in your configuration",
+            ) from e
+        except Exception as e:
+            raise SSHConnectionError(
+                f"Failed to connect to {host}: {e}",
+                "Check network connectivity and SSH configuration",
+            ) from e
 
     def _execute_command(
         self, command: str, sudo: bool = False
@@ -140,16 +172,22 @@ class SSHHost(LogAggregator):
 
         Returns:
             List of LogEntry objects matching the query criteria
-
-        Raises:
-            ValueError: If there's an error executing the command on the remote host
         """
-
         logs: str = ""
         command = self._compose_read_command(query)
+
+        files_checked = 0
+        files_found = 0
+
         for log_file in self.host_config.log_files:
+            files_checked += 1
             if not self._check_file_exists(log_file):
+                logger.warning(
+                    f"Log file not found on {self.host}: {log_file}"
+                )
                 continue
+
+            files_found += 1
             complete_command = " ".join(
                 [
                     command,
@@ -157,14 +195,54 @@ class SSHHost(LogAggregator):
                     self._compose_keyword_command(query.keywords),
                 ]
             )
-            stdout, stderr = self._execute_command(complete_command)
-            if stderr:
-                raise ValueError(f"Error executing command: {stderr}")
-            logs += stdout
-        parser = PARSERS[self.host_config.log_parser]()
-        parsed_logs = [
-            parser.parse(line) for line in logs.splitlines() if line
-        ]
+            try:
+                stdout, stderr = self._execute_command(complete_command)
+                if stderr:
+                    # Some commands may output warnings to stderr that aren't fatal
+                    logger.debug(f"Command stderr output: {stderr}")
+                    # Only raise if it looks like a real error
+                    if "permission denied" in stderr.lower():
+                        raise SSHCommandError(
+                            f"Permission denied accessing log file: {log_file}",
+                            "Try enabling sudo in your SSH configuration or check file permissions",
+                        )
+                    elif "no such file" in stderr.lower():
+                        logger.warning(
+                            f"Log file disappeared during query: {log_file}"
+                        )
+                        continue
+                logs += stdout
+            except SSHCommandError:
+                raise
+            except Exception as e:
+                raise SSHCommandError(
+                    f"Error executing command on {self.host}: {e}",
+                    "Check SSH connection and remote system status",
+                ) from e
+
+        if files_checked > 0 and files_found == 0:
+            logger.warning(
+                f"None of the configured log files were found on {self.host}. "
+                f"💡 Check the log_files configuration for this host."
+            )
+
+        if not logs:
+            logger.info(
+                f"No logs found matching the query criteria on {self.host}"
+            )
+            return []
+
+        try:
+            parser = PARSERS[self.host_config.log_parser]()
+            parsed_logs = [
+                parser.parse(line) for line in logs.splitlines() if line
+            ]
+        except Exception as e:
+            raise SSHCommandError(
+                f"Failed to parse log entries from {self.host}",
+                f"Verify that the log_parser '{self.host_config.log_parser}' is correct for your log format",
+            ) from e
+
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
         return parsed_logs

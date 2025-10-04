@@ -1,3 +1,9 @@
+"""Log aggregation utilities for the mailtrace application.
+
+This module provides functions for aggregating log entries from multiple sources,
+tracing email message flows, and coordinating between different aggregator types.
+"""
+
 import re
 from dataclasses import dataclass
 

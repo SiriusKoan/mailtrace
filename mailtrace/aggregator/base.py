@@ -1,3 +1,9 @@
+"""Base classes for log aggregators in the mailtrace application.
+
+This module defines the abstract base class for all log aggregators,
+providing a common interface for querying and retrieving log entries.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Any
 

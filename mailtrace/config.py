@@ -1,3 +1,9 @@
+"""Configuration management for the mailtrace application.
+
+This module handles loading, parsing, and validation of configuration files
+in YAML format, providing structured access to application settings.
+"""
+
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -5,6 +11,7 @@ from typing import Literal
 
 import yaml
 
+from mailtrace.exceptions import ConfigurationError
 from mailtrace.parser import PARSERS
 
 
@@ -31,7 +38,11 @@ class HostConfig:
 
     def __post_init__(self):
         if self.log_parser not in PARSERS:
-            raise ValueError(f"Invalid log parser: {self.log_parser}")
+            available_parsers = ", ".join(PARSERS.keys())
+            raise ConfigurationError(
+                f"Invalid log parser: {self.log_parser}",
+                f"Available parsers are: {available_parsers}",
+            )
 
 
 @dataclass
@@ -56,9 +67,15 @@ class SSHConfig:
 
     def __post_init__(self):
         if not self.username:
-            raise ValueError("Username must be provided")
+            raise ConfigurationError(
+                "SSH username is missing",
+                "Add 'username' field to your SSH configuration in config.yaml",
+            )
         if not self.password and not self.private_key:
-            raise ValueError("Either password or private_key must be provided")
+            raise ConfigurationError(
+                "SSH authentication not configured",
+                "Provide either 'password' or 'private_key' in your SSH configuration",
+            )
         if isinstance(self.host_config, dict):
             self.host_config = HostConfig(**self.host_config)
         for hostname, host_config in self.hosts.items():
@@ -139,9 +156,16 @@ class Config:
             "ERROR",
             "CRITICAL",
         ]:
-            raise ValueError(f"Invalid log level: {self.log_level}")
+            raise ConfigurationError(
+                f"Invalid log level: {self.log_level}",
+                "Valid log levels are: DEBUG, INFO, WARNING, ERROR, CRITICAL",
+            )
         if self.method not in [method.value for method in Method]:
-            raise ValueError(f"Invalid method: {self.method}")
+            valid_methods = ", ".join([m.value for m in Method])
+            raise ConfigurationError(
+                f"Invalid connection method: {self.method}",
+                f"Valid methods are: {valid_methods}",
+            )
         # type checking
         if isinstance(self.method, str):
             self.method = Method(self.method)
@@ -179,10 +203,35 @@ def load_config(config_path: str | None = None):
 
     config_path = config_path or os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-    with open(config_path) as f:
-        config_data = yaml.safe_load(f)
+        raise ConfigurationError(
+            f"Configuration file not found: {config_path}",
+            "Create a config.yaml file (you can use config.yaml.sample as a template) or set the MAILTRACE_CONFIG environment variable",
+        )
+    try:
+        with open(config_path) as f:
+            config_data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        line_info = ""
+        problem_mark = getattr(e, "problem_mark", None)
+        if problem_mark:
+            line_info = f" at line {problem_mark.line}"
+        raise ConfigurationError(
+            f"Invalid YAML syntax in configuration file: {config_path}{line_info}",
+            "Check the YAML syntax and ensure the file is properly formatted",
+        ) from e
+    except Exception as e:
+        raise ConfigurationError(
+            f"Error reading configuration file: {config_path}",
+            "Ensure the file is readable and contains valid YAML",
+        ) from e
+
     try:
         return Config(**config_data)
+    except ConfigurationError:
+        # Re-raise our custom exceptions
+        raise
     except Exception as e:
-        raise ValueError(f"Error loading config: {e}") from e
+        raise ConfigurationError(
+            f"Invalid configuration: {str(e)}",
+            "Check your config.yaml file against config.yaml.sample for proper format",
+        ) from e

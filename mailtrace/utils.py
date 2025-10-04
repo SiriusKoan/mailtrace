@@ -1,8 +1,16 @@
+"""Utility functions for the mailtrace application.
+
+This module provides various utility functions for validation,
+data processing, and common operations used throughout the application.
+"""
+
 import datetime
 import re
 
+from mailtrace.exceptions import ValidationError
 
-def time_validation(time: str, time_range: str) -> str:
+
+def time_validation(time: str, time_range: str) -> None:
     """
     Validate time and time_range parameters.
 
@@ -10,20 +18,28 @@ def time_validation(time: str, time_range: str) -> str:
         time: Time string in format YYYY-MM-DD HH:MM:SS
         time_range: Time range string in format [0-9]+[dhm] (days, hours, minutes)
 
-    Returns:
-        Empty string if validation passes, error message if validation fails
+    Raises:
+        ValidationError: If validation fails
     """
 
     if time:
         time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
         if not time_pattern.match(time):
-            return f"Time {time} should be in format YYYY-MM-DD HH:MM:SS"
+            raise ValidationError(
+                f"Time {time} should be in format YYYY-MM-DD HH:MM:SS",
+                "Use format YYYY-MM-DD HH:MM:SS for time",
+            )
     if time and not time_range or time_range and not time:
-        return "Time and time-range must be provided together"
+        raise ValidationError(
+            "Time and time-range must be provided together",
+            "Provide both time and time_range or neither",
+        )
     time_range_pattern = re.compile(r"^\d+[dhm]$")
     if time_range and not time_range_pattern.match(time_range):
-        return "time_range should be in format [0-9]+[dhm]"
-    return ""
+        raise ValidationError(
+            "time_range should be in format [0-9]+[dhm]",
+            "Use [0-9]+[dhm] for time range (e.g., 1d, 10h, 30m)",
+        )
 
 
 def time_range_to_timedelta(time_range: str) -> datetime.timedelta:
@@ -40,16 +56,37 @@ def time_range_to_timedelta(time_range: str) -> datetime.timedelta:
         datetime.timedelta object representing the time range
 
     Raises:
-        ValueError: If time_range format is invalid
+        ValidationError: If time_range format is invalid
     """
+    # Validate format first
+    if not time_range or len(time_range) < 2:
+        raise ValidationError(
+            f"Invalid time range format: {time_range}",
+            "Time range should be in format [0-9]+[dhm] (e.g., 1d, 10h, 30m)",
+        )
 
-    if time_range.endswith("d"):
-        return datetime.timedelta(days=int(time_range[:-1]))
-    if time_range.endswith("h"):
-        return datetime.timedelta(hours=int(time_range[:-1]))
-    if time_range.endswith("m"):
-        return datetime.timedelta(minutes=int(time_range[:-1]))
-    raise ValueError("Invalid time range")
+    unit = time_range[-1]
+    value_str = time_range[:-1]
+
+    if not value_str.isdigit():
+        raise ValidationError(
+            f"Invalid time range format: {time_range}",
+            "Time range should be in format [0-9]+[dhm] (e.g., 1d, 10h, 30m)",
+        )
+
+    value = int(value_str)
+
+    if unit == "d":
+        return datetime.timedelta(days=value)
+    elif unit == "h":
+        return datetime.timedelta(hours=value)
+    elif unit == "m":
+        return datetime.timedelta(minutes=value)
+    else:
+        raise ValidationError(
+            f"Invalid time range unit: {unit}",
+            "Time range unit must be 'd' (days), 'h' (hours), or 'm' (minutes)",
+        )
 
 
 def print_blue(text: str):

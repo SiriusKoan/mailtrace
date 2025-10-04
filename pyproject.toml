@@ -6,6 +6,7 @@ authors = [{ name = "SiriusKoan", email = "me@siriuskoan.one" }]
 readme = "README.md"
 dependencies = [
     "click>=8.2.1",
+    "colorama>=0.4.6",
     "opensearch-py>=3.0.0",
     "paramiko>=3.5.1",
     "pyyaml>=6.0.2",
@@ -20,6 +21,9 @@ dev = [
     "flake8-pyproject>=1.2.3",
     "isort>=6.0.1",
     "pyright>=1.1.402",
+]
+test = [
+    "pytest>=8.4.2",
 ]
 
 [tool.flake8]

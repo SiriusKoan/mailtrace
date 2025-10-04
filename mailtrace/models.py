@@ -1,3 +1,9 @@
+"""Data models for the mailtrace application.
+
+This module defines the core data structures used throughout the application,
+including log entries, queries, and configuration models.
+"""
+
 from dataclasses import dataclass, field
 from enum import Enum
 

@@ -1,3 +1,9 @@
+"""Command-line interface for the mailtrace application.
+
+This module provides the main CLI entry point and commands for tracing
+email messages through mail server logs using various aggregation methods.
+"""
+
 import getpass
 from typing import Tuple, Type
 
@@ -6,6 +12,11 @@ import click
 from mailtrace.aggregator import OpenSearch, SSHHost, do_trace
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.error_handler import handle_error
+from mailtrace.exceptions import (
+    ConfigurationError,
+    MailtraceError,
+)
 from mailtrace.log import init_logger, logger
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -91,7 +102,7 @@ def select_aggregator(config: Config) -> Type[LogAggregator]:
         The aggregator class (SSHHost or OpenSearch).
 
     Raises:
-        ValueError: If the method is unsupported.
+        ConfigurationError: If the method is unsupported.
     """
 
     if config.method == Method.SSH:
@@ -99,7 +110,10 @@ def select_aggregator(config: Config) -> Type[LogAggregator]:
     elif config.method == Method.OPENSEARCH:
         return OpenSearch
     else:
-        raise ValueError(f"Unsupported method: {config.method}")
+        raise ConfigurationError(
+            f"Unsupported connection method: {config.method}",
+            f"Valid methods are: {', '.join([m.value for m in Method])}",
+        )
 
 
 def query_and_print_logs(
@@ -121,23 +135,34 @@ def query_and_print_logs(
         logs_by_id: Dictionary mapping mail IDs to lists of LogEntry objects.
     """
 
-    base_logs = aggregator.query_by(
-        LogQuery(keywords=key, time=time, time_range=time_range)
-    )
+    try:
+        base_logs = aggregator.query_by(
+            LogQuery(keywords=key, time=time, time_range=time_range)
+        )
+    except MailtraceError as e:
+        handle_error(e)
+        return {}
+
     ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     if not ids:
         logger.info("No mail IDs found")
         return {}
     logs_by_id: dict[str, Tuple[str, list[LogEntry]]] = {}
     for mail_id in ids:
-        logs_by_id[mail_id] = (
-            aggregator.host,
-            aggregator.query_by(LogQuery(mail_id=mail_id)),
-        )
-        print_blue(f"== Mail ID: {mail_id} ==")
-        for log in logs_by_id[mail_id][1]:
-            print(str(log))
-        print_blue("==============\n")
+        try:
+            logs_by_id[mail_id] = (
+                aggregator.host,
+                aggregator.query_by(LogQuery(mail_id=mail_id)),
+            )
+            print_blue(f"== Mail ID: {mail_id} ==")
+            for log in logs_by_id[mail_id][1]:
+                print(str(log))
+            print_blue("==============\n")
+        except MailtraceError as e:
+            logger.warning(
+                f"Failed to retrieve logs for mail ID {mail_id}: {e}"
+            )
+            continue
     return logs_by_id
 
 
@@ -169,7 +194,15 @@ def trace_mail_loop(
     aggregator = aggregator_class(host, config)
 
     while True:
-        result = do_trace(trace_id, aggregator)
+        try:
+            result = do_trace(trace_id, aggregator)
+        except MailtraceError as e:
+            handle_error(e)
+            break
+        except Exception as e:
+            handle_error(e, exit_on_error=True)
+            break
+
         if result is None:
             logger.info("No more hops")
             break
@@ -181,16 +214,28 @@ def trace_mail_loop(
         ).lower()
         if trace_next_hop_ans in ["", "y"]:
             trace_id = result.mail_id
-            aggregator = aggregator_class(result.relay_host, config)
+            try:
+                aggregator = aggregator_class(result.relay_host, config)
+            except MailtraceError as e:
+                handle_error(e)
+                break
         elif trace_next_hop_ans == "n":
             logger.info("Trace stopped")
             break
         elif trace_next_hop_ans == "local":
             trace_id = result.mail_id
-            aggregator = aggregator_class(host, config)
+            try:
+                aggregator = aggregator_class(host, config)
+            except MailtraceError as e:
+                handle_error(e)
+                break
         else:
             trace_id = result.mail_id
-            aggregator = aggregator_class(trace_next_hop_ans, config)
+            try:
+                aggregator = aggregator_class(trace_next_hop_ans, config)
+            except MailtraceError as e:
+                handle_error(e)
+                break
 
 
 @cli.command()
@@ -256,11 +301,17 @@ def run(
 ):
     """
     Trace email messages through mail server logs.
-    The entrypoiny of this program.
+    The entrypoint of this program.
     """
 
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except MailtraceError as e:
+        handle_error(e, exit_on_error=True)
+        return  # Won't reach here due to exit, but helps type checkers
+
     init_logger(config)
+
     handle_passwords(
         config,
         ask_login_pass,
@@ -270,27 +321,60 @@ def run(
         ask_opensearch_pass,
         opensearch_pass,
     )
-    time_validation_results = time_validation(time, time_range)
-    if time_validation_results:
-        raise ValueError(time_validation_results)
+
+    time_validation(time, time_range)
 
     logger.info("Running mailtrace...")
-    aggregator_class = select_aggregator(config)
+
+    try:
+        aggregator_class = select_aggregator(config)
+    except ConfigurationError as e:
+        handle_error(e, exit_on_error=True)
+        return
+
     hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
     logger.info(f"Using hosts: {hosts}")
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
     aggregator: LogAggregator | None = None
+
     for host in hosts:
         print(host)
-        aggregator = aggregator_class(host, config)
-        logs_by_id_from_host = query_and_print_logs(
-            aggregator, key, time, time_range
-        )
-        logs_by_id.update(logs_by_id_from_host)
+        try:
+            aggregator = aggregator_class(host, config)
+            logs_by_id_from_host = query_and_print_logs(
+                aggregator, key, time, time_range
+            )
+            logs_by_id.update(logs_by_id_from_host)
+        except MailtraceError as e:
+            handle_error(e)
+            continue
+        except Exception as e:
+            handle_error(e)
+            continue
+
     if aggregator is None:
-        logger.error("No aggregator created, exiting...")
+        handle_error(
+            ConfigurationError(
+                "No aggregator could be created. All hosts failed.",
+                "Check your connection settings and host availability",
+            ),
+            exit_on_error=True,
+        )
         return
-    trace_id = input("Enter trace ID: ")
+
+    if not logs_by_id:
+        logger.warning("No logs found matching the query criteria on any host")
+        logger.info(
+            "Suggestion: Try adjusting your search keywords or time range"
+        )
+        return
+
+    try:
+        trace_id = input("Enter trace ID: ")
+    except (KeyboardInterrupt, EOFError):
+        logger.info("\nTrace cancelled by user")
+        return
+
     if trace_id not in logs_by_id:
         logger.info(f"Trace ID {trace_id} not found in logs")
         return

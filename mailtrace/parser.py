@@ -1,7 +1,14 @@
+"""Log parsing utilities for the mailtrace application.
+
+This module provides parsers for different mail server log formats,
+converting raw log lines into structured LogEntry objects.
+"""
+
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Type
 
+from mailtrace.exceptions import LogParsingError
 from mailtrace.models import LogEntry
 
 
@@ -52,18 +59,28 @@ class NoSpaceInDatetimeParser(LogParser):
         Returns:
             LogEntry: The parsed log entry
         """
-
-        log_split = log.split(" ", 4)
-        datetime = log_split[0]
-        hostname = log_split[1]
-        service = log_split[2].split("[")[0]
-        mail_id = (
-            log_split[3][:-1]
-            if check_mail_id_valid(log_split[3][:-1])
-            else None
-        )
-        message = log_split[4]
-        return LogEntry(datetime, hostname, service, mail_id, message)
+        try:
+            log_split = log.split(" ", 4)
+            if len(log_split) < 5:
+                raise LogParsingError(
+                    f"Invalid log format: expected at least 5 fields, got {len(log_split)}",
+                    "Check that your log_parser setting matches your actual log format",
+                )
+            datetime = log_split[0]
+            hostname = log_split[1]
+            service = log_split[2].split("[")[0]
+            mail_id = (
+                log_split[3][:-1]
+                if check_mail_id_valid(log_split[3][:-1])
+                else None
+            )
+            message = log_split[4]
+            return LogEntry(datetime, hostname, service, mail_id, message)
+        except IndexError as e:
+            raise LogParsingError(
+                f"Failed to parse log entry with NoSpaceInDatetimeParser: {e}",
+                "Verify your log format matches: YYYY-MM-DDTHH:MM:SS hostname service[pid]: mail_id: message",
+            ) from e
 
 
 class DayOfWeekParser(LogParser):
@@ -83,18 +100,28 @@ class DayOfWeekParser(LogParser):
         Returns:
             LogEntry: The parsed log entry
         """
-
-        log_split = log.split(" ", 6)
-        datetime = " ".join(log_split[:3])
-        hostname = log_split[3]
-        service = log_split[4].split("[")[0]
-        mail_id = (
-            log_split[5][:-1]
-            if check_mail_id_valid(log_split[5][:-1])
-            else None
-        )
-        message = log_split[6]
-        return LogEntry(datetime, hostname, service, mail_id, message)
+        try:
+            log_split = log.split(" ", 6)
+            if len(log_split) < 7:
+                raise LogParsingError(
+                    f"Invalid log format: expected at least 7 fields, got {len(log_split)}",
+                    "Check that your log_parser setting matches your actual log format",
+                )
+            datetime = " ".join(log_split[:3])
+            hostname = log_split[3]
+            service = log_split[4].split("[")[0]
+            mail_id = (
+                log_split[5][:-1]
+                if check_mail_id_valid(log_split[5][:-1])
+                else None
+            )
+            message = log_split[6]
+            return LogEntry(datetime, hostname, service, mail_id, message)
+        except IndexError as e:
+            raise LogParsingError(
+                f"Failed to parse log entry with DayOfWeekParser: {e}",
+                "Verify your log format matches: Mon DD HH:MM:SS hostname service[pid]: mail_id: message",
+            ) from e
 
 
 class OpensearchParser(LogParser):
@@ -125,23 +152,33 @@ class OpensearchParser(LogParser):
         Returns:
             LogEntry: The parsed log entry
         """
-
-        log = log["_source"]
-        datetime = log["@timestamp"]
-        hostname = log["log"]["syslog"]["hostname"]
-        service = log["log"]["syslog"]["appname"]
-        _mail_id_candidate = log["message"].split(":")[0]
-        mail_id = (
-            _mail_id_candidate
-            if check_mail_id_valid(_mail_id_candidate)
-            else None
-        )
-        message = (
-            " ".join(log["message"].split()[1:])
-            if check_mail_id_valid(_mail_id_candidate)
-            else log["message"]
-        )
-        return LogEntry(datetime, hostname, service, mail_id, message)
+        try:
+            log = log["_source"]
+            datetime = log["@timestamp"]
+            hostname = log["log"]["syslog"]["hostname"]
+            service = log["log"]["syslog"]["appname"]
+            _mail_id_candidate = log["message"].split(":")[0]
+            mail_id = (
+                _mail_id_candidate
+                if check_mail_id_valid(_mail_id_candidate)
+                else None
+            )
+            message = (
+                " ".join(log["message"].split()[1:])
+                if check_mail_id_valid(_mail_id_candidate)
+                else log["message"]
+            )
+            return LogEntry(datetime, hostname, service, mail_id, message)
+        except KeyError as e:
+            raise LogParsingError(
+                f"Missing required field in OpenSearch log: {e}",
+                "Verify your OpenSearch index contains the expected fields: @timestamp, log.syslog.hostname, log.syslog.appname, message",
+            ) from e
+        except Exception as e:
+            raise LogParsingError(
+                f"Failed to parse OpenSearch log entry: {e}",
+                "Check that your OpenSearch document structure matches the expected format",
+            ) from e
 
 
 PARSERS: dict[str, Type[LogParser]] = {
