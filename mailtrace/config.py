@@ -194,6 +194,24 @@ def load_config(config_path: str | None = None):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path) as f:
         config_data = yaml.safe_load(f)
+
+    # Load passwords from environment variables if not provided in config
+    if "opensearch_config" in config_data and not config_data[
+        "opensearch_config"
+    ].get("password"):
+        opensearch_password = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD")
+        if opensearch_password:
+            config_data["opensearch_config"]["password"] = opensearch_password
+    if "ssh_config" in config_data:
+        if not config_data["ssh_config"].get("password"):
+            ssh_password = os.getenv("MAILTRACE_SSH_PASSWORD")
+            if ssh_password:
+                config_data["ssh_config"]["password"] = ssh_password
+        if not config_data["ssh_config"].get("sudo_pass"):
+            sudo_password = os.getenv("MAILTRACE_SUDO_PASSWORD")
+            if sudo_password:
+                config_data["ssh_config"]["sudo_pass"] = sudo_password
+
     try:
         return Config(**config_data)
     except Exception as e:
