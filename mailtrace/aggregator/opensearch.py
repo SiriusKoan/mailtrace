@@ -53,6 +53,7 @@ class OpenSearch(LogAggregator):
             http_auth=(self.config.username, self.config.password),
             use_ssl=self.config.use_ssl,
             verify_certs=self.config.verify_certs,
+            timeout=self.config.timeout,
         )
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:

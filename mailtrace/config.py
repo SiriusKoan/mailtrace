@@ -51,6 +51,7 @@ class SSHConfig:
     private_key: str = ""
     sudo_pass: str = ""
     sudo: bool = True
+    timeout: int = 10
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
@@ -110,6 +111,7 @@ class OpenSearchConfig:
     verify_certs: bool = False
     index: str = ""
     time_zone: str = "+00:00"
+    timeout: int = 10
 
 
 @dataclass
