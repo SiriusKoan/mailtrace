@@ -78,6 +78,8 @@
               venvShellHook
               pip
               python.pkgs.uv
+              black
+              isort
 
               # Add whatever else you'd like here.
               # pkgs.basedpyright

@@ -23,10 +23,14 @@ ssh_config:
       log_parser: NoSpaceInDatetimeParser
       time_format: "%Y-%m-%d %H:%M:%S"
 opensearch_config:
-  host: ""
-  port: 9200
-  username: username
+  host: "localhost" # OpenSearch host address
+  port: 9200 # OpenSearch port number
+  username: "admin" # Username for OpenSearch authentication
+  # Password for OpenSearch authentication. Can also be loaded from MAILTRACE_OPENSEARCH_PASSWORD environment variable.
   password: ""
+  index: "mailtrace-logs-*" # OpenSearch index name or pattern for log storage
+  use_ssl: true # Whether to use SSL/TLS encryption
+  verify_certs: false # Whether to verify SSL certificates (set to true in production)
   time_zone: "+00:00" # Timezone offset for log timestamps
   timeout: 10 # Connection timeout in seconds
   mapping: # Mapping of application field names to OpenSearch field names
