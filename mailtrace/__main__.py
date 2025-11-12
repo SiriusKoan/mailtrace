@@ -64,7 +64,9 @@ def handle_passwords(
     elif config.method == Method.OPENSEARCH:
         # opensearch pass
         if ask_opensearch_pass:
-            opensearch_pass = getpass.getpass(prompt="Enter opensearch password: ")
+            opensearch_pass = getpass.getpass(
+                prompt="Enter opensearch password: "
+            )
         config.opensearch_config.password = (
             opensearch_pass or config.opensearch_config.password
         )
@@ -215,8 +217,12 @@ def trace_mail_loop(
     help="The keyword, can be email address, domain, etc.",
     multiple=True,
 )
-@click.option("--login-pass", type=str, required=False, help="The login password")
-@click.option("--sudo-pass", type=str, required=False, help="The sudo password")
+@click.option(
+    "--login-pass", type=str, required=False, help="The login password"
+)
+@click.option(
+    "--sudo-pass", type=str, required=False, help="The sudo password"
+)
 @click.option(
     "--opensearch-pass",
     type=str,
