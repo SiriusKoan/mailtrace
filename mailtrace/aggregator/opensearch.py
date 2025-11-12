@@ -117,7 +117,13 @@ class OpenSearch(LogAggregator):
             index=self.config.index,
             body=opensearch_query,
         )
-        return [
-            OpensearchParser().parse(hit)
-            for hit in search_results["hits"]["hits"]
+
+        parser = OpensearchParser(mapping=self.config.mapping)
+        parsed_log_entries = [
+            parser.parse(hit) for hit in search_results["hits"]["hits"]
         ]
+        logger.debug(
+            f"Found {len(parsed_log_entries)} log entries, {parsed_log_entries}"
+        )
+
+        return parsed_log_entries
