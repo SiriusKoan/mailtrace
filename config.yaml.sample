@@ -28,10 +28,14 @@ opensearch_config:
   port: 9200
   username: username
   password: ""
-  index: ""
-  use_ssl: false
-  verify_certs: false
-  time_zone: "+00:00"
+  time_zone: "+00:00" # Timezone offset for log timestamps
+  timeout: 10 # Connection timeout in seconds
+  mapping: # Mapping of application field names to OpenSearch field names
+    facility: "log.syslog.facility.name"
+    hostname: "host.name"
+    message: "message"
+    timestamp: "@timestamp"
+    service: "log.syslog.appname"
 clusters:
   mx-cluster:
     - mx-cluster.mydomain.com

@@ -2,7 +2,20 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Type
 
+
 from mailtrace.models import LogEntry
+
+
+def _get_nested_value(d: dict, key: str) -> Any:
+    """
+    Retrieve a value from a nested dictionary using a dot-separated key.
+    """
+    for k in key.split("."):
+        if isinstance(d, dict):
+            d = d.get(k)
+        else:
+            return None
+    return d
 
 
 def check_mail_id_valid(mail_id: str) -> bool:
@@ -115,6 +128,9 @@ class OpensearchParser(LogParser):
     }
     """
 
+    def __init__(self, mapping: dict[str, str]):
+        self.mapping = mapping
+
     def parse(self, log: dict) -> LogEntry:
         """
         Parse a log entry from Opensearch/Elasticsearch format.
@@ -126,20 +142,25 @@ class OpensearchParser(LogParser):
             LogEntry: The parsed log entry
         """
 
-        log = log["_source"]
-        datetime = log["@timestamp"]
-        hostname = log["log"]["syslog"]["hostname"]
-        service = log["log"]["syslog"]["appname"]
-        _mail_id_candidate = log["message"].split(":")[0]
+        log_source = log["_source"]
+        datetime = _get_nested_value(log_source, self.mapping["timestamp"])
+        hostname = _get_nested_value(log_source, self.mapping["hostname"])
+        service = _get_nested_value(log_source, self.mapping["service"])
+        message_content = _get_nested_value(
+            log_source, self.mapping["message"]
+        )
+        if not message_content:
+            message_content = ""
+        _mail_id_candidate = message_content.split(":")[0]
         mail_id = (
             _mail_id_candidate
             if check_mail_id_valid(_mail_id_candidate)
             else None
         )
         message = (
-            " ".join(log["message"].split()[1:])
-            if check_mail_id_valid(_mail_id_candidate)
-            else log["message"]
+            " ".join(message_content.split()[1:])
+            if mail_id
+            else message_content
         )
         return LogEntry(datetime, hostname, service, mail_id, message)
 

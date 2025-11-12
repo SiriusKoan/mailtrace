@@ -101,6 +101,7 @@ class OpenSearchConfig:
         verify_certs: Whether to verify SSL certificates
         index: OpenSearch index name for log storage
         time_zone: Timezone offset for log timestamps
+        mapping: Mapping of application field names to OpenSearch field names
     """
 
     host: str = ""
@@ -112,6 +113,15 @@ class OpenSearchConfig:
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
+    mapping: dict[str, str] = field(
+        default_factory=lambda: {
+            "facility": "log.syslog.facility.name",
+            "hostname": "host.name",
+            "message": "message",
+            "timestamp": "@timestamp",
+            "service": "log.syslog.appname",
+        }
+    )
 
 
 @dataclass
