@@ -26,17 +26,6 @@ class OpenSearch(LogAggregator):
         _query (dict): Base query template for OpenSearch requests.
     """
 
-    _query = {
-        "query": {
-            "bool": {
-                "must": [
-                    {"match": {"log.syslog.facility.name": "mail"}},
-                ]
-            }
-        },
-        "size": 1000,
-    }
-
     def __init__(self, host: str, config: Config):
         """
         Initialize the OpenSearch log aggregator.
@@ -55,6 +44,16 @@ class OpenSearch(LogAggregator):
             verify_certs=self.config.verify_certs,
             timeout=self.config.timeout,
         )
+        self._query = {
+            "query": {"bool": {"must": []}},
+            "size": 1000,
+        }
+
+        facility_field = self.config.mapping.get("facility")
+        if facility_field:
+            self._query["query"]["bool"]["must"].append(
+                {"match": {facility_field: "mail"}}
+            )
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         """
@@ -74,7 +73,7 @@ class OpenSearch(LogAggregator):
 
         opensearch_query = copy.deepcopy(self._query)
         opensearch_query["query"]["bool"]["must"].append(
-            {"match": {"host.name": self.host}}
+            {"match": {self.config.mapping["hostname"]: self.host}}
         )
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
@@ -84,7 +83,7 @@ class OpenSearch(LogAggregator):
             opensearch_query["query"]["bool"]["must"].append(
                 {
                     "range": {
-                        "@timestamp": {
+                        self.config.mapping["timestamp"]: {
                             "gte": start_time,
                             "lte": end_time,
                             "time_zone": self.config.time_zone,
@@ -95,11 +94,23 @@ class OpenSearch(LogAggregator):
         if query.keywords:
             for keyword in query.keywords:
                 opensearch_query["query"]["bool"]["must"].append(
-                    {"wildcard": {"message": f"*{keyword.lower()}*"}}
+                    {
+                        "wildcard": {
+                            self.config.mapping[
+                                "message"
+                            ]: f"*{keyword.lower()}*"
+                        }
+                    }
                 )
         if query.mail_id:
             opensearch_query["query"]["bool"]["must"].append(
-                {"wildcard": {"message": f"{query.mail_id.lower()}*"}}
+                {
+                    "wildcard": {
+                        self.config.mapping[
+                            "message"
+                        ]: f"{query.mail_id.lower()}*"
+                    }
+                }
             )
         logger.debug(f"Query: {opensearch_query}")
         search_results = self.client.search(
