@@ -134,6 +134,7 @@ class Config:
         ssh_config: SSH connection configuration
         opensearch_config: OpenSearch connection configuration
         clusters: Dictionary mapping cluster names to lists of host names for HA
+        domain: Domain name for hostname resolution
     """
 
     method: Method
@@ -141,6 +142,7 @@ class Config:
     ssh_config: SSHConfig
     opensearch_config: OpenSearchConfig
     clusters: dict[str, list[str]] = field(default_factory=dict)
+    domain: str = ""
 
     def __post_init__(self):
         # value checking
