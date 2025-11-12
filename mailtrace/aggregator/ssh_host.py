@@ -39,12 +39,14 @@ class SSHHost(LogAggregator):
                 hostname=self.host,
                 username=self.ssh_config.username,
                 key_filename=self.ssh_config.private_key,
+                timeout=self.ssh_config.timeout,
             )
         else:
             self.client.connect(
                 hostname=self.host,
                 username=self.ssh_config.username,
                 password=self.ssh_config.password,
+                timeout=self.ssh_config.timeout,
             )
 
     def _execute_command(
