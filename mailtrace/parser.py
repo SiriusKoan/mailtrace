@@ -141,13 +141,10 @@ class OpensearchParser(LogParser):
             LogEntry: The parsed log entry
         """
 
-        log_source = log["_source"]
-        datetime = _get_nested_value(log_source, self.mapping["timestamp"])
-        hostname = _get_nested_value(log_source, self.mapping["hostname"])
-        service = _get_nested_value(log_source, self.mapping["service"])
-        message_content = _get_nested_value(
-            log_source, self.mapping["message"]
-        )
+        datetime = _get_nested_value(log, self.mapping["timestamp"])
+        hostname = _get_nested_value(log, self.mapping["hostname"])
+        service = _get_nested_value(log, self.mapping["service"])
+        message_content = _get_nested_value(log, self.mapping["message"])
         if not message_content:
             message_content = ""
         _mail_id_candidate = message_content.split(":")[0]
