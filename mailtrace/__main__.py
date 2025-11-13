@@ -6,6 +6,7 @@ import click
 from mailtrace.aggregator import OpenSearch, SSHHost, do_trace
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.graph import MailGraph
 from mailtrace.log import init_logger, logger
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -15,6 +16,166 @@ from mailtrace.utils import print_blue, time_validation
 @click.group()
 def cli():
     pass
+
+
+def trace_mail_flow(
+    trace_id: str,
+    aggregator_class: Type[LogAggregator],
+    config: Config,
+    host: str,
+    graph: MailGraph,
+) -> None:
+    """
+    Automatically traces the entire mail flow and builds a graph.
+
+    Args:
+        trace_id: The initial mail ID to trace.
+        aggregator_class: The aggregator class to instantiate for each hop.
+        config: The configuration object for aggregator instantiation.
+        host: The current host.
+        graph: The MailGraph instance to build upon.
+    """
+    aggregator = aggregator_class(host, config)
+    current_host = host
+
+    while True:
+        result = do_trace(trace_id, aggregator)
+        if result is None:
+            aggregator = aggregator_class("", config)
+            result = do_trace(trace_id, aggregator)
+            if result is None:
+                logger.info(f"No more hops for {trace_id}")
+                break
+
+        logger.info(
+            f"Relayed from {current_host} to {result.relay_host} with new ID {result.mail_id}"
+        )
+        graph.add_hop(
+            from_node=f"{current_host}\n{trace_id}",
+            to_node=f"{result.relay_host}\n{result.mail_id}",
+            label=f"{result.smtp_code}",
+        )
+
+        trace_id = result.mail_id
+        current_host = result.relay_host
+        aggregator = aggregator_class(current_host, config)
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file",
+)
+@click.option(
+    "-h",
+    "--start-host",
+    type=str,
+    required=True,
+    help="The starting host or cluster name",
+)
+@click.option(
+    "-k",
+    "--key",
+    type=str,
+    required=True,
+    help="The keyword, can be email address, domain, etc.",
+    multiple=True,
+)
+@click.option(
+    "--login-pass", type=str, required=False, help="The login password"
+)
+@click.option(
+    "--sudo-pass", type=str, required=False, help="The sudo password"
+)
+@click.option(
+    "--opensearch-pass",
+    type=str,
+    required=False,
+    help="The opensearch password",
+)
+@click.option("--ask-login-pass", is_flag=True, help="Ask for login password")
+@click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password")
+@click.option(
+    "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
+)
+@click.option("--time", type=str, required=True, help="The time")
+@click.option(
+    "--time-range",
+    type=str,
+    required=True,
+    help="The time range, e.g. 1d, 10m",
+)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(),
+    required=True,
+    help="Output file for the Graphviz dot graph",
+)
+def trace(
+    config_path: str | None,
+    start_host: str,
+    key: list[str],
+    login_pass: str | None,
+    sudo_pass: str | None,
+    opensearch_pass: str | None,
+    ask_login_pass: bool,
+    ask_sudo_pass: bool,
+    ask_opensearch_pass: bool,
+    time: str,
+    time_range: str,
+    output: str,
+):
+    """
+    Trace email messages and generate a Graphviz dot file.
+    """
+    config = load_config(config_path)
+    init_logger(config)
+    handle_passwords(
+        config,
+        ask_login_pass,
+        login_pass,
+        ask_sudo_pass,
+        sudo_pass,
+        ask_opensearch_pass,
+        opensearch_pass,
+    )
+    time_validation_results = time_validation(time, time_range)
+    if time_validation_results:
+        raise ValueError(time_validation_results)
+
+    logger.info("Running mailtrace...")
+    aggregator_class = select_aggregator(config)
+    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
+    if config.method == Method.OPENSEARCH:
+        aggregator = aggregator_class(start_host, config)
+        logs_by_id = query_and_print_logs(aggregator, key, time, time_range)
+    elif config.method == Method.SSH:
+        hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
+        logger.info(f"Using hosts: {hosts}")
+        for host in hosts:
+            aggregator = aggregator_class(host, config)
+            logs_by_id_from_host = query_and_print_logs(
+                aggregator, key, time, time_range
+            )
+            logs_by_id.update(logs_by_id_from_host)
+
+    if not logs_by_id:
+        logger.info("No mail IDs found to trace.")
+        return
+
+    graph = MailGraph()
+    for trace_id, (host_for_trace, _) in logs_by_id.items():
+        trace_mail_flow(
+            trace_id, aggregator_class, config, host_for_trace, graph
+        )
+
+    graph.to_dot(output)
+    logger.info(f"Graph saved to {output}")
 
 
 def handle_passwords(
