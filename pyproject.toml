@@ -7,6 +7,7 @@ readme = "README.md"
 dependencies = [
     "click>=8.2.1",
     "graphviz>=0.21",
+    "mcp[cli]>=1.21.0",
     "networkx>=3.5",
     "opensearch-py>=3.0.0",
     "paramiko>=3.5.1",
