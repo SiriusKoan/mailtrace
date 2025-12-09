@@ -64,13 +64,11 @@ def handle_passwords(
     elif config.method == Method.OPENSEARCH:
         # opensearch pass
         if ask_opensearch_pass:
-            opensearch_pass = getpass.getpass(
-                prompt="Enter opensearch password: "
-            )
+            opensearch_pass = getpass.getpass(prompt="Enter opensearch password: ")
         config.opensearch_config.password = (
             opensearch_pass or config.opensearch_config.password
         )
-        if not opensearch_pass:
+        if not config.opensearch_config.password:
             logger.warning(
                 "Warning: empty opensearch password is provided, no password will be used for opensearch"
             )
@@ -171,8 +169,12 @@ def trace_mail_loop(
     while True:
         result = do_trace(trace_id, aggregator)
         if result is None:
-            logger.info("No more hops")
-            break
+            # check one more time without specify host(some machine may not set reverse DNS properly)
+            aggregator = aggregator_class("", config)
+            result = do_trace(trace_id, aggregator)
+            if result is None:
+                logger.info("No more hops")
+                break
         print_blue(
             f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) with new ID {result.mail_id} (SMTP {result.smtp_code})"
         )
@@ -217,12 +219,8 @@ def trace_mail_loop(
     help="The keyword, can be email address, domain, etc.",
     multiple=True,
 )
-@click.option(
-    "--login-pass", type=str, required=False, help="The login password"
-)
-@click.option(
-    "--sudo-pass", type=str, required=False, help="The sudo password"
-)
+@click.option("--login-pass", type=str, required=False, help="The login password")
+@click.option("--sudo-pass", type=str, required=False, help="The sudo password")
 @click.option(
     "--opensearch-pass",
     type=str,
@@ -231,9 +229,7 @@ def trace_mail_loop(
 )
 @click.option("--ask-login-pass", is_flag=True, help="Ask for login password")
 @click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password")
-@click.option(
-    "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
-)
+@click.option("--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password")
 @click.option("--time", type=str, required=True, help="The time")
 @click.option(
     "--time-range",
@@ -276,28 +272,31 @@ def run(
 
     logger.info("Running mailtrace...")
     aggregator_class = select_aggregator(config)
-    hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
-    logger.info(f"Using hosts: {hosts}")
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    aggregator: LogAggregator | None = None
-    for host in hosts:
-        print(host)
-        aggregator = aggregator_class(host, config)
-        logs_by_id_from_host = query_and_print_logs(
-            aggregator, key, time, time_range
-        )
-        logs_by_id.update(logs_by_id_from_host)
-    if aggregator is None:
-        logger.error("No aggregator created, exiting...")
+    if config.method == Method.OPENSEARCH:
+        aggregator = aggregator_class(start_host, config)
+        logs_by_id = query_and_print_logs(aggregator, key, time, time_range)
+    elif config.method == Method.SSH:
+        hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
+        logger.info(f"Using hosts: {hosts}")
+        for host in hosts:
+            print(host)
+            aggregator = aggregator_class(host, config)
+            logs_by_id_from_host = query_and_print_logs(
+                aggregator, key, time, time_range
+            )
+            logs_by_id.update(logs_by_id_from_host)
+
+    if not logs_by_id:
+        logger.info("No mail IDs found to trace.")
         return
+
     trace_id = input("Enter trace ID: ")
     if trace_id not in logs_by_id:
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
     host_for_trace = logs_by_id[trace_id][0]
-    trace_mail_loop(
-        trace_id, logs_by_id, aggregator_class, config, host_for_trace
-    )
+    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, host_for_trace)
 
 
 if __name__ == "__main__":

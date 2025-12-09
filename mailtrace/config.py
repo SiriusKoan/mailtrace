@@ -51,6 +51,7 @@ class SSHConfig:
     private_key: str = ""
     sudo_pass: str = ""
     sudo: bool = True
+    timeout: int = 10
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
@@ -82,9 +83,27 @@ class SSHConfig:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format
-            or self.host_config.time_format,
+            time_format=host_config.time_format or self.host_config.time_format,
         )
+
+
+@dataclass
+class OpenSearchMappingConfig:
+    """Mapping of application field names to OpenSearch field names.
+
+    Attributes:
+        facility: OpenSearch field for log facility
+        hostname: OpenSearch field for host name
+        message: OpenSearch field for log message
+        timestamp: OpenSearch field for log timestamp
+        service: OpenSearch field for service name
+    """
+
+    facility: str = "log.syslog.facility.name"
+    hostname: str = "host.name"
+    message: str = "message"
+    timestamp: str = "@timestamp"
+    service: str = "log.syslog.appname"
 
 
 @dataclass
@@ -100,6 +119,7 @@ class OpenSearchConfig:
         verify_certs: Whether to verify SSL certificates
         index: OpenSearch index name for log storage
         time_zone: Timezone offset for log timestamps
+        mapping: Mapping of application field names to OpenSearch field names
     """
 
     host: str = ""
@@ -110,6 +130,8 @@ class OpenSearchConfig:
     verify_certs: bool = False
     index: str = ""
     time_zone: str = "+00:00"
+    timeout: int = 10
+    mapping: OpenSearchMappingConfig = field(default_factory=OpenSearchMappingConfig)
 
 
 @dataclass
@@ -122,6 +144,7 @@ class Config:
         ssh_config: SSH connection configuration
         opensearch_config: OpenSearch connection configuration
         clusters: Dictionary mapping cluster names to lists of host names for HA
+        domain: Domain name for hostname resolution
     """
 
     method: Method
@@ -129,6 +152,7 @@ class Config:
     ssh_config: SSHConfig
     opensearch_config: OpenSearchConfig
     clusters: dict[str, list[str]] = field(default_factory=dict)
+    domain: str = ""
 
     def __post_init__(self):
         # value checking
@@ -182,6 +206,24 @@ def load_config(config_path: str | None = None):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path) as f:
         config_data = yaml.safe_load(f)
+
+    # Load passwords from environment variables if not provided in config
+    if "opensearch_config" in config_data and not config_data["opensearch_config"].get(
+        "password"
+    ):
+        opensearch_password = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD")
+        if opensearch_password:
+            config_data["opensearch_config"]["password"] = opensearch_password
+    if "ssh_config" in config_data:
+        if not config_data["ssh_config"].get("password"):
+            ssh_password = os.getenv("MAILTRACE_SSH_PASSWORD")
+            if ssh_password:
+                config_data["ssh_config"]["password"] = ssh_password
+        if not config_data["ssh_config"].get("sudo_pass"):
+            sudo_password = os.getenv("MAILTRACE_SUDO_PASSWORD")
+            if sudo_password:
+                config_data["ssh_config"]["sudo_pass"] = sudo_password
+
     try:
         return Config(**config_data)
     except Exception as e:

@@ -7,11 +7,9 @@ from mailtrace.aggregator.ssh_host import SSHHost
 from mailtrace.log import logger
 from mailtrace.models import LogQuery, PostfixServiceType
 
-_SUCCESS_RE = re.compile(r".*([0-9]{3})\s2\.0\.0.*")
+_SUCCESS_RE = re.compile(r".*([0-9]{3})\s.*")
 _QUEUED_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+).*")
-_RELAY_RE = re.compile(
-    r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*"
-)
+_RELAY_RE = re.compile(r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*")
 
 
 @dataclass

@@ -1,15 +1,15 @@
-import copy
 from datetime import datetime
 
 import urllib3
 from opensearchpy import OpenSearch as OpenSearchClient
+from opensearchpy.helpers.search import Search
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config
 from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
 from mailtrace.parser import OpensearchParser
-from mailtrace.utils import time_range_to_timedelta
+from mailtrace.utils import get_hosts, time_range_to_timedelta
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -26,33 +26,24 @@ class OpenSearch(LogAggregator):
         _query (dict): Base query template for OpenSearch requests.
     """
 
-    _query = {
-        "query": {
-            "bool": {
-                "must": [
-                    {"match": {"log.syslog.facility.name": "mail"}},
-                ]
-            }
-        },
-        "size": 1000,
-    }
-
     def __init__(self, host: str, config: Config):
         """
         Initialize the OpenSearch log aggregator.
 
         Args:
-            host (str): The hostname to filter logs for.
+            host (str): The hostname or cluster name to filter logs for.
             config (Config): Configuration object.
         """
 
         self.host = host
         self.config = config.opensearch_config
+        self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
         self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
             use_ssl=self.config.use_ssl,
             verify_certs=self.config.verify_certs,
+            timeout=self.config.timeout,
         )
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
@@ -71,41 +62,51 @@ class OpenSearch(LogAggregator):
             list[LogEntry]: List of parsed log entries matching the query criteria.
         """
 
-        opensearch_query = copy.deepcopy(self._query)
-        opensearch_query["query"]["bool"]["must"].append(
-            {"match": {"host.name": self.host}}
-        )
+        search = Search(using=self.client, index=self.config.index)
+        search = search.extra(size=1000)
+
+        facility_field = self.config.mapping.get("facility")
+        if facility_field:
+            search = search.query("match", **{facility_field: "mail"})
+
+        search = search.query("terms", **{self.config.mapping["hostname"]: self.hosts})
+
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
             time_range = time_range_to_timedelta(query.time_range)
             start_time = (time - time_range).strftime("%Y-%m-%dT%H:%M:%S")
             end_time = (time + time_range).strftime("%Y-%m-%dT%H:%M:%S")
-            opensearch_query["query"]["bool"]["must"].append(
-                {
-                    "range": {
-                        "@timestamp": {
-                            "gte": start_time,
-                            "lte": end_time,
-                            "time_zone": self.config.time_zone,
-                        }
+            search = search.filter(
+                "range",
+                **{
+                    self.config.mapping["timestamp"]: {
+                        "gte": start_time,
+                        "lte": end_time,
+                        "time_zone": self.config.time_zone,
                     }
-                }
+                },
             )
+
         if query.keywords:
             for keyword in query.keywords:
-                opensearch_query["query"]["bool"]["must"].append(
-                    {"wildcard": {"message": f"*{keyword.lower()}*"}}
+                search = search.query(
+                    "wildcard",
+                    **{self.config.mapping["message"]: f"*{keyword.lower()}*"},
                 )
+
         if query.mail_id:
-            opensearch_query["query"]["bool"]["must"].append(
-                {"wildcard": {"message": f"{query.mail_id.lower()}*"}}
+            search = search.query(
+                "wildcard",
+                **{self.config.mapping["message"]: f"{query.mail_id.lower()}*"},
             )
-        logger.debug(f"Query: {opensearch_query}")
-        search_results = self.client.search(
-            index=self.config.index,
-            body=opensearch_query,
+
+        logger.debug(f"Query: {search.to_dict()}")
+        response = search.execute()
+
+        parser = OpensearchParser(mapping=self.config.mapping)
+        parsed_log_entries = [parser.parse(hit.to_dict()) for hit in response]
+        logger.debug(
+            f"Found {len(parsed_log_entries)} log entries, {parsed_log_entries}"
         )
-        return [
-            OpensearchParser().parse(hit)
-            for hit in search_results["hits"]["hits"]
-        ]
+
+        return parsed_log_entries

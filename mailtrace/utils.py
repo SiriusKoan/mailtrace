@@ -1,5 +1,8 @@
 import datetime
 import re
+from typing import List
+
+from mailtrace.log import logger
 
 
 def time_validation(time: str, time_range: str) -> str:
@@ -72,3 +75,40 @@ def print_red(text: str):
     """
 
     print(f"\033[91m{text}\033[0m")
+
+
+def get_hosts(hostnames: List[str], domain: str) -> List[str]:
+    """
+    Generate a list of possible hostnames based on the given hostname and domain.
+
+    Args:
+        hostname: The base hostname (e.g., "mailer1")
+        domain: The domain name (e.g., "example.com")
+    """
+
+    logger.debug(f"Generating hosts for hostnames: {hostnames} and domain: {domain}")
+    hosts = []
+    for hostname in hostnames:
+        # skip empty hostname
+        if len(hostname.strip()) == 0:
+            continue
+
+        # check if hostname is ip
+        ip_pattern = re.compile(
+            r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}$"
+        )
+        if ip_pattern.match(hostname):
+            hosts.append(hostname)
+            continue
+
+        # if hostname is short form, yield both short and FQDN
+        if "." in hostname:
+            hosts.append(hostname)
+            # extract short hostname
+            short_hostname = hostname.split(".")[0]
+            hosts.append(short_hostname)
+        else:
+            hosts.append(hostname)
+            hosts.append(f"{hostname}.{domain}")
+    logger.debug(f"Generated hosts: {hosts}")
+    return list(set(hosts))
