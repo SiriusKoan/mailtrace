@@ -9,9 +9,7 @@ from mailtrace.models import LogQuery, PostfixServiceType
 
 _SUCCESS_RE = re.compile(r".*([0-9]{3})\s.*")
 _QUEUED_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+).*")
-_RELAY_RE = re.compile(
-    r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*"
-)
+_RELAY_RE = re.compile(r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*")
 
 
 @dataclass

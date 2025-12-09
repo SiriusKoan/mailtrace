@@ -64,9 +64,7 @@ def handle_passwords(
     elif config.method == Method.OPENSEARCH:
         # opensearch pass
         if ask_opensearch_pass:
-            opensearch_pass = getpass.getpass(
-                prompt="Enter opensearch password: "
-            )
+            opensearch_pass = getpass.getpass(prompt="Enter opensearch password: ")
         config.opensearch_config.password = (
             opensearch_pass or config.opensearch_config.password
         )
@@ -221,12 +219,8 @@ def trace_mail_loop(
     help="The keyword, can be email address, domain, etc.",
     multiple=True,
 )
-@click.option(
-    "--login-pass", type=str, required=False, help="The login password"
-)
-@click.option(
-    "--sudo-pass", type=str, required=False, help="The sudo password"
-)
+@click.option("--login-pass", type=str, required=False, help="The login password")
+@click.option("--sudo-pass", type=str, required=False, help="The sudo password")
 @click.option(
     "--opensearch-pass",
     type=str,
@@ -235,9 +229,7 @@ def trace_mail_loop(
 )
 @click.option("--ask-login-pass", is_flag=True, help="Ask for login password")
 @click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password")
-@click.option(
-    "--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password"
-)
+@click.option("--ask-opensearch-pass", is_flag=True, help="Ask for opensearch password")
 @click.option("--time", type=str, required=True, help="The time")
 @click.option(
     "--time-range",
@@ -304,9 +296,7 @@ def run(
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
     host_for_trace = logs_by_id[trace_id][0]
-    trace_mail_loop(
-        trace_id, logs_by_id, aggregator_class, config, host_for_trace
-    )
+    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, host_for_trace)
 
 
 if __name__ == "__main__":

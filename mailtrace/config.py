@@ -83,9 +83,27 @@ class SSHConfig:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format
-            or self.host_config.time_format,
+            time_format=host_config.time_format or self.host_config.time_format,
         )
+
+
+@dataclass
+class OpenSearchMappingConfig:
+    """Mapping of application field names to OpenSearch field names.
+
+    Attributes:
+        facility: OpenSearch field for log facility
+        hostname: OpenSearch field for host name
+        message: OpenSearch field for log message
+        timestamp: OpenSearch field for log timestamp
+        service: OpenSearch field for service name
+    """
+
+    facility: str = "log.syslog.facility.name"
+    hostname: str = "host.name"
+    message: str = "message"
+    timestamp: str = "@timestamp"
+    service: str = "log.syslog.appname"
 
 
 @dataclass
@@ -113,15 +131,7 @@ class OpenSearchConfig:
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
-    mapping: dict[str, str] = field(
-        default_factory=lambda: {
-            "facility": "log.syslog.facility.name",
-            "hostname": "host.name",
-            "message": "message",
-            "timestamp": "@timestamp",
-            "service": "log.syslog.appname",
-        }
-    )
+    mapping: OpenSearchMappingConfig = field(default_factory=OpenSearchMappingConfig)
 
 
 @dataclass
@@ -198,9 +208,9 @@ def load_config(config_path: str | None = None):
         config_data = yaml.safe_load(f)
 
     # Load passwords from environment variables if not provided in config
-    if "opensearch_config" in config_data and not config_data[
-        "opensearch_config"
-    ].get("password"):
+    if "opensearch_config" in config_data and not config_data["opensearch_config"].get(
+        "password"
+    ):
         opensearch_password = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD")
         if opensearch_password:
             config_data["opensearch_config"]["password"] = opensearch_password

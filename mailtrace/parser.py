@@ -11,7 +11,7 @@ def _get_nested_value(d: dict, key: str) -> Any:
     """
     for k in key.split("."):
         if isinstance(d, dict):
-            d = d.get(k)
+            d = d.get(k, {})
         else:
             return None
     return d
@@ -69,11 +69,7 @@ class NoSpaceInDatetimeParser(LogParser):
         datetime = log_split[0]
         hostname = log_split[1]
         service = log_split[2].split("[")[0]
-        mail_id = (
-            log_split[3][:-1]
-            if check_mail_id_valid(log_split[3][:-1])
-            else None
-        )
+        mail_id = log_split[3][:-1] if check_mail_id_valid(log_split[3][:-1]) else None
         message = log_split[4]
         return LogEntry(datetime, hostname, service, mail_id, message)
 
@@ -100,11 +96,7 @@ class DayOfWeekParser(LogParser):
         datetime = " ".join(log_split[:3])
         hostname = log_split[3]
         service = log_split[4].split("[")[0]
-        mail_id = (
-            log_split[5][:-1]
-            if check_mail_id_valid(log_split[5][:-1])
-            else None
-        )
+        mail_id = log_split[5][:-1] if check_mail_id_valid(log_split[5][:-1]) else None
         message = log_split[6]
         return LogEntry(datetime, hostname, service, mail_id, message)
 
@@ -149,15 +141,9 @@ class OpensearchParser(LogParser):
             message_content = ""
         _mail_id_candidate = message_content.split(":")[0]
         mail_id = (
-            _mail_id_candidate
-            if check_mail_id_valid(_mail_id_candidate)
-            else None
+            _mail_id_candidate if check_mail_id_valid(_mail_id_candidate) else None
         )
-        message = (
-            " ".join(message_content.split()[1:])
-            if mail_id
-            else message_content
-        )
+        message = " ".join(message_content.split()[1:]) if mail_id else message_content
         return LogEntry(datetime, hostname, service, mail_id, message)
 
 

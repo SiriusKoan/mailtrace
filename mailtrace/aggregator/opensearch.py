@@ -1,4 +1,3 @@
-import copy
 from datetime import datetime
 
 import urllib3
@@ -38,9 +37,7 @@ class OpenSearch(LogAggregator):
 
         self.host = host
         self.config = config.opensearch_config
-        self.hosts = get_hosts(
-            config.cluster_to_hosts(host) or [host], config.domain
-        )
+        self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
         self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
@@ -65,21 +62,21 @@ class OpenSearch(LogAggregator):
             list[LogEntry]: List of parsed log entries matching the query criteria.
         """
 
-        s = Search(using=self.client, index=self.config.index)
-        s = s.extra(size=1000)
+        search = Search(using=self.client, index=self.config.index)
+        search = search.extra(size=1000)
 
         facility_field = self.config.mapping.get("facility")
         if facility_field:
-            s = s.query("match", **{facility_field: "mail"})
+            search = search.query("match", **{facility_field: "mail"})
 
-        s = s.query("terms", **{self.config.mapping["hostname"]: self.hosts})
+        search = search.query("terms", **{self.config.mapping["hostname"]: self.hosts})
 
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
             time_range = time_range_to_timedelta(query.time_range)
             start_time = (time - time_range).strftime("%Y-%m-%dT%H:%M:%S")
             end_time = (time + time_range).strftime("%Y-%m-%dT%H:%M:%S")
-            s = s.filter(
+            search = search.filter(
                 "range",
                 **{
                     self.config.mapping["timestamp"]: {
@@ -92,21 +89,19 @@ class OpenSearch(LogAggregator):
 
         if query.keywords:
             for keyword in query.keywords:
-                s = s.query(
+                search = search.query(
                     "wildcard",
                     **{self.config.mapping["message"]: f"*{keyword.lower()}*"},
                 )
 
         if query.mail_id:
-            s = s.query(
+            search = search.query(
                 "wildcard",
-                **{
-                    self.config.mapping["message"]: f"{query.mail_id.lower()}*"
-                },
+                **{self.config.mapping["message"]: f"{query.mail_id.lower()}*"},
             )
 
-        logger.debug(f"Query: {s.to_dict()}")
-        response = s.execute()
+        logger.debug(f"Query: {search.to_dict()}")
+        response = search.execute()
 
         parser = OpensearchParser(mapping=self.config.mapping)
         parsed_log_entries = [parser.parse(hit.to_dict()) for hit in response]
