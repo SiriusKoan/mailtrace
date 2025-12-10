@@ -37,7 +37,9 @@ class OpenSearch(LogAggregator):
 
         self.host = host
         self.config = config.opensearch_config
-        self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
+        self.hosts = get_hosts(
+            config.cluster_to_hosts(host) or [host], config.domain
+        )
         self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
@@ -69,7 +71,9 @@ class OpenSearch(LogAggregator):
         if facility_field:
             search = search.query("match", **{facility_field: "mail"})
 
-        search = search.query("terms", **{self.config.mapping["hostname"]: self.hosts})
+        search = search.query(
+            "terms", **{self.config.mapping["hostname"]: self.hosts}
+        )
 
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
@@ -97,7 +101,9 @@ class OpenSearch(LogAggregator):
         if query.mail_id:
             search = search.query(
                 "wildcard",
-                **{self.config.mapping["message"]: f"{query.mail_id.lower()}*"},
+                **{
+                    self.config.mapping["message"]: f"{query.mail_id.lower()}*"
+                },
             )
 
         logger.debug(f"Query: {search.to_dict()}")

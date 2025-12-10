@@ -86,7 +86,9 @@ def get_hosts(hostnames: List[str], domain: str) -> List[str]:
         domain: The domain name (e.g., "example.com")
     """
 
-    logger.debug(f"Generating hosts for hostnames: {hostnames} and domain: {domain}")
+    logger.debug(
+        f"Generating hosts for hostnames: {hostnames} and domain: {domain}"
+    )
     hosts = []
     for hostname in hostnames:
         # skip empty hostname

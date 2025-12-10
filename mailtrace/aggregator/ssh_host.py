@@ -28,28 +28,67 @@ class SSHHost(LogAggregator):
             config: Configuration object
         """
 
+        logger.info(f">> init {host}")
+
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
         self.host_config = self.ssh_config.get_host_config(host)
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        if self.ssh_config.private_key:
-            self.client.connect(
-                hostname=self.host,
-                username=self.ssh_config.username,
-                key_filename=self.ssh_config.private_key,
-                timeout=self.ssh_config.timeout,
-            )
-        else:
-            self.client.connect(
-                hostname=self.host,
-                username=self.ssh_config.username,
-                password=self.ssh_config.password,
-                timeout=self.ssh_config.timeout,
-            )
+        self.client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
-    def _execute_command(self, command: str, sudo: bool = False) -> tuple[str, str]:
+        # Prepare connection parameters
+        connect_params = {
+            "hostname": self.host,
+            "username": self.ssh_config.username,
+            "timeout": self.ssh_config.timeout,
+        }
+
+        # Add private key or password
+        if self.ssh_config.private_key:
+            connect_params["key_filename"] = self.ssh_config.private_key
+        else:
+            connect_params["password"] = self.ssh_config.password
+
+        # Load and merge SSH config file if specified
+        if self.ssh_config.ssh_config_file:
+            import os
+
+            ssh_config = paramiko.SSHConfig()
+            config_path = os.path.expanduser(self.ssh_config.ssh_config_file)
+            try:
+                with open(config_path) as f:
+                    ssh_config.parse(f)
+                logger.debug(f"SSH config file loaded: {config_path}")
+            except FileNotFoundError:
+                logger.warning(f"SSH config file not found: {config_path}")
+
+            if self.host in ssh_config.get_hostnames():
+                logger.debug(f"SSH config file found for {self.host}")
+                # Merge SSH config settings with our parameters
+                # SSH config values take precedence for connection settings
+                ssh_host_config = ssh_config.lookup(self.host)
+                # Only override with SSH config if the setting exists there
+                if "hostname" in ssh_host_config:
+                    connect_params["hostname"] = ssh_host_config["hostname"]
+                if "user" in ssh_host_config:
+                    connect_params["username"] = ssh_host_config["user"]
+                if "port" in ssh_host_config:
+                    connect_params["port"] = int(ssh_host_config["port"])
+                if "identityfile" in ssh_host_config:
+                    connect_params["key_filename"] = ssh_host_config[
+                        "identityfile"
+                    ]
+            else:
+                logger.debug(
+                    f"SSH config file not found for {self.host}, using Mailtrace config settings."
+                )
+
+        self.client.connect(**connect_params)
+
+    def _execute_command(
+        self, command: str, sudo: bool = False
+    ) -> tuple[str, str]:
         """
         Execute a command on the remote host via SSH.
 
@@ -101,7 +140,9 @@ class SSHHost(LogAggregator):
 
         if query.time and query.time_range:
             # get logs by time
-            timestamp = datetime.datetime.strptime(query.time, "%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.datetime.strptime(
+                query.time, "%Y-%m-%d %H:%M:%S"
+            )
             time_range = time_range_to_timedelta(query.time_range)
             start_time = timestamp - time_range
             end_time = timestamp + time_range
@@ -160,7 +201,9 @@ class SSHHost(LogAggregator):
                 raise ValueError(f"Error executing command: {stderr}")
             logs += stdout
         parser = PARSERS[self.host_config.log_parser]()
-        parsed_logs = [parser.parse(line) for line in logs.splitlines() if line]
+        parsed_logs = [
+            parser.parse(line) for line in logs.splitlines() if line
+        ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
         return parsed_logs

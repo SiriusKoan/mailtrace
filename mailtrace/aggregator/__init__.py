@@ -9,7 +9,9 @@ from mailtrace.models import LogQuery, PostfixServiceType
 
 _SUCCESS_RE = re.compile(r".*([0-9]{3})\s.*")
 _QUEUED_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+).*")
-_RELAY_RE = re.compile(r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*")
+_RELAY_RE = re.compile(
+    r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*"
+)
 
 
 @dataclass
@@ -51,8 +53,9 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
 
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
+    logger.debug("=== Log Entries ===")
     for log_entry in log_entries:
-        logger.debug("LogEntry: %s", log_entry)
+        logger.debug("%s", log_entry)
         if log_entry.service not in {
             PostfixServiceType.SMTP.value,
             PostfixServiceType.LMTP.value,

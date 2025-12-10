@@ -44,6 +44,10 @@ class SSHConfig:
         private_key: Path to SSH private key file (alternative to password)
         sudo_pass: Password for sudo operations
         sudo: Whether to use sudo for log file access
+        timeout: SSH connection timeout in seconds
+        ssh_config_file: Path to SSH config file (e.g., ~/.ssh/config or custom)
+        host_config: Default host configuration for log files
+        hosts: Dictionary mapping hostnames to their specific configurations
     """
 
     username: str = ""
@@ -52,6 +56,7 @@ class SSHConfig:
     sudo_pass: str = ""
     sudo: bool = True
     timeout: int = 10
+    ssh_config_file: str = ""
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
@@ -83,7 +88,8 @@ class SSHConfig:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format or self.host_config.time_format,
+            time_format=host_config.time_format
+            or self.host_config.time_format,
         )
 
 
@@ -131,7 +137,9 @@ class OpenSearchConfig:
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
-    mapping: OpenSearchMappingConfig = field(default_factory=OpenSearchMappingConfig)
+    mapping: OpenSearchMappingConfig = field(
+        default_factory=OpenSearchMappingConfig
+    )
 
 
 @dataclass
@@ -208,9 +216,9 @@ def load_config(config_path: str | None = None):
         config_data = yaml.safe_load(f)
 
     # Load passwords from environment variables if not provided in config
-    if "opensearch_config" in config_data and not config_data["opensearch_config"].get(
-        "password"
-    ):
+    if "opensearch_config" in config_data and not config_data[
+        "opensearch_config"
+    ].get("password"):
         opensearch_password = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD")
         if opensearch_password:
             config_data["opensearch_config"]["password"] = opensearch_password

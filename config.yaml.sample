@@ -1,13 +1,14 @@
 ---
 method: ssh
 log_level: INFO
-timeout: 30
 ssh_config:
   username: username
   password: ""
   private_key: /home/username/.ssh/id_rsa
   sudo_pass: ""
   sudo: true
+  timeout: 10
+  ssh_config_file: demo/docker/ssh_config
   host_config:
     log_files:
       - /var/log/mail.log
