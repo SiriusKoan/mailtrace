@@ -1,4 +1,5 @@
 __pycache__
 config.yaml
+!demo/*/config.yaml
 *egg-info
 .direnv

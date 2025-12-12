@@ -1,0 +1,50 @@
+services:
+  mx:
+    hostname: mx.example.com
+    build: ./mx
+    ports:
+      - "25:25"
+      - "22222:22"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.10
+  mailer:
+    hostname: mailer.example.com
+    build: ./mailer
+    ports:
+      - "22223:22"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.20
+  mailpolicy:
+    hostname: mailpolicy.example.com
+    build: ./mailpolicy
+    ports:
+      - "10025:25"
+      - "22224:22"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.30
+  mailbox:
+    hostname: mailbox.example.com
+    build: ./mailbox
+    ports:
+      - "22225:22"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.40
+
+networks:
+  mailtrace_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.200.0/24

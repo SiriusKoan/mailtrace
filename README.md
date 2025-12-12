@@ -202,3 +202,7 @@ For security, sensitive information can be provided via environment variables in
 An aggregator can read the logs and find out the related ones. It then extracts information from the logs, including `hostname`, `mail_id`, etc.
 
 With the information extracted, it can find out the next stop of the mail flow. The tracing is performed by the `do_trace` function in `aggregator/__init__.py`, the core of this tool.
+
+## Demo
+
+Refer to the `demo` directory for a sample configuration and demo video.

@@ -28,8 +28,6 @@ class SSHHost(LogAggregator):
             config: Configuration object
         """
 
-        logger.info(f">> init {host}")
-
         self.host = host
         self.config: Config = config
         self.ssh_config = config.ssh_config
