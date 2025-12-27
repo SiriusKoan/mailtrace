@@ -53,9 +53,9 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
 
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
-    logger.debug("=== Log Entries ===")
+    logger.info("=== Log Entries ===")
     for log_entry in log_entries:
-        logger.debug("%s", log_entry)
+        logger.info("%s", log_entry)
         if log_entry.service not in {
             PostfixServiceType.SMTP.value,
             PostfixServiceType.LMTP.value,
@@ -88,6 +88,7 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
             relay_port,
             next_mail_id,
         )
+
         return TraceResult(
             mail_id=next_mail_id,
             relay_host=relay_host,

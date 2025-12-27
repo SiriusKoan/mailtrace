@@ -47,7 +47,7 @@ def handle_passwords(
         if ask_login_pass:
             login_pass = getpass.getpass(prompt="Enter login password: ")
         config.ssh_config.password = login_pass or config.ssh_config.password
-        if not login_pass:
+        if not config.ssh_config.password:
             logger.warning(
                 "Warning: empty login password is provided, no password will be used for login"
             )
@@ -56,7 +56,7 @@ def handle_passwords(
         if ask_sudo_pass:
             sudo_pass = getpass.getpass(prompt="Enter sudo password: ")
         config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
-        if not sudo_pass:
+        if not config.ssh_config.sudo_pass:
             logger.warning(
                 "Warning: empty sudo password is provided, no password will be used for sudo"
             )
