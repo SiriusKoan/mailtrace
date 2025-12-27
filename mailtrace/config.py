@@ -153,6 +153,7 @@ class Config:
         opensearch_config: OpenSearch connection configuration
         clusters: Dictionary mapping cluster names to lists of host names for HA
         domain: Domain name for hostname resolution
+        auto_continue: Whether to automatically continue tracing to next hop without user input
     """
 
     method: Method
@@ -161,6 +162,7 @@ class Config:
     opensearch_config: OpenSearchConfig
     clusters: dict[str, list[str]] = field(default_factory=dict)
     domain: str = ""
+    auto_continue: bool = False
 
     def __post_init__(self):
         # value checking

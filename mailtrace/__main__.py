@@ -176,9 +176,18 @@ def trace_mail_loop(
         print_blue(
             f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) with new ID {result.mail_id} (SMTP {result.smtp_code})"
         )
-        trace_next_hop_ans: str = input(
-            f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
-        ).lower()
+
+        # If auto_continue is enabled, automatically continue to the next hop
+        if config.auto_continue:
+            logger.info(
+                f"Auto-continue enabled. Continuing to {result.relay_host}"
+            )
+            trace_next_hop_ans = "y"
+        else:
+            trace_next_hop_ans: str = input(
+                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
+            ).lower()
+
         if trace_next_hop_ans in ["", "y"]:
             trace_id = result.mail_id
             aggregator = aggregator_class(result.relay_host, config)
