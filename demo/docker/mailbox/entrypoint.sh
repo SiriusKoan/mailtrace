@@ -10,5 +10,6 @@ rsyslogd
 
 postfix start
 dovecot
+vector -c /etc/vector/vector.yaml &
 
 tail -F /var/log/mail.log

@@ -12,9 +12,17 @@ And make sure you have Docker and [swaks](https://linux.die.net/man/1/swaks) ins
 
 ## Start
 
-```
+```shell
 $ docker compose up -d
 ```
+
+It will launch the demo environment, including 4 email servers, 1 OpenSearch node, and 1 OpenSearch Dashboard.
+
+## Demo Setup
+
+Change the `method` field in `config.yaml` to `ssh` or `opensearch`.
+
+Change the `opensearch_config.time_zone` field in `config.yaml` to your desired time zone. By default, it is set to UTC+8.
 
 ## Demo External to Internal (`mx`)
 
@@ -24,14 +32,14 @@ $ docker compose up -d
 $ swaks \
     --to user1@example.com \
     --from me@siriuskoan.one \
-    --helo siriuskoan.one
-    --server 127.0.0.1 -p 25 \
+    --helo siriuskoan.one \
+    --server 127.0.0.1 -p 10025
+
 $ python3 -m mailtrace run \
     -c demo/docker/config.yaml \
     -h mx.example.com \
     -k user1 \
-    --time '2025-12-10 20:00:00' --time-range 1h \
-    --ask-login-pass
+    --time '2025-12-10 20:00:00' --time-range 1h
 ```
 
 ## Demo Internal to Internal (`mailer`)
@@ -43,11 +51,11 @@ $ swaks \
     --to user2@example.com \
     --from user1@example.com \
     -au user1 -ap user1 \
-    --server 127.0.0.1 -p 10025 
+    --server 127.0.0.1 -p 20025
+
 $ python3 -m mailtrace run \
-    -c config.yaml \
+    -c demo/docker/config.yaml \
     -h mailpolicy.example.com \
     -k user1 \
-    --time '2025-12-10 20:00:00' --time-range 1h \
-    --ask-login-pass
+    --time '2025-12-10 20:00:00' --time-range 1h
 ```

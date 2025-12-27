@@ -13,6 +13,8 @@ RUN apt update && \
     && apt-get autoremove --yes \
     && rm -rf /var/lib/apt/lists/*
 
+RUN bash -c "$(curl -L https://setup.vector.dev)" && apt-get install vector
+
 RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
     ssh-keygen -A && \
     mkdir -p /var/run/sshd && \
@@ -24,10 +26,11 @@ RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
 RUN useradd -m user1 && echo "user1:user1" | chpasswd && \
     useradd -m user2 && echo "user2:user2" | chpasswd
 
-COPY ./postfix /etc/postfix
-COPY ./dovecot /etc/dovecot
+COPY ./mailbox/postfix /etc/postfix
+COPY ./mailbox/dovecot /etc/dovecot
+COPY ./vector/vector.yaml /etc/vector/vector.yaml
 
-COPY ./entrypoint.sh ./entrypoint.sh
+COPY ./mailbox/entrypoint.sh ./entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 25 143 993 110 995 22

@@ -9,5 +9,6 @@ rsyslogd
 /usr/sbin/sshd
 
 postfix start
+vector -c /etc/vector/vector.yaml &
 
 tail -F /var/log/mail.log

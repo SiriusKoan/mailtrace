@@ -1,43 +1,111 @@
 services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    hostname: opensearch.example.com
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch
+      - discovery.seed_hosts=opensearch
+      - cluster.initial_master_nodes=opensearch
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=wg328GY@3HUY76
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 9200:9200
+      - 9600:9600
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.5
+
+  opensearch-dashboards:
+      image: opensearchproject/opensearch-dashboards:latest
+      container_name: opensearch-dashboards.example.com
+      ports:
+        - 5601:5601
+      expose:
+        - "5601"
+      environment:
+        OPENSEARCH_HOSTS: '["https://opensearch.example.com:9200"]'
+      networks:
+        mailtrace_net:
+          ipv4_address: 192.168.200.6
+      post_start:
+        - command: |
+            sleep 10 && \
+            curl -X POST http://localhost:5601/api/saved_objects/index-pattern/my-index-pattern \
+                 -H 'osd-xsrf: true' \
+                 -H 'Content-Type: application/json' \
+                 -d '{"attributes":{"title": "mailtrace*", "timeFieldName": "timestamp"}}' \
+                 --user admin:wg328GY@3HUY76
+          user: root
+
   mx:
     hostname: mx.example.com
-    build: ./mx
+    build:
+      context: .
+      dockerfile: ./mx/Dockerfile
     ports:
-      - "25:25"
+      - "10025:25"
       - "22222:22"
     volumes:
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - opensearch
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.10
+
   mailer:
     hostname: mailer.example.com
-    build: ./mailer
+    build:
+      context: .
+      dockerfile: ./mailer/Dockerfile
     ports:
       - "22223:22"
     volumes:
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - opensearch
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.20
+
   mailpolicy:
     hostname: mailpolicy.example.com
-    build: ./mailpolicy
+    build:
+      context: .
+      dockerfile: ./mailpolicy/Dockerfile
     ports:
-      - "10025:25"
+      - "20025:25"
       - "22224:22"
     volumes:
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - opensearch
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.30
+
   mailbox:
     hostname: mailbox.example.com
-    build: ./mailbox
+    build:
+      context: .
+      dockerfile: ./mailbox/Dockerfile
     ports:
       - "22225:22"
     volumes:
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - opensearch
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.40

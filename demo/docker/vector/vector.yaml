@@ -1,0 +1,40 @@
+api:
+  enabled: true
+
+sources:
+  file:
+    type: file
+    include:
+      - /var/log/mail.log
+    ignore_checkpoints: true
+
+transforms:
+  parse_logs:
+    type: remap
+    inputs:
+      - file
+    source: |
+      .log.syslog.facility.name = "mail"
+      .appname = parse_regex(.message, r'postfix/(?P<app>[^\[]+)') ?? {}
+      if is_string(.appname.app) {
+        .appname = "postfix/" + .appname.app ?? ""
+      }
+      # datetime, hostname, appname should be removed from message
+      .message = join!(slice!(split!(.message, " "), 3), " ")
+
+sinks:
+  to_opensearch:
+    type: elasticsearch
+    inputs:
+      - parse_logs
+    endpoints:
+      - https://opensearch.example.com:9200
+    bulk:
+      index: mailtrace-logs
+    tls:
+      verify_certificate: false
+    auth:
+      user: admin
+      password: wg328GY@3HUY76
+      strategy: basic
+    suppress_type_name: true
