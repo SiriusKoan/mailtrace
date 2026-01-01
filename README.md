@@ -124,6 +124,69 @@ ssh_config:
 
 When connecting to `mail1.example.com`, mailtrace will use the `User` (mailuser) and `IdentityFile` from the SSH config file, port 2222, etc. You don't need to duplicate these settings in `config.yaml`.
 
+### Loghost Configuration
+
+Loghost is a centralized logging server that collects logs from multiple servers and allows admins to access logs.
+
+To use Mailtrace if you are using a loghost, you need to use SSH as log source and configure it:
+
+1. Set up an SSH config file that redirects SSH connections to mail servers to a loghost. For example, in `~/.ssh/config`:
+
+```
+Host loghost
+    HostName logs.example.com
+    User loguser
+    IdentityFile ~/.ssh/id_rsa
+
+Host mx.example.com
+    HostName loghost
+
+Host mailer.example.com
+    HostName loghost
+
+Host mailpolicy.example.com
+    HostName loghost
+
+Host mailbox.example.com
+    HostName loghost
+```
+
+2. In your `config.yaml`, configure the `log_files` fields for each mail server:
+
+```yaml
+ssh_config:
+  username: default_user
+  private_key: ~/.ssh/id_rsa
+  ssh_config_file: ~/.ssh/config
+  sudo_pass: "mypassword"
+  host_config:
+    log_files:
+      - /var/log/mail.log
+    log_parser: NoSpaceInDatetimeParser
+    time_format: "%Y-%m-%dT%H:%M:%S"
+  hosts:
+    mx.example.com:
+      log_files:
+        - /var/log/mx/mail.log
+      log_parser: NoSpaceInDatetimeParser
+      time_format: "%Y-%m-%dT%H:%M:%S"
+    mailer.example.com:
+      log_files:
+        - /var/log/mailer/mail.log
+      log_parser: NoSpaceInDatetimeParser
+      time_format: "%Y-%m-%dT%H:%M:%S"
+    mailpolicy.example.com:
+      log_files:
+        - /var/log/mailpolicy/mail.log
+      log_parser: NoSpaceInDatetimeParser
+      time_format: "%Y-%m-%dT%H:%M:%S"
+    mailbox.example.com:
+      log_files:
+        - /var/log/mailbox/mail.log
+      log_parser: NoSpaceInDatetimeParser
+      time_format: "%Y-%m-%dT%H:%M:%S"
+```
+
 ### OpenSearch Configuration
 
 Example `opensearch_config` section:

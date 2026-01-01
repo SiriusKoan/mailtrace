@@ -1,4 +1,19 @@
 services:
+  loghost:
+    hostname: loghost.example.com
+    build:
+      context: .
+      dockerfile: ./loghost/Dockerfile
+    ports:
+      - "22226:22"
+      - "514:514/udp"
+      - "514:514/tcp"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.50
+
   opensearch:
     image: opensearchproject/opensearch:latest
     hostname: opensearch.example.com
@@ -60,6 +75,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     depends_on:
       - opensearch
+      - loghost
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.10
@@ -75,6 +91,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     depends_on:
       - opensearch
+      - loghost
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.20
@@ -91,6 +108,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     depends_on:
       - opensearch
+      - loghost
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.30
@@ -106,6 +124,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
     depends_on:
       - opensearch
+      - loghost
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.40

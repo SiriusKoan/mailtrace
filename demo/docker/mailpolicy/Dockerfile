@@ -27,6 +27,7 @@ RUN useradd -m user1 && echo "user1:user1" | chpasswd && \
 
 COPY ./mailer/postfix /etc/postfix
 COPY ./vector/vector.yaml /etc/vector/vector.yaml
+COPY ./rsyslog/forward.conf /etc/rsyslog.d/50-forward.conf
 
 COPY ./mailpolicy/entrypoint.sh ./entrypoint.sh
 RUN chmod +x /entrypoint.sh

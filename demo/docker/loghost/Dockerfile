@@ -6,13 +6,11 @@ WORKDIR /
 
 RUN apt update && \
     apt install -y \
-        vim curl jq python3-pip iputils-ping iproute2 openssh-server \
-        postfix postfix-pcre rsyslog \
+        vim curl jq iputils-ping iproute2 openssh-server \
+        rsyslog \
     && apt-get clean autoclean \
     && apt-get autoremove --yes \
     && rm -rf /var/lib/apt/lists/*
-
-RUN bash -c "$(curl -L https://setup.vector.dev)" && apt-get install vector
 
 RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
     ssh-keygen -A && \
@@ -22,16 +20,18 @@ RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
     echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-RUN useradd -m user1 && echo "user1:user1" | chpasswd && \
-    useradd -m user2 && echo "user2:user2" | chpasswd
+# Create directories for service-specific logs
+RUN mkdir -p /var/log/mx && \
+    mkdir -p /var/log/mailer && \
+    mkdir -p /var/log/mailpolicy && \
+    mkdir -p /var/log/mailbox
 
-COPY ./mx/postfix /etc/postfix
-COPY ./vector/vector.yaml /etc/vector/vector.yaml
-COPY ./rsyslog/forward.conf /etc/rsyslog.d/50-forward.conf
+# Configure rsyslog to receive logs from remote hosts
+COPY ./loghost/rsyslog.conf /etc/rsyslog.d/50-remote.conf
 
-COPY ./mx/entrypoint.sh ./entrypoint.sh
+COPY ./loghost/entrypoint.sh ./entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 25 22
+EXPOSE 514/udp 514/tcp 22
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,24 @@
+Host mx.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailer.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailpolicy.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailbox.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host loghost.example.com
+    HostName localhost
+    Port 22226
+    User root
