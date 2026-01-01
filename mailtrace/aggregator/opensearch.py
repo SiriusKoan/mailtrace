@@ -4,10 +4,11 @@ import urllib3
 from opensearchpy import OpenSearch as OpenSearchClient
 from opensearchpy.helpers.search import Search
 
-from mailtrace.aggregator.base import LogAggregator
+from mailtrace.aggregator.base import LogAggregator, TraceResult
+from mailtrace.aggregator.utils import analyze_log_from_message
 from mailtrace.config import Config
 from mailtrace.log import logger
-from mailtrace.models import LogEntry, LogQuery
+from mailtrace.models import LogEntry, LogQuery, PostfixServiceType
 from mailtrace.parser import OpensearchParser
 from mailtrace.utils import get_hosts, time_range_to_timedelta
 
@@ -119,3 +120,40 @@ class OpenSearch(LogAggregator):
         )
 
         return parsed_log_entries
+
+    def analyze_logs(self, log_entries: list[LogEntry]) -> TraceResult | None:
+        """
+        Analyze log entries to find relay information and next mail ID.
+
+        Examines SMTP/LMTP service log entries to extract relay details
+        and identify the next mail ID assigned at the relay destination.
+
+        Args:
+            log_entries: List of log entries to analyze.
+
+        Returns:
+            TraceResult object containing relay information if found,
+            None otherwise.
+        """
+        for log_entry in log_entries:
+            if log_entry.service not in {
+                PostfixServiceType.SMTP.value,
+                PostfixServiceType.LMTP.value,
+            }:
+                continue
+
+            result = analyze_log_from_message(log_entry.message)
+            if result is None:
+                continue
+
+            logger.info(
+                "Found relay %s [%s]:%d, new ID %s",
+                result.relay_host,
+                result.relay_ip,
+                result.relay_port,
+                result.mail_id,
+            )
+
+            return result
+
+        return None

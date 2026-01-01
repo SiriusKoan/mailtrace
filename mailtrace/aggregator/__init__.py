@@ -1,35 +1,18 @@
-import re
-from dataclasses import dataclass
-
-from mailtrace.aggregator.base import LogAggregator
+from mailtrace.aggregator.base import LogAggregator, TraceResult
 from mailtrace.aggregator.opensearch import OpenSearch
 from mailtrace.aggregator.ssh_host import SSHHost
 from mailtrace.log import logger
-from mailtrace.models import LogQuery, PostfixServiceType
-
-_SUCCESS_RE = re.compile(r".*([0-9]{3})\s.*")
-_QUEUED_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+).*")
-_RELAY_RE = re.compile(
-    r".*relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+).*"
-)
-
-
-@dataclass
-class TraceResult:
-    mail_id: str
-    relay_host: str
-    relay_ip: str
-    relay_port: int
-    smtp_code: int
+from mailtrace.models import LogQuery
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
     """
     Trace a mail message through Postfix logs to find the next relay hop and new mail ID.
 
-    This function queries log entries for a given mail ID and analyzes SMTP/LMTP
-    service entries to determine where the mail was relayed and captures the
-    response details in a TraceResult.
+    This function queries log entries for a given mail ID and analyzes them to determine
+    where the mail was relayed and captures the response details in a TraceResult.
+    All logs are printed before analysis is performed, and the function returns after
+    all logs have been examined.
 
     Args:
         mail_id: The original mail ID to trace through the logs.
@@ -53,52 +36,19 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
 
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
+
+    # Print all log entries
     print("=== Log Entries ===")
     for log_entry in log_entries:
         print(log_entry)
-        if log_entry.service not in {
-            PostfixServiceType.SMTP.value,
-            PostfixServiceType.LMTP.value,
-        }:
-            continue
 
-        success_match = _SUCCESS_RE.match(log_entry.message)
-        if not success_match:
-            continue
-        smtp_code = int(success_match.group(1))
-        if smtp_code != 250:
-            continue
+    # Analyze logs using the aggregator's analyze_logs method
+    trace_result = aggregator.analyze_logs(log_entries)
 
-        queued_match = _QUEUED_RE.search(log_entry.message)
-        if not queued_match:
-            continue
-        next_mail_id = queued_match.group("id")
+    if trace_result is None:
+        logger.info("No next hop found for %s", mail_id)
 
-        relay_match = _RELAY_RE.search(log_entry.message)
-        if not relay_match:
-            continue
-        relay_host = relay_match.group("host")
-        relay_ip = relay_match.group("ip")
-        relay_port = int(relay_match.group("port"))
-
-        logger.info(
-            "Found relay %s [%s]:%d, new ID %s",
-            relay_host,
-            relay_ip,
-            relay_port,
-            next_mail_id,
-        )
-
-        return TraceResult(
-            mail_id=next_mail_id,
-            relay_host=relay_host,
-            relay_ip=relay_ip,
-            relay_port=relay_port,
-            smtp_code=smtp_code,
-        )
-
-    logger.info("No next hop found for %s", mail_id)
-    return None
+    return trace_result
 
 
 __all__ = ["do_trace", "SSHHost", "OpenSearch", "TraceResult"]

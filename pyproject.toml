@@ -32,6 +32,7 @@ src_paths = ["mailtrace"]
 
 [tool.pyright]
 include = ["mailtrace"]
+typeCheckingMode = "basic"
 reportMissingImports = "error"
 
 [tool.black]
