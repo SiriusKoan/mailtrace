@@ -1,18 +1,10 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
 
 from mailtrace.config import Config
+from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
-
-
-@dataclass
-class TraceResult:
-    mail_id: str
-    relay_host: str
-    relay_ip: str
-    relay_port: int
-    smtp_code: int
+from mailtrace.utils import RelayResult
 
 
 class LogAggregator(ABC):
@@ -45,9 +37,11 @@ class LogAggregator(ABC):
             list[LogEntry]: A list of log entries matching the query criteria.
         """
 
-    @abstractmethod
-    def analyze_logs(self, log_entries: list[LogEntry]) -> TraceResult | None:
+    def analyze_logs(self, log_entries: list[LogEntry]) -> RelayResult | None:
         """Analyze log entries to extract relay information.
+
+        Examines SMTP/LMTP service log entries to check if relay information
+        is available and returns the TraceResult.
 
         Args:
             log_entries (list[LogEntry]): List of log entries to analyze.
@@ -56,3 +50,25 @@ class LogAggregator(ABC):
             TraceResult | None: A TraceResult object containing relay information if found,
                                None otherwise.
         """
+        for log_entry in log_entries:
+            # Check if relay information is available in the log entry
+            if not log_entry.relay_host:
+                continue
+
+            logger.info(
+                "Found relay %s [%s]:%d, new ID %s",
+                log_entry.relay_host,
+                log_entry.relay_ip,
+                log_entry.relay_port,
+                log_entry.mail_id,
+            )
+
+            return RelayResult(
+                mail_id=log_entry.mail_id,
+                relay_host=log_entry.relay_host,
+                relay_ip=log_entry.relay_ip,
+                relay_port=log_entry.relay_port,
+                smtp_code=log_entry.smtp_code,
+            )
+
+        return None

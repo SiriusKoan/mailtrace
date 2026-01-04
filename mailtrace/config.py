@@ -5,8 +5,6 @@ from typing import Literal
 
 import yaml
 
-from mailtrace.parser import PARSERS
-
 
 class Method(Enum):
     """Enumeration of supported connection methods for log collection."""
@@ -30,6 +28,9 @@ class HostConfig:
     time_format: str = "%Y-%m-%d %H:%M:%S"
 
     def __post_init__(self):
+        # Lazy import to avoid circular dependency
+        from mailtrace.parser import PARSERS
+
         if self.log_parser not in PARSERS:
             raise ValueError(f"Invalid log parser: {self.log_parser}")
 
@@ -103,6 +104,11 @@ class OpenSearchMappingConfig:
         message: OpenSearch field for log message
         timestamp: OpenSearch field for log timestamp
         service: OpenSearch field for service name
+        mail_id: OpenSearch field for mail ID
+        relay_host: OpenSearch field for relay hostname
+        relay_ip: OpenSearch field for relay IP address
+        relay_port: OpenSearch field for relay port number
+        smtp_code: OpenSearch field for SMTP return code
     """
 
     facility: str = "log.syslog.facility.name"
@@ -110,6 +116,11 @@ class OpenSearchMappingConfig:
     message: str = "message"
     timestamp: str = "@timestamp"
     service: str = "log.syslog.appname"
+    mail_id: str = ""
+    relay_host: str = ""
+    relay_ip: str = ""
+    relay_port: str = ""
+    smtp_code: str = ""
 
 
 @dataclass

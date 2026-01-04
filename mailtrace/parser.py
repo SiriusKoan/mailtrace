@@ -2,7 +2,9 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Type
 
+from mailtrace.config import OpenSearchMappingConfig
 from mailtrace.models import LogEntry
+from mailtrace.utils import analyze_log_from_message
 
 
 def _get_nested_value(d: dict, key: str) -> Any:
@@ -75,7 +77,30 @@ class NoSpaceInDatetimeParser(LogParser):
             else None
         )
         message = log_split[4]
-        return LogEntry(datetime, hostname, service, mail_id, message)
+
+        # Extract relay information from message if available
+        relay_host = None
+        relay_ip = None
+        relay_port = None
+        smtp_code = None
+        trace_result = analyze_log_from_message(message)
+        if trace_result:
+            relay_host = trace_result.relay_host
+            relay_ip = trace_result.relay_ip
+            relay_port = trace_result.relay_port
+            smtp_code = trace_result.smtp_code
+
+        return LogEntry(
+            datetime,
+            hostname,
+            service,
+            mail_id,
+            message,
+            relay_host,
+            relay_ip,
+            relay_port,
+            smtp_code,
+        )
 
 
 class DayOfWeekParser(LogParser):
@@ -106,7 +131,30 @@ class DayOfWeekParser(LogParser):
             else None
         )
         message = log_split[6]
-        return LogEntry(datetime, hostname, service, mail_id, message)
+
+        # Extract relay information from message if available
+        relay_host = None
+        relay_ip = None
+        relay_port = None
+        smtp_code = None
+        trace_result = analyze_log_from_message(message)
+        if trace_result:
+            relay_host = trace_result.relay_host
+            relay_ip = trace_result.relay_ip
+            relay_port = trace_result.relay_port
+            smtp_code = trace_result.smtp_code
+
+        return LogEntry(
+            datetime,
+            hostname,
+            service,
+            mail_id,
+            message,
+            relay_host,
+            relay_ip,
+            relay_port,
+            smtp_code,
+        )
 
 
 class OpensearchParser(LogParser):
@@ -127,7 +175,7 @@ class OpensearchParser(LogParser):
     }
     """
 
-    def __init__(self, mapping: dict[str, str]):
+    def __init__(self, mapping: OpenSearchMappingConfig):
         self.mapping = mapping
 
     def parse(self, log: dict) -> LogEntry:
@@ -141,24 +189,66 @@ class OpensearchParser(LogParser):
             LogEntry: The parsed log entry
         """
 
-        datetime = _get_nested_value(log, self.mapping["timestamp"])
-        hostname = _get_nested_value(log, self.mapping["hostname"])
-        service = _get_nested_value(log, self.mapping["service"])
-        message_content = _get_nested_value(log, self.mapping["message"])
+        datetime = _get_nested_value(log, self.mapping.timestamp)
+        hostname = _get_nested_value(log, self.mapping.hostname)
+        service = _get_nested_value(log, self.mapping.service)
+        message_content = _get_nested_value(log, self.mapping.message)
         if not message_content:
             message_content = ""
-        _mail_id_candidate = message_content.split(":")[0]
-        mail_id = (
-            _mail_id_candidate
-            if check_mail_id_valid(_mail_id_candidate)
-            else None
+
+        # Extract mail_id: use mapping if configured, otherwise parse from message
+        if self.mapping.mail_id:
+            mail_id = _get_nested_value(log, self.mapping.mail_id)
+            message = message_content
+        else:
+            # Parse mail_id from message content
+            _mail_id_candidate = message_content.split(":")[0]
+            mail_id = (
+                _mail_id_candidate
+                if check_mail_id_valid(_mail_id_candidate)
+                else None
+            )
+            message = (
+                " ".join(message_content.split()[1:])
+                if mail_id
+                else message_content
+            )
+
+        # Extract relay information: try use mappings first
+        relay_host = None
+        relay_ip = None
+        relay_port = None
+        smtp_code = None
+        if self.mapping.relay_host:
+            relay_host = _get_nested_value(log, self.mapping.relay_host)
+        if self.mapping.relay_ip:
+            relay_ip = _get_nested_value(log, self.mapping.relay_ip)
+        if self.mapping.relay_port:
+            relay_port = _get_nested_value(log, self.mapping.relay_port)
+        if self.mapping.smtp_code:
+            smtp_code = _get_nested_value(log, self.mapping.smtp_code)
+
+        # If any relay field is missing, try to fill from message parsing
+        if not relay_host or not relay_ip or not relay_port or not smtp_code:
+            trace_result = analyze_log_from_message(message_content)
+            if trace_result:
+                # Fill in missing fields from parsed message
+                relay_host = relay_host or trace_result.relay_host
+                relay_ip = relay_ip or trace_result.relay_ip
+                relay_port = relay_port or trace_result.relay_port
+                smtp_code = smtp_code or trace_result.smtp_code
+
+        return LogEntry(
+            datetime,
+            hostname,
+            service,
+            mail_id,
+            message,
+            relay_host,
+            relay_ip,
+            relay_port,
+            smtp_code,
         )
-        message = (
-            " ".join(message_content.split()[1:])
-            if mail_id
-            else message_content
-        )
-        return LogEntry(datetime, hostname, service, mail_id, message)
 
 
 PARSERS: dict[str, Type[LogParser]] = {

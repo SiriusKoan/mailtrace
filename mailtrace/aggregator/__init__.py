@@ -1,11 +1,11 @@
-from mailtrace.aggregator.base import LogAggregator, TraceResult
+from mailtrace.aggregator.base import LogAggregator, RelayResult
 from mailtrace.aggregator.opensearch import OpenSearch
 from mailtrace.aggregator.ssh_host import SSHHost
 from mailtrace.log import logger
 from mailtrace.models import LogQuery
 
 
-def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
+def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     """
     Trace a mail message through Postfix logs to find the next relay hop and new mail ID.
 
@@ -51,4 +51,4 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> TraceResult | None:
     return trace_result
 
 
-__all__ = ["do_trace", "SSHHost", "OpenSearch", "TraceResult"]
+__all__ = ["do_trace", "SSHHost", "OpenSearch", "RelayResult"]

@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from enum import Enum
 
 
 @dataclass
@@ -12,6 +11,10 @@ class LogEntry:
         service: Service that generated the log entry (e.g., postfix/smtp)
         mail_id: Unique identifier for the mail message, if available
         message: The actual log message content
+        relay_host: Hostname of the relay, if available
+        relay_ip: IP address of the relay, if available
+        relay_port: Port number of the relay connection, if available
+        smtp_code: SMTP response code if relay information was extracted, if available
     """
 
     # todo: datetime field should be converted to datetime object
@@ -20,19 +23,13 @@ class LogEntry:
     service: str
     mail_id: str | None
     message: str
+    relay_host: str | None = None
+    relay_ip: str | None = None
+    relay_port: int | None = None
+    smtp_code: int | None = None
 
     def __str__(self) -> str:
         return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"
-
-
-class PostfixServiceType(Enum):
-    """Enumeration of common Postfix service types found in log files."""
-
-    SMTP = "postfix/smtp"
-    LMTP = "postfix/lmtp"
-    SMTPD = "postfix/smtpd"
-    QMGR = "postfix/qmgr"
-    CLEANUP = "postfix/cleanup"
 
 
 @dataclass
