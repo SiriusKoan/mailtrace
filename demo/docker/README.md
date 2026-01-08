@@ -88,7 +88,6 @@ $ python3 -m mailtrace run \
 $ swaks \
     --to user2@example.com \
     --from user1@example.com \
-    -au user1 -ap user1 \
     --server 127.0.0.1 -p 20025
 
 $ python3 -m mailtrace run \
@@ -97,3 +96,13 @@ $ python3 -m mailtrace run \
     -k user1 \
     --time '2025-12-10 20:00:00' --time-range 1h
 ```
+
+## Bulk Email Sending
+
+Run the script `send_bulk_emails.sh` with desired number of emails to send:
+
+```shell
+$ ./send_bulk_emails.sh 1000
+```
+
+It will send emails with the above two commands randomly.

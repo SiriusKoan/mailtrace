@@ -22,9 +22,6 @@ RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
     echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-RUN useradd -m user1 && echo "user1:user1" | chpasswd && \
-    useradd -m user2 && echo "user2:user2" | chpasswd
-
 COPY ./mx/postfix /etc/postfix
 COPY ./vector/vector.yaml /etc/vector/vector.yaml
 COPY ./rsyslog/forward.conf /etc/rsyslog.d/50-forward.conf
