@@ -1,31 +1,32 @@
 import datetime
+import logging
 import re
 from dataclasses import dataclass
-from typing import List
 
-from mailtrace.log import logger
+logger = logging.getLogger("mailtrace")
+
+# Regex patterns for time validation
+_TIME_FORMAT_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+_TIME_RANGE_RE = re.compile(r"^(\d+)([dhm])$")
+
+# IP address pattern (IPv4 or IPv6)
+_IP_ADDRESS_RE = re.compile(
+    r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}$"
+)
 
 
 def time_validation(time: str, time_range: str) -> str:
     """
     Validate time and time_range parameters.
 
-    Args:
-        time: Time string in format YYYY-MM-DD HH:MM:SS
-        time_range: Time range string in format [0-9]+[dhm] (days, hours, minutes)
-
     Returns:
-        Empty string if validation passes, error message if validation fails
+        Empty string if validation passes, error message if validation fails.
     """
-
-    if time:
-        time_pattern = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
-        if not time_pattern.match(time):
-            return f"Time {time} should be in format YYYY-MM-DD HH:MM:SS"
-    if time and not time_range or time_range and not time:
+    if time and not _TIME_FORMAT_RE.match(time):
+        return f"Time {time} should be in format YYYY-MM-DD HH:MM:SS"
+    if bool(time) != bool(time_range):
         return "Time and time-range must be provided together"
-    time_range_pattern = re.compile(r"^\d+[dhm]$")
-    if time_range and not time_range_pattern.match(time_range):
+    if time_range and not _TIME_RANGE_RE.match(time_range):
         return "time_range should be in format [0-9]+[dhm]"
     return ""
 
@@ -34,87 +35,81 @@ def time_range_to_timedelta(time_range: str) -> datetime.timedelta:
     """
     Convert a time range string to a datetime.timedelta object.
 
-    Args:
-        time_range: Time range string in format [0-9]+[dhm] where:
-                   - d = days
-                   - h = hours
-                   - m = minutes
-
-    Returns:
-        datetime.timedelta object representing the time range
+    Supported formats: Nd (days), Nh (hours), Nm (minutes)
 
     Raises:
         ValueError: If time_range format is invalid
     """
+    match = _TIME_RANGE_RE.match(time_range)
+    if not match:
+        raise ValueError(f"Invalid time range format: {time_range}")
 
-    if time_range.endswith("d"):
-        return datetime.timedelta(days=int(time_range[:-1]))
-    if time_range.endswith("h"):
-        return datetime.timedelta(hours=int(time_range[:-1]))
-    if time_range.endswith("m"):
-        return datetime.timedelta(minutes=int(time_range[:-1]))
-    raise ValueError("Invalid time range")
+    value = int(match.group(1))
+    unit = match.group(2)
+
+    if unit == "d":
+        return datetime.timedelta(days=value)
+    if unit == "h":
+        return datetime.timedelta(hours=value)
+    if unit == "m":
+        return datetime.timedelta(minutes=value)
+
+    raise ValueError(f"Invalid time range unit: {unit}")
 
 
-def print_blue(text: str):
-    """
-    Print text in blue color using ANSI escape codes.
-
-    Args:
-        text: The text to print in blue
-    """
-
+def print_blue(text: str) -> None:
+    """Print text in blue color using ANSI escape codes."""
     print(f"\033[94m{text}\033[0m")
 
 
-def print_red(text: str):
-    """
-    Print text in red color using ANSI escape codes.
-
-    Args:
-        text: The text to print in red
-    """
-
+def print_red(text: str) -> None:
+    """Print text in red color using ANSI escape codes."""
     print(f"\033[91m{text}\033[0m")
 
 
-def get_hosts(hostnames: List[str], domain: str) -> List[str]:
+def get_hosts(hostnames: list[str], domain: str) -> list[str]:
     """
-    Generate a list of possible hostnames based on the given hostname and domain.
+    Generate a list of possible hostnames based on the given hostnames and domain.
+
+    For each hostname:
+    - IP addresses are kept as-is
+    - FQDNs generate both the FQDN and short hostname
+    - Short hostnames generate both the short name and FQDN with domain
 
     Args:
-        hostname: The base hostname (e.g., "mailer1")
-        domain: The domain name (e.g., "example.com")
-    """
+        hostnames: List of base hostnames to expand
+        domain: The domain name to append to short hostnames
 
+    Returns:
+        Deduplicated list of all hostname variants.
+    """
     logger.debug(
         f"Generating hosts for hostnames: {hostnames} and domain: {domain}"
     )
-    hosts = []
+    hosts: list[str] = []
+
     for hostname in hostnames:
-        # skip empty hostname
-        if len(hostname.strip()) == 0:
+        hostname = hostname.strip()
+        if not hostname:
             continue
 
-        # check if hostname is ip
-        ip_pattern = re.compile(
-            r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$|^(?:[a-fA-F0-9]{1,4}:){7}[a-fA-F0-9]{1,4}$"
-        )
-        if ip_pattern.match(hostname):
+        # IP addresses are kept as-is
+        if _IP_ADDRESS_RE.match(hostname):
             hosts.append(hostname)
             continue
 
-        # if hostname is short form, yield both short and FQDN
+        # Add both short and FQDN forms
         if "." in hostname:
             hosts.append(hostname)
-            # extract short hostname
-            short_hostname = hostname.split(".")[0]
-            hosts.append(short_hostname)
+            hosts.append(hostname.split(".")[0])
         else:
             hosts.append(hostname)
-            hosts.append(f"{hostname}.{domain}")
-    logger.debug(f"Generated hosts: {hosts}")
-    return list(set(hosts))
+            if domain:
+                hosts.append(f"{hostname}.{domain}")
+
+    result = list(set(hosts))
+    logger.debug(f"Generated hosts: {result}")
+    return result
 
 
 @dataclass

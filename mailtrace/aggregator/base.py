@@ -1,10 +1,12 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
 from mailtrace.config import Config
-from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
 from mailtrace.utils import RelayResult
+
+logger = logging.getLogger("mailtrace")
 
 
 class LogAggregator(ABC):

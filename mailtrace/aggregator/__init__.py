@@ -1,8 +1,64 @@
-from mailtrace.aggregator.base import LogAggregator, RelayResult
+import logging
+import re
+
+from mailtrace.aggregator.base import LogAggregator
 from mailtrace.aggregator.opensearch import OpenSearch
 from mailtrace.aggregator.ssh_host import SSHHost
-from mailtrace.log import logger
+from mailtrace.config import Config, Method
 from mailtrace.models import LogQuery
+from mailtrace.parser import LogEntry
+from mailtrace.utils import RelayResult
+
+logger = logging.getLogger("mailtrace")
+
+# Regex patterns for parsing Postfix log messages
+_SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
+_QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+)")
+_RELAY_RE = re.compile(
+    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
+)
+
+# Services that perform mail relay (string constants)
+_RELAY_SERVICES = {
+    "postfix/smtp",
+    "postfix/lmtp",
+}
+
+
+def _extract_next_mail_id(log_entry: LogEntry) -> str | None:
+    """Extract the next mail ID from a log entry (structured field or message)."""
+    if log_entry.queued_as:
+        return log_entry.queued_as
+
+    queued_match = _QUEUED_AS_RE.search(log_entry.message)
+    return queued_match.group("id") if queued_match else None
+
+
+def _parse_relay_info(log_entry: LogEntry) -> RelayResult | None:
+    """Parse relay information from a successful SMTP log entry."""
+    smtp_match = _SMTP_CODE_RE.search(log_entry.message)
+    if not smtp_match:
+        return None
+
+    smtp_code = int(smtp_match.group(1))
+    if smtp_code != 250:
+        return None
+
+    next_mail_id = _extract_next_mail_id(log_entry)
+    if not next_mail_id:
+        return None
+
+    relay_match = _RELAY_RE.search(log_entry.message)
+    if not relay_match:
+        return None
+
+    return RelayResult(
+        mail_id=next_mail_id,
+        relay_host=relay_match.group("host"),
+        relay_ip=relay_match.group("ip"),
+        relay_port=int(relay_match.group("port")),
+        smtp_code=smtp_code,
+    )
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
@@ -33,7 +89,6 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
         >>> if result:
         ...     print(f"Mail relayed to {result.relay_host} with ID {result.mail_id}")
     """
-
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
 
@@ -41,14 +96,47 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     print("=== Log Entries ===")
     for log_entry in log_entries:
         print(log_entry)
+        logger.debug("LogEntry: %s", log_entry)
+        if log_entry.service not in _RELAY_SERVICES:
+            continue
 
-    # Analyze logs using the aggregator's analyze_logs method
-    trace_result = aggregator.analyze_logs(log_entries)
+        result = _parse_relay_info(log_entry)
+        if result:
+            logger.info(
+                "Found relay %s [%s]:%d, new ID %s",
+                result.relay_host,
+                result.relay_ip,
+                result.relay_port,
+                result.mail_id,
+            )
+            return result
 
-    if trace_result is None:
-        logger.info("No next hop found for %s", mail_id)
-
-    return trace_result
+    logger.info("No next hop found for %s", mail_id)
+    return None
 
 
-__all__ = ["do_trace", "SSHHost", "OpenSearch", "RelayResult"]
+def select_aggregator(config: Config) -> type[LogAggregator]:
+    """
+    Select and return the appropriate log aggregator class based on config method.
+
+    Raises:
+        ValueError: If the method is unsupported.
+    """
+    aggregators = {
+        Method.SSH: SSHHost,
+        Method.OPENSEARCH: OpenSearch,
+    }
+
+    aggregator_class = aggregators.get(config.method)
+    if aggregator_class is None:
+        raise ValueError(f"Unsupported method: {config.method}")
+    return aggregator_class
+
+
+__all__ = [
+    "do_trace",
+    "SSHHost",
+    "OpenSearch",
+    "RelayResult",
+    "select_aggregator",
+]
