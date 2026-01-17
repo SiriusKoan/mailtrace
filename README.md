@@ -4,7 +4,24 @@ Mailtrace is a command-line tool for tracing emails via SSH or OpenSearch.
 
 ## Installation
 
+For development within the mail-analyzer project:
+
+```bash
+# Enter Nix development shell from project root
+cd /path/to/mail-analyzer
+nix develop .#mailtrace
+
+# Or with direnv (automatic activation)
+cd rca-agent/external-tools/mailtrace
+direnv allow
+
+# Install dependencies
+uv sync
 ```
+
+For standalone installation:
+
+```bash
 $ pip install mailtrace
 ```
 
@@ -38,6 +55,162 @@ Password-related options are also available:
 - `--opensearch-pass`: Password for OpenSearch authentication.
 
 To help prevent password leakage, you can use the following flags to enter passwords interactively at the prompt: `--ask-login-pass`, `--ask-sudo-pass`, `--ask-opensearch-pass`.
+
+### Automatic Tracing with Graph Generation
+
+The `trace` command automatically traces the complete mail flow and generates a Graphviz graph showing the routing path.
+
+#### Graph Format
+
+The generated graph uses a clean, topology-focused format:
+- **Nodes**: Actual hostnames where mail was processed (e.g., `smtp-relay-1.example.com`)
+- **Edges**: Mail queue IDs showing the flow between hosts (e.g., `ABC123`)
+- **Clusters**: When you specify a cluster name with `-h`, the graph starts from the actual physical host where the mail was first found
+
+#### Output to File
+
+Generate a `.dot` file:
+
+```bash
+mailtrace trace \
+    -c ~/.config/mailtrace.yaml \
+    -h mail.example.com \
+    -k user@example.com \
+    --time "2025-07-21 10:00:00" \
+    --time-range 10h \
+    -o mail_trace.dot
+```
+
+Then visualize with Graphviz:
+
+```bash
+dot -Tpng mail_trace.dot -o mail_trace.png
+```
+
+#### Output to Stdout
+
+Omit the `-o` option to output the graph directly to stdout:
+
+```bash
+mailtrace trace \
+    -c ~/.config/mailtrace.yaml \
+    -h mail.example.com \
+    -k user@example.com \
+    --time "2025-07-21 10:00:00" \
+    --time-range 10h
+```
+
+Or explicitly use `-o -` for stdout:
+
+```bash
+mailtrace trace \
+    -c ~/.config/mailtrace.yaml \
+    -h mail.example.com \
+    -k user@example.com \
+    --time "2025-07-21 10:00:00" \
+    --time-range 10h \
+    -o -
+```
+
+#### Pipe Directly to Graphviz
+
+You can pipe the output directly to Graphviz for instant visualization:
+
+```bash
+mailtrace trace \
+    -c ~/.config/mailtrace.yaml \
+    -h mail.example.com \
+    -k user@example.com \
+    --time "2025-07-21 10:00:00" \
+    --time-range 10h | dot -Tpng > mail_trace.png
+```
+
+Or to SVG for scalable graphics:
+
+```bash
+mailtrace trace \
+    -c ~/.config/mailtrace.yaml \
+    -h mail.example.com \
+    -k user@example.com \
+    --time "2025-07-21 10:00:00" \
+    --time-range 10h | dot -Tsvg > mail_trace.svg
+```
+
+#### Example Graph Output
+
+```dot
+digraph {
+smtp-relay-1.example.com;
+smtp-relay-2.example.com;
+mail-delivery.example.com;
+smtp-relay-1.example.com -> smtp-relay-2.example.com [key=0, label=8DCB211F769];
+smtp-relay-2.example.com -> mail-delivery.example.com [key=1, label=9EF8A12BC3D];
+}
+```
+
+This shows mail with queue ID `8DCB211F769` flowing from `smtp-relay-1` to `smtp-relay-2`, where it received new queue ID `9EF8A12BC3D` before final delivery.
+
+## Using as a Library
+
+Mailtrace can also be used as a Python library in your own scripts:
+
+```python
+#!/usr/bin/env python3
+"""
+Example: Using mailtrace as a library
+"""
+
+from mailtrace import (
+    load_config,
+    select_aggregator,
+    trace_mail_flow_to_file,
+    query_logs_by_keywords,
+)
+
+# Load configuration
+config = load_config('config.yaml')
+
+# Select the appropriate aggregator (SSHHost or OpenSearch)
+aggregator_class = select_aggregator(config)
+
+# Example 1: Trace mail flow and save to file
+trace_mail_flow_to_file(
+    config=config,
+    aggregator_class=aggregator_class,
+    start_host='mail.example.com',
+    keywords=['user@example.com'],
+    time='2025-07-21 10:00:00',
+    time_range='10h',
+    output_file='mail_trace.dot'  # Optional: omit or use None for stdout
+)
+
+# Example 2: Query logs by keywords only
+logs_by_id = query_logs_by_keywords(
+    config=config,
+    aggregator_class=aggregator_class,
+    start_host='mail.example.com',
+    keywords=['user@example.com'],
+    time='2025-07-21 10:00:00',
+    time_range='10h'
+)
+
+# Process the results
+for mail_id, (host, log_entries) in logs_by_id.items():
+    print(f"Mail ID: {mail_id} (from {host})")
+    for entry in log_entries:
+        print(f"  {entry}")
+```
+
+### Available Library Functions
+
+- **`load_config(config_path)`** - Load configuration from a YAML file
+- **`select_aggregator(config)`** - Select the appropriate aggregator class (SSHHost or OpenSearch) based on config
+- **`trace_mail_flow_to_file(config, aggregator_class, start_host, keywords, time, time_range, output_file=None)`** - Trace mail flow and output as Graphviz dot format (file or stdout)
+- **`query_logs_by_keywords(config, aggregator_class, start_host, keywords, time, time_range)`** - Query logs and return mail IDs with their log entries
+- **`trace_mail_flow(trace_id, aggregator_class, config, host, graph)`** - Trace a specific mail ID and build a MailGraph
+- **`MailGraph()`** - Create and manipulate mail flow graphs
+  - `add_hop(from_host, to_host, queue_id)` - Add a mail hop between hosts
+  - `to_dot(path=None)` - Write graph to DOT format (file path or stdout if None)
 
 ## Configuration
 

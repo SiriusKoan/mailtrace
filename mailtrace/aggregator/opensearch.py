@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import urllib3
@@ -6,10 +7,11 @@ from opensearchpy.helpers.search import Search
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, OpenSearchConfig
-from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
 from mailtrace.parser import OpensearchParser
 from mailtrace.utils import get_hosts, time_range_to_timedelta
+
+logger = logging.getLogger("mailtrace")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -99,10 +101,17 @@ class OpenSearch(LogAggregator):
                 )
 
         if query.mail_id:
-            search = search.query(
-                "wildcard",
-                **{self.config.mapping.message: f"{query.mail_id.lower()}*"},
-            )
+            # Use structured queueid field if available, otherwise fallback to message search
+            queueid_field = self.config.mapping.queueid
+            if queueid_field:
+                search = search.query("term", **{queueid_field: query.mail_id})
+            else:
+                search = search.query(
+                    "wildcard",
+                    **{
+                        self.config.mapping.message: f"{query.mail_id.lower()}*"
+                    },
+                )
 
         logger.debug(f"Query: {search.to_dict()}")
         response = search.execute()

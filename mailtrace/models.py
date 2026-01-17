@@ -11,6 +11,7 @@ class LogEntry:
         service: Service that generated the log entry (e.g., postfix/smtp)
         mail_id: Unique identifier for the mail message, if available
         message: The actual log message content
+        queued_as: The new mail ID when message was queued at next hop (OpenSearch structured field)
         relay_host: Hostname of the relay, if available
         relay_ip: IP address of the relay, if available
         relay_port: Port number of the relay connection, if available
@@ -23,6 +24,7 @@ class LogEntry:
     service: str
     mail_id: str | None
     message: str
+    queued_as: str | None = None
     relay_host: str | None = None
     relay_ip: str | None = None
     relay_port: int | None = None

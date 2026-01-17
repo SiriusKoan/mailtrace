@@ -1,6 +1,7 @@
 ---
 method: ssh
 log_level: INFO
+timeout: 30
 auto_continue: false
 ssh_config:
   username: username
@@ -42,6 +43,8 @@ opensearch_config:
     message: "message"
     timestamp: "@timestamp"
     service: "log.syslog.appname"
+    queueid: "postfix.queueid.keyword"
+    queued_as: "postfix.queued_as.keyword"
 clusters:
   mx-cluster:
     - mx-cluster.mydomain.com
