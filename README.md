@@ -238,11 +238,11 @@ ssh_config:
   host_config:
     log_files:
       - /var/log/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    # log_parser: SyslogParser  # Optional - auto-detects format by default
     time_format: "%Y-%m-%dT%H:%M:%S"
   hosts:
     another.mailserver.example.com:
-      log_parser: DayOfWeekParser
+      log_parser: Rfc3164Parser  # Force BSD syslog format if needed
       time_format: "%b %d %H:%M:%S"
 ```
 
@@ -260,9 +260,12 @@ ssh_config:
 
 - `host_config`: Default settings applied to all hosts.
   - `log_files`: List of log file paths to read (required).
-  - `log_parser`: Log parser for processing log files (required). Available parsers: `NoSpaceInDatetimeParser`, `DayOfWeekParser`, etc.
+  - `log_parser`: Log parser for processing log files (default: `SyslogParser`). Available parsers:
+    - `SyslogParser`: Auto-detects RFC 3164 vs RFC 5424 format (recommended)
+    - `Rfc5424Parser`: Force RFC 5424 format (ISO 8601 timestamp: `2025-01-01T10:00:00+08:00`)
+    - `Rfc3164Parser`: Force RFC 3164 format (BSD syslog: `Feb 1 10:00:00`)
   - `time_format`: Time format string for parsing timestamps (default: `"%Y-%m-%d %H:%M:%S"`). Used for time-based filtering.
-  
+
 - `hosts`: Host-specific configurations, overriding `host_config` for particular hosts. Uses the same format as `host_config`.
 
 #### SSH Config File Example
@@ -335,29 +338,24 @@ ssh_config:
   host_config:
     log_files:
       - /var/log/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    # log_parser: SyslogParser  # Optional - auto-detects format by default
     time_format: "%Y-%m-%dT%H:%M:%S"
   hosts:
     mx.example.com:
       log_files:
         - /var/log/mx/mail.log
-      log_parser: NoSpaceInDatetimeParser
-      time_format: "%Y-%m-%dT%H:%M:%S"
+      # log_parser and time_format inherited from host_config
     mailer.example.com:
       log_files:
         - /var/log/mailer/mail.log
-      log_parser: NoSpaceInDatetimeParser
-      time_format: "%Y-%m-%dT%H:%M:%S"
+      log_parser: Rfc3164Parser  # Override if this host uses different format
+      time_format: "%b %d %H:%M:%S"
     mailpolicy.example.com:
       log_files:
         - /var/log/mailpolicy/mail.log
-      log_parser: NoSpaceInDatetimeParser
-      time_format: "%Y-%m-%dT%H:%M:%S"
     mailbox.example.com:
       log_files:
         - /var/log/mailbox/mail.log
-      log_parser: NoSpaceInDatetimeParser
-      time_format: "%Y-%m-%dT%H:%M:%S"
 ```
 
 ### OpenSearch Configuration
