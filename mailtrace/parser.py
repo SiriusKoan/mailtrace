@@ -78,15 +78,6 @@ class NoSpaceInDatetimeParser(LogParser):
             LogEntry: The parsed log entry
         """
         parts = log.split(" ", 4)
-        datetime = parts[0]
-        hostname = parts[1]
-        service = _extract_service(parts[2])
-        mail_id = _extract_mail_id(parts[3])
-        message = parts[4]
-
-        # Extract relay information from message if available
-        trace_result = analyze_log_from_message(message)
-
         return LogEntry(
             datetime=datetime,
             hostname=hostname,
