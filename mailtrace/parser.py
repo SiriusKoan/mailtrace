@@ -110,15 +110,6 @@ class DayOfWeekParser(LogParser):
             LogEntry: The parsed log entry
         """
         parts = log.split(" ", 6)
-        datetime = " ".join(parts[:3])
-        hostname = parts[3]
-        service = _extract_service(parts[4])
-        mail_id = _extract_mail_id(parts[5])
-        message = parts[6]
-
-        # Extract relay information from message if available
-        trace_result = analyze_log_from_message(message)
-
         return LogEntry(
             datetime=datetime,
             hostname=hostname,
