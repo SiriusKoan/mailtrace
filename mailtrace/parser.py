@@ -48,6 +48,52 @@ class LogParser(ABC):
             LogEntry: The parsed log entry
         """
 
+    def parse_with_enrichment(self, log: Any) -> LogEntry:
+        """
+        Parse and enrich with relay info from message.
+
+        Args:
+            log: The log entry to parse
+
+        Returns:
+            LogEntry: The parsed and enriched log entry
+        """
+        entry = self.parse(log)
+        return self._enrich_from_message(entry)
+
+    def _enrich_from_message(self, entry: LogEntry) -> LogEntry:
+        """
+        Extract relay info from message if not already present.
+
+        Args:
+            entry: The LogEntry to enrich
+
+        Returns:
+            LogEntry: The enriched log entry
+        """
+        if all([
+            entry.relay_host,
+            entry.relay_ip,
+            entry.relay_port,
+            entry.smtp_code,
+            entry.queued_as,
+        ]):
+            return entry  # Already complete
+
+        result = analyze_log_from_message(entry.message)
+        if result:
+            if entry.queued_as is None:
+                entry.queued_as = result.mail_id
+            if entry.relay_host is None:
+                entry.relay_host = result.relay_host
+            if entry.relay_ip is None:
+                entry.relay_ip = result.relay_ip
+            if entry.relay_port is None:
+                entry.relay_port = result.relay_port
+            if entry.smtp_code is None:
+                entry.smtp_code = result.smtp_code
+        return entry
+
 
 def _extract_mail_id(candidate: str) -> str | None:
     """Extract and validate mail ID from a candidate string (removes trailing colon)."""
@@ -76,19 +122,29 @@ class NoSpaceInDatetimeParser(LogParser):
 
         Returns:
             LogEntry: The parsed log entry
+
+        Raises:
+            ValueError: If log format is invalid
         """
+        # Split: [datetime, hostname, service_with_pid, mail_id_with_colon, ...message_parts]
         parts = log.split(" ", 4)
+        if len(parts) < 4:
+            raise ValueError(f"Invalid log format: {log}")
+
+        datetime_str = parts[0]
+        hostname = parts[1]
+        service = _extract_service(parts[2])  # Remove [PID]
+
+        # parts[3] is "MAILID:" - message starts at parts[4]
+        mail_id = _extract_mail_id(parts[3])
+        message = parts[4] if len(parts) > 4 else ""
+
         return LogEntry(
-            datetime=datetime,
+            datetime=datetime_str,
             hostname=hostname,
             service=service,
             mail_id=mail_id,
             message=message,
-            queued_as=trace_result.mail_id if trace_result else None,
-            relay_host=trace_result.relay_host if trace_result else None,
-            relay_ip=trace_result.relay_ip if trace_result else None,
-            relay_port=trace_result.relay_port if trace_result else None,
-            smtp_code=trace_result.smtp_code if trace_result else None,
         )
 
 
@@ -108,19 +164,29 @@ class DayOfWeekParser(LogParser):
 
         Returns:
             LogEntry: The parsed log entry
+
+        Raises:
+            ValueError: If log format is invalid
         """
-        parts = log.split(" ", 6)
+        # Split all parts, then filter empty strings to handle double spaces
+        # (e.g., "Feb  1" where day < 10)
+        parts = [p for p in log.split(" ") if p]
+
+        if len(parts) < 6:
+            raise ValueError(f"Invalid log format: {log}")
+
+        datetime_str = f"{parts[0]} {parts[1]} {parts[2]}"  # "Feb 1 10:00:00"
+        hostname = parts[3]
+        service = _extract_service(parts[4])
+        mail_id = _extract_mail_id(parts[5])
+        message = " ".join(parts[6:]) if len(parts) > 6 else ""
+
         return LogEntry(
-            datetime=datetime,
+            datetime=datetime_str,
             hostname=hostname,
             service=service,
             mail_id=mail_id,
             message=message,
-            queued_as=trace_result.mail_id if trace_result else None,
-            relay_host=trace_result.relay_host if trace_result else None,
-            relay_ip=trace_result.relay_ip if trace_result else None,
-            relay_port=trace_result.relay_port if trace_result else None,
-            smtp_code=trace_result.smtp_code if trace_result else None,
         )
 
 
@@ -155,6 +221,11 @@ class OpensearchParser(LogParser):
             return value
         return None
 
+    def _get_mapped_value(self, field: str, log: dict) -> Any:
+        """Get value from mapping field if configured."""
+        field_path = getattr(self.mapping, field, None)
+        return _get_nested_value(log, field_path) if field_path else None
+
     def _extract_mail_id(self, log: dict, message_content: str) -> str | None:
         """Extract mail ID from structured field or message content."""
         # Try structured field first (queueid)
@@ -170,48 +241,7 @@ class OpensearchParser(LogParser):
 
         # Parse mail_id from message content
         mail_id_candidate = message_content.split(":")[0]
-        return (
-            mail_id_candidate
-            if check_mail_id_valid(mail_id_candidate)
-            else None
-        )
-
-    def _extract_relay_info(
-        self, log: dict, message_content: str
-    ) -> tuple[str | None, str | None, int | None, int | None]:
-        """Extract relay information from structured fields or message content."""
-        # Try structured fields first
-        relay_host = (
-            _get_nested_value(log, self.mapping.relay_host)
-            if self.mapping.relay_host
-            else None
-        )
-        relay_ip = (
-            _get_nested_value(log, self.mapping.relay_ip)
-            if self.mapping.relay_ip
-            else None
-        )
-        relay_port = (
-            _get_nested_value(log, self.mapping.relay_port)
-            if self.mapping.relay_port
-            else None
-        )
-        smtp_code = (
-            _get_nested_value(log, self.mapping.smtp_code)
-            if self.mapping.smtp_code
-            else None
-        )
-
-        # If any field is missing, try parsing from message
-        if not all([relay_host, relay_ip, relay_port, smtp_code]):
-            trace_result = analyze_log_from_message(message_content)
-            if trace_result:
-                relay_host = relay_host or trace_result.relay_host
-                relay_ip = relay_ip or trace_result.relay_ip
-                relay_port = relay_port or trace_result.relay_port
-                smtp_code = smtp_code or trace_result.smtp_code
-
-        return relay_host, relay_ip, relay_port, smtp_code
+        return mail_id_candidate if check_mail_id_valid(mail_id_candidate) else None
 
     def parse(self, log: dict) -> LogEntry:
         """
@@ -225,7 +255,6 @@ class OpensearchParser(LogParser):
         """
         message_content = _get_nested_value(log, self.mapping.message) or ""
         mail_id = self._extract_mail_id(log, message_content)
-        queued_as = self._get_validated_mail_id(log, "queued_as")
 
         # Strip mail_id prefix from message if present
         message = (
@@ -234,21 +263,18 @@ class OpensearchParser(LogParser):
             else message_content
         )
 
-        relay_host, relay_ip, relay_port, smtp_code = self._extract_relay_info(
-            log, message_content
-        )
-
         return LogEntry(
             datetime=_get_nested_value(log, self.mapping.timestamp),
             hostname=_get_nested_value(log, self.mapping.hostname),
             service=_get_nested_value(log, self.mapping.service),
             mail_id=mail_id,
             message=message,
-            queued_as=queued_as,
-            relay_host=relay_host,
-            relay_ip=relay_ip,
-            relay_port=relay_port,
-            smtp_code=smtp_code,
+            # Structured fields (may be None, will be enriched from message)
+            queued_as=self._get_validated_mail_id(log, "queued_as"),
+            relay_host=self._get_mapped_value("relay_host", log),
+            relay_ip=self._get_mapped_value("relay_ip", log),
+            relay_port=self._get_mapped_value("relay_port", log),
+            smtp_code=self._get_mapped_value("smtp_code", log),
         )
 
 
