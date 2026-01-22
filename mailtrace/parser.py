@@ -61,7 +61,8 @@ class LogParser(ABC):
         entry = self.parse(log)
         return self._enrich_from_message(entry)
 
-    def _enrich_from_message(self, entry: LogEntry) -> LogEntry:
+    @staticmethod
+    def _enrich_from_message(entry: LogEntry) -> LogEntry:
         """
         Extract relay info from message if not already present.
 
@@ -106,16 +107,24 @@ def _extract_service(service_with_pid: str) -> str:
     return service_with_pid.split("[")[0]
 
 
-class NoSpaceInDatetimeParser(LogParser):
+class SyslogParser(LogParser):
     """
-    This parser is designed to handle log entries where the datetime does not contain any spaces.
-    Example log format:
-    2025-01-01T10:00:00.123456+08:00 mailer1 postfix/qmgr[123456]: A2DE917F931: from=<abc@example.com>, size=12345, nrcpt=1 (queue active)
+    Unified syslog parser that auto-detects and handles both RFC 3164 and RFC 5424 formats.
+
+    Supported formats:
+    - RFC 5424 (ISO 8601 timestamp):
+      2025-01-01T10:00:00.123456+08:00 mailer1 postfix/qmgr[123456]: A2DE917F931: from=<abc@example.com>
+    - RFC 3164 (BSD syslog):
+      Feb 1 10:00:00 mailer1 postfix/qmgr[123456]: A2DE917F931: from=<abc@example.com>
+
+    Format detection is based on the first character:
+    - Digit (0-9): RFC 5424 format
+    - Letter (a-zA-Z): RFC 3164 format
     """
 
     def parse(self, log: str) -> LogEntry:
         """
-        Parse a log entry with space-free datetime format.
+        Parse a syslog entry, auto-detecting the format.
 
         Args:
             log: The log string to parse
@@ -124,12 +133,29 @@ class NoSpaceInDatetimeParser(LogParser):
             LogEntry: The parsed log entry
 
         Raises:
-            ValueError: If log format is invalid
+            ValueError: If log format is invalid or unrecognized
+        """
+        if not log:
+            raise ValueError("Empty log entry")
+
+        # Auto-detect format based on first character
+        if log[0].isdigit():
+            return self._parse_rfc5424(log)
+        if log[0].isalpha():
+            return self._parse_rfc3164(log)
+        raise ValueError(f"Unrecognized log format: {log}")
+
+    @staticmethod
+    def _parse_rfc5424(log: str) -> LogEntry:
+        """
+        Parse RFC 5424 format (ISO 8601 timestamp).
+
+        Format: 2025-01-01T10:00:00.123456+08:00 hostname service[pid]: mail_id: message
         """
         # Split: [datetime, hostname, service_with_pid, mail_id_with_colon, ...message_parts]
         parts = log.split(" ", 4)
         if len(parts) < 4:
-            raise ValueError(f"Invalid log format: {log}")
+            raise ValueError(f"Invalid RFC 5424 log format: {log}")
 
         datetime_str = parts[0]
         hostname = parts[1]
@@ -147,33 +173,19 @@ class NoSpaceInDatetimeParser(LogParser):
             message=message,
         )
 
-
-class DayOfWeekParser(LogParser):
-    """
-    This parser is designed to handle log entries where the datetime includes the day of the week.
-    Example log format:
-    Feb 1 10:00:00 mailer1 postfix/qmgr[123456]: A2DE917F931: from=<abc@example.com>, size=12345, nrcpt=1 (queue active)
-    """
-
-    def parse(self, log: str) -> LogEntry:
+    @staticmethod
+    def _parse_rfc3164(log: str) -> LogEntry:
         """
-        Parse a log entry with day-of-week datetime format.
+        Parse RFC 3164 format (BSD syslog with month abbreviation).
 
-        Args:
-            log: The log string to parse
-
-        Returns:
-            LogEntry: The parsed log entry
-
-        Raises:
-            ValueError: If log format is invalid
+        Format: Feb 1 10:00:00 hostname service[pid]: mail_id: message
+        Note: Handles double spaces for single-digit days (e.g., "Feb  1")
         """
         # Split all parts, then filter empty strings to handle double spaces
-        # (e.g., "Feb  1" where day < 10)
         parts = [p for p in log.split(" ") if p]
 
         if len(parts) < 6:
-            raise ValueError(f"Invalid log format: {log}")
+            raise ValueError(f"Invalid RFC 3164 log format: {log}")
 
         datetime_str = f"{parts[0]} {parts[1]} {parts[2]}"  # "Feb 1 10:00:00"
         hostname = parts[3]
@@ -188,6 +200,32 @@ class DayOfWeekParser(LogParser):
             mail_id=mail_id,
             message=message,
         )
+
+
+class Rfc5424Parser(SyslogParser):
+    """
+    Parser for RFC 5424 format only (ISO 8601 timestamp).
+
+    Use this when you know all logs are in RFC 5424 format and want to skip auto-detection.
+    Example: 2025-01-01T10:00:00.123456+08:00 mailer1 postfix/qmgr[123456]: A2DE917F931: ...
+    """
+
+    def parse(self, log: str) -> LogEntry:
+        """Parse a log entry using RFC 5424 format."""
+        return self._parse_rfc5424(log)
+
+
+class Rfc3164Parser(SyslogParser):
+    """
+    Parser for RFC 3164 format only (BSD syslog with month abbreviation).
+
+    Use this when you know all logs are in RFC 3164 format and want to skip auto-detection.
+    Example: Feb 1 10:00:00 mailer1 postfix/qmgr[123456]: A2DE917F931: ...
+    """
+
+    def parse(self, log: str) -> LogEntry:
+        """Parse a log entry using RFC 3164 format."""
+        return self._parse_rfc3164(log)
 
 
 class OpensearchParser(LogParser):
@@ -278,9 +316,10 @@ class OpensearchParser(LogParser):
         )
 
 
-# Registry of available parsers by class name
+# Registry of available parsers by name
 PARSERS: dict[str, type[LogParser]] = {
-    NoSpaceInDatetimeParser.__name__: NoSpaceInDatetimeParser,
-    DayOfWeekParser.__name__: DayOfWeekParser,
-    OpensearchParser.__name__: OpensearchParser,
+    "SyslogParser": SyslogParser,  # Auto-detect format (default)
+    "Rfc5424Parser": Rfc5424Parser,  # Force RFC 5424 (ISO 8601 timestamp)
+    "Rfc3164Parser": Rfc3164Parser,  # Force RFC 3164 (BSD syslog)
+    "OpensearchParser": OpensearchParser,
 }

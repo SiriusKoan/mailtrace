@@ -21,14 +21,14 @@ class HostConfig:
     """Configuration for host-specific log settings."""
 
     log_files: list[str] = field(default_factory=list)
-    log_parser: str = ""
+    log_parser: str = "SyslogParser"
     time_format: str = "%Y-%m-%d %H:%M:%S"
 
     def __post_init__(self) -> None:
         # Lazy import to avoid circular dependency
         from mailtrace.parser import PARSERS
 
-        if self.log_parser and self.log_parser not in PARSERS:
+        if self.log_parser not in PARSERS:
             raise ValueError(f"Invalid log parser: {self.log_parser}")
 
 
