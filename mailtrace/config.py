@@ -5,6 +5,9 @@ from typing import Literal
 
 import yaml
 
+# Valid log levels for configuration
+VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
 
 class Method(Enum):
     """Enumeration of supported connection methods for log collection."""
@@ -15,19 +18,13 @@ class Method(Enum):
 
 @dataclass
 class HostConfig:
-    """Configuration for host-specific log settings.
-
-    Attributes:
-        log_files: List of log file paths to monitor
-        log_parser: Parser type to use for log processing
-        time_format: Time format string for parsing timestamps
-    """
+    """Configuration for host-specific log settings."""
 
     log_files: list[str] = field(default_factory=list)
-    log_parser: str = ""
+    log_parser: str = "SyslogParser"
     time_format: str = "%Y-%m-%d %H:%M:%S"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Lazy import to avoid circular dependency
         from mailtrace.parser import PARSERS
 
@@ -61,11 +58,13 @@ class SSHConfig:
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self.username:
             raise ValueError("Username must be provided")
         if not self.password and not self.private_key:
             raise ValueError("Either password or private_key must be provided")
+
+        # Convert dict to HostConfig if needed
         if isinstance(self.host_config, dict):
             self.host_config = HostConfig(**self.host_config)
         for hostname, host_config in self.hosts.items():
@@ -77,14 +76,7 @@ class SSHConfig:
 
         Merges host-specific configuration with default configuration,
         with host-specific values taking precedence.
-
-        Args:
-            hostname: Name of the host to get configuration for
-
-        Returns:
-            HostConfig object with merged configuration
         """
-
         host_config = self.hosts.get(hostname, self.host_config)
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
@@ -104,6 +96,8 @@ class OpenSearchMappingConfig:
         message: OpenSearch field for log message
         timestamp: OpenSearch field for log timestamp
         service: OpenSearch field for service name
+        queueid: OpenSearch field for queue ID
+        queued_as: OpenSearch field for queued as
         mail_id: OpenSearch field for mail ID
         relay_host: OpenSearch field for relay hostname
         relay_ip: OpenSearch field for relay IP address
@@ -116,6 +110,8 @@ class OpenSearchMappingConfig:
     message: str = "message"
     timestamp: str = "@timestamp"
     service: str = "log.syslog.appname"
+    queueid: str = "log.syslog.structured_data.queueid"
+    queued_as: str = "log.syslog.structured_data.queued_as"
     mail_id: str = ""
     relay_host: str = ""
     relay_ip: str = ""
@@ -152,6 +148,11 @@ class OpenSearchConfig:
         default_factory=OpenSearchMappingConfig
     )
 
+    def __post_init__(self) -> None:
+        # Convert dict mapping to OpenSearchMappingConfig if needed
+        if isinstance(self.mapping, dict):
+            self.mapping = OpenSearchMappingConfig(**self.mapping)
+
 
 @dataclass
 class Config:
@@ -175,75 +176,73 @@ class Config:
     domain: str = ""
     auto_continue: bool = False
 
-    def __post_init__(self):
-        # value checking
-        if self.log_level not in [
-            "DEBUG",
-            "INFO",
-            "WARNING",
-            "ERROR",
-            "CRITICAL",
-        ]:
+    def __post_init__(self) -> None:
+        # Validate log level
+        if self.log_level not in VALID_LOG_LEVELS:
             raise ValueError(f"Invalid log level: {self.log_level}")
-        if self.method not in [method.value for method in Method]:
-            raise ValueError(f"Invalid method: {self.method}")
-        # type checking
+
+        # Convert string method to enum if needed
         if isinstance(self.method, str):
-            self.method = Method(self.method)
+            try:
+                self.method = Method(self.method)
+            except ValueError:
+                raise ValueError(f"Invalid method: {self.method}")
+
+        # Convert dicts to config objects if needed
         if isinstance(self.ssh_config, dict):
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
 
     def cluster_to_hosts(self, name: str) -> list[str] | None:
-        """Get list of hosts for a given cluster name.
-
-        Args:
-            name: Name of the cluster
-
-        Returns:
-            List of host names in the cluster, or None if cluster not found
-        """
-
+        """Get list of hosts for a given cluster name."""
         return self.clusters.get(name)
 
 
-def load_config(config_path: str | None = None):
+def _load_env_passwords(config_data: dict) -> None:
+    """Load passwords from environment variables if not provided in config."""
+    # OpenSearch password
+    if "opensearch_config" in config_data:
+        os_config = config_data["opensearch_config"]
+        if not os_config.get("password"):
+            os_config["password"] = os.getenv(
+                "MAILTRACE_OPENSEARCH_PASSWORD", ""
+            )
+
+    # SSH passwords
+    if "ssh_config" in config_data:
+        ssh_config = config_data["ssh_config"]
+        if not ssh_config.get("password"):
+            ssh_config["password"] = os.getenv("MAILTRACE_SSH_PASSWORD", "")
+        if not ssh_config.get("sudo_pass"):
+            ssh_config["sudo_pass"] = os.getenv("MAILTRACE_SUDO_PASSWORD", "")
+
+
+def load_config(config_path: str | None = None) -> Config:
     """Load configuration from YAML file.
 
-    Loads configuration from the file specified by MAILTRACE_CONFIG
-    environment variable, or 'config.yaml' if not set.
+    Uses MAILTRACE_CONFIG environment variable or 'config.yaml' as default path.
+    Passwords can be provided via environment variables if not in the config file.
+
+    Args:
+        config_path: Optional path to configuration file. If not provided, uses
+            MAILTRACE_CONFIG environment variable or 'config.yaml' as default.
 
     Returns:
-        Config object with loaded configuration
+        Config: The loaded configuration object
 
     Raises:
         FileNotFoundError: If the configuration file doesn't exist
         ValueError: If the configuration file contains invalid data
     """
-
     config_path = config_path or os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
+
     with open(config_path) as f:
         config_data = yaml.safe_load(f)
 
-    # Load passwords from environment variables if not provided in config
-    if "opensearch_config" in config_data and not config_data[
-        "opensearch_config"
-    ].get("password"):
-        opensearch_password = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD")
-        if opensearch_password:
-            config_data["opensearch_config"]["password"] = opensearch_password
-    if "ssh_config" in config_data:
-        if not config_data["ssh_config"].get("password"):
-            ssh_password = os.getenv("MAILTRACE_SSH_PASSWORD")
-            if ssh_password:
-                config_data["ssh_config"]["password"] = ssh_password
-        if not config_data["ssh_config"].get("sudo_pass"):
-            sudo_password = os.getenv("MAILTRACE_SUDO_PASSWORD")
-            if sudo_password:
-                config_data["ssh_config"]["sudo_pass"] = sudo_password
+    _load_env_passwords(config_data)
 
     try:
         return Config(**config_data)

@@ -1,6 +1,7 @@
 ---
 method: ssh
 log_level: INFO
+timeout: 30
 auto_continue: false
 ssh_config:
   username: username
@@ -15,16 +16,17 @@ ssh_config:
       - /var/log/mail.log
       - /data/log/mail.log
       - /data/log/maillog
-    log_parser: NoSpaceInDatetimeParser
+    # log_parser: SyslogParser  # Optional - auto-detects RFC 3164 vs RFC 5424 format
+    # Available parsers: SyslogParser (auto), Rfc5424Parser, Rfc3164Parser
     time_format: "%Y-%m-%dT%H:%M:%S"
   hosts:
     mx1.mydomain.com:
-      log_parser: DayOfWeekParser
-      time_format: "%b %d %H:%M:%S"
-    # mx2.mydomain.com will use default host_config
+      # log_parser: Rfc3164Parser  # Force BSD syslog format
+      # time_format: "%b %d %H:%M:%S"
+    # mx2.mydomain.com will use default host_config (auto-detect)
     backup-mail.mydomain.com:
-      log_parser: NoSpaceInDatetimeParser
-      time_format: "%Y-%m-%d %H:%M:%S"
+      # log_parser: Rfc5424Parser  # Force ISO 8601 format
+      # time_format: "%Y-%m-%d %H:%M:%S"
 opensearch_config:
   host: "localhost" # OpenSearch host address
   port: 9200 # OpenSearch port number
@@ -42,6 +44,8 @@ opensearch_config:
     message: "message"
     timestamp: "@timestamp"
     service: "log.syslog.appname"
+    queueid: "postfix.queueid.keyword"
+    queued_as: "postfix.queued_as.keyword"
 clusters:
   mx-cluster:
     - mx-cluster.mydomain.com

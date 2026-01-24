@@ -1,13 +1,15 @@
 import datetime
+import logging
 
 import paramiko
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config
-from mailtrace.log import logger
 from mailtrace.models import LogEntry, LogQuery
 from mailtrace.parser import PARSERS
 from mailtrace.utils import time_range_to_timedelta
+
+logger = logging.getLogger("mailtrace")
 
 
 class SSHHost(LogAggregator):
@@ -200,7 +202,7 @@ class SSHHost(LogAggregator):
             logs += stdout
         parser = PARSERS[self.host_config.log_parser]()
         parsed_logs = [
-            parser.parse(line) for line in logs.splitlines() if line
+            parser.parse_with_enrichment(line) for line in logs.splitlines() if line
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
