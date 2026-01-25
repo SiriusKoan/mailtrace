@@ -43,3 +43,36 @@ class MailGraph:
             sys.stdout.write(buffer.read())
         else:
             nx.drawing.nx_pydot.write_dot(self.graph, path)
+
+    def to_dict(self) -> dict:
+        """
+        Convert graph to dictionary representation.
+
+        Returns:
+            Dictionary with nodes, edges, and DOT format string.
+        """
+        import io
+
+        # Get DOT string
+        buffer = io.StringIO()
+        nx.drawing.nx_pydot.write_dot(self.graph, buffer)
+        buffer.seek(0)
+        dot_string = buffer.read()
+
+        # Get nodes and edges
+        nodes = list(self.graph.nodes())
+        edges = [
+            {
+                "from": u,
+                "to": v,
+                "mail_id": data.get("label", ""),
+            }
+            for u, v, data in self.graph.edges(data=True)
+        ]
+
+        return {
+            "graph_dot": dot_string,
+            "nodes": nodes,
+            "edges": edges,
+            "hop_count": len(edges),
+        }

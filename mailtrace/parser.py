@@ -72,13 +72,15 @@ class LogParser(ABC):
         Returns:
             LogEntry: The enriched log entry
         """
-        if all([
-            entry.relay_host,
-            entry.relay_ip,
-            entry.relay_port,
-            entry.smtp_code,
-            entry.queued_as,
-        ]):
+        if all(
+            [
+                entry.relay_host,
+                entry.relay_ip,
+                entry.relay_port,
+                entry.smtp_code,
+                entry.queued_as,
+            ]
+        ):
             return entry  # Already complete
 
         result = analyze_log_from_message(entry.message)
@@ -279,7 +281,11 @@ class OpensearchParser(LogParser):
 
         # Parse mail_id from message content
         mail_id_candidate = message_content.split(":")[0]
-        return mail_id_candidate if check_mail_id_valid(mail_id_candidate) else None
+        return (
+            mail_id_candidate
+            if check_mail_id_valid(mail_id_candidate)
+            else None
+        )
 
     def parse(self, log: dict) -> LogEntry:
         """

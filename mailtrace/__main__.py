@@ -383,5 +383,49 @@ def trace(
     )
 
 
+@cli.command()
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file (falls back to MAILTRACE_CONFIG env var)",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse"]),
+    default="stdio",
+    help="MCP transport type (default: stdio)",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    help="Port for SSE transport (default: 8080)",
+)
+def mcp(config_path: str | None, transport: str, port: int) -> None:
+    """Start the MCP server for LLM integration.
+
+    The MCP server exposes mailtrace tools for use by LLM assistants
+    like Claude.
+
+    Examples:
+
+        # Start with stdio transport (for Claude Code)
+        mailtrace mcp --config /path/to/config.yaml
+
+        # Start with SSE transport for remote access
+        mailtrace mcp --config /path/to/config.yaml --transport sse --port 8080
+    """
+    from mailtrace.mcp import run_server
+
+    config = load_config(config_path)
+    configure_logging(config)
+
+    logger.info(f"Starting MCP server with {transport} transport...")
+    run_server(config, transport=transport, port=port)
+
+
 if __name__ == "__main__":
     cli()
