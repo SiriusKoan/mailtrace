@@ -76,9 +76,7 @@ class SSHHost(LogAggregator):
                 if "port" in ssh_host_config:
                     connect_params["port"] = int(ssh_host_config["port"])
                 if "identityfile" in ssh_host_config:
-                    connect_params["key_filename"] = ssh_host_config[
-                        "identityfile"
-                    ]
+                    connect_params["key_filename"] = ssh_host_config["identityfile"]
             else:
                 logger.debug(
                     f"SSH config file not found for {self.host}, using Mailtrace config settings."
@@ -86,9 +84,7 @@ class SSHHost(LogAggregator):
 
         self.client.connect(**connect_params)
 
-    def _execute_command(
-        self, command: str, sudo: bool = False
-    ) -> tuple[str, str]:
+    def _execute_command(self, command: str, sudo: bool = False) -> tuple[str, str]:
         """
         Execute a command on the remote host via SSH.
 
@@ -140,9 +136,7 @@ class SSHHost(LogAggregator):
 
         if query.time and query.time_range:
             # get logs by time
-            timestamp = datetime.datetime.strptime(
-                query.time, "%Y-%m-%d %H:%M:%S"
-            )
+            timestamp = datetime.datetime.strptime(query.time, "%Y-%m-%d %H:%M:%S")
             time_range = time_range_to_timedelta(query.time_range)
             start_time = timestamp - time_range
             end_time = timestamp + time_range

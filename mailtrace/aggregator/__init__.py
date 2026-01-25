@@ -14,9 +14,7 @@ logger = logging.getLogger("mailtrace")
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
 _QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+)")
-_RELAY_RE = re.compile(
-    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
-)
+_RELAY_RE = re.compile(r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)")
 
 # Services that perform mail relay (string constants)
 _RELAY_SERVICES = {

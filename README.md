@@ -211,6 +211,118 @@ for mail_id, (host, log_entries) in logs_by_id.items():
 - **`MailGraph()`** - Create and manipulate mail flow graphs
   - `add_hop(from_host, to_host, queue_id)` - Add a mail hop between hosts
   - `to_dot(path=None)` - Write graph to DOT format (file path or stdout if None)
+- **`create_server(config, port=8080)`** - Create an MCP server instance
+- **`run_server(config, transport='stdio', port=8080)`** - Run the MCP server
+
+## MCP Server (LLM Integration)
+
+Mailtrace includes an MCP (Model Context Protocol) server that allows LLM assistants like Claude to search mail logs and trace mail flows.
+
+### Starting the MCP Server
+
+```bash
+# stdio transport (for Claude Code, Cursor, etc.)
+uvx --from /path/to/mailtrace mailtrace mcp --config ~/.config/mailtrace.yaml
+
+# SSE transport (for remote access)
+uvx --from /path/to/mailtrace mailtrace mcp --config ~/.config/mailtrace.yaml --transport sse --port 8080
+```
+
+### Available MCP Resources
+
+**`mailtrace://clusters`** - List available clusters
+
+Returns JSON mapping cluster names to their member hosts:
+```json
+{
+  "mx-cluster": ["mx1.example.com", "mx2.example.com"],
+  "smtp-cluster": ["smtp1.example.com", "smtp2.example.com"]
+}
+```
+
+### Available MCP Tools
+
+**`mailtrace_query_logs`** - Search mail logs by email address or domain
+
+Parameters:
+- `host` (required): Mail server hostname to query
+- `keywords` (required): List of email addresses or domains to search
+- `time`: Reference time (format: `YYYY-MM-DD HH:MM:SS`)
+- `time_range`: Time range (e.g., `10h`, `30m`, `1d`)
+
+**`mailtrace_trace_mail`** - Trace mail through the relay chain
+
+Parameters:
+- `host` (required): Starting mail server hostname
+- `mail_id`: Mail queue ID to trace directly (provide either this or `keywords`)
+- `keywords`: Email addresses or domains to search for (finds mail IDs automatically)
+- `time`: Reference time for log search
+- `time_range`: Time range for log search
+
+### Claude Code Configuration
+
+Add to your Claude Code MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "mailtrace": {
+      "command": "uvx",
+      "args": ["--from", "/path/to/mailtrace", "mailtrace", "mcp", "--config", "/path/to/config.yaml"]
+    }
+  }
+}
+```
+
+### Testing with MCP Inspector
+
+You can test the MCP tools interactively using the MCP Inspector:
+
+```bash
+# Create a config file for the inspector
+cat > /tmp/mcp-config.json << 'EOF'
+{
+  "mcpServers": {
+    "mailtrace": {
+      "command": "uvx",
+      "args": ["--from", "/path/to/mailtrace", "mailtrace", "mcp", "--config", "/path/to/config.yaml"]
+    }
+  }
+}
+EOF
+
+# Run the inspector
+npx @modelcontextprotocol/inspector --config /tmp/mcp-config.json --server mailtrace
+```
+
+This opens a web interface where you can manually trigger `mailtrace_query_logs` and `mailtrace_trace_mail` with custom parameters.
+
+### Security Considerations
+
+- **SSE transport has no authentication**: When using `--transport sse`, the server listens on a network port without authentication. Only use SSE transport on trusted networks or behind a reverse proxy with authentication.
+- **Cluster resource exposes hostnames**: The `mailtrace://clusters` resource returns internal server hostnames. Ensure MCP clients are trusted.
+- **Credentials from config file**: Authentication credentials (SSH passwords, OpenSearch passwords) are read from the config file. The MCP server never exposes these credentials in responses.
+- **Input validation**: All inputs are validated using Pydantic with whitespace stripping and required field checks.
+
+### Example LLM Workflow
+
+**Option 1: Direct trace with keywords** (recommended for simplicity)
+```
+mailtrace_trace_mail(host="mail.example.com", keywords=["user@example.com"], time="2025-01-24 10:00:00", time_range="2h")
+```
+
+**Option 2: Two-step workflow** (when you need to inspect logs first)
+1. Query logs to find mail IDs:
+   ```
+   mailtrace_query_logs(host="mail.example.com", keywords=["user@example.com"], time="2025-01-24 10:00:00", time_range="2h")
+   ```
+
+2. Trace a specific mail ID:
+   ```
+   mailtrace_trace_mail(host="mail.example.com", mail_id="ABC123DEF", time="2025-01-24 10:00:00", time_range="2h")
+   ```
+
+The trace returns a Graphviz DOT graph showing the mail flow path.
 
 ## Configuration
 

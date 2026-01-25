@@ -83,9 +83,7 @@ def get_hosts(hostnames: list[str], domain: str) -> list[str]:
     Returns:
         Deduplicated list of all hostname variants.
     """
-    logger.debug(
-        f"Generating hosts for hostnames: {hostnames} and domain: {domain}"
-    )
+    logger.debug(f"Generating hosts for hostnames: {hostnames} and domain: {domain}")
     hosts: list[str] = []
 
     for hostname in hostnames:
