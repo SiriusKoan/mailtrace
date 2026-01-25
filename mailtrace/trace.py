@@ -83,9 +83,7 @@ def _query_logs_from_aggregator(
     base_logs = aggregator.query_by(
         LogQuery(keywords=keywords, time=time, time_range=time_range)
     )
-    mail_ids = list(
-        {log.mail_id for log in base_logs if log.mail_id is not None}
-    )
+    mail_ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
 
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
     for mail_id in mail_ids:
@@ -122,18 +120,14 @@ def query_logs_by_keywords(
 
     if config.method == Method.OPENSEARCH:
         aggregator = aggregator_class(start_host, config)
-        logs_by_id = _query_logs_from_aggregator(
-            aggregator, keywords, time, time_range
-        )
+        logs_by_id = _query_logs_from_aggregator(aggregator, keywords, time, time_range)
     elif config.method == Method.SSH:
         hosts = config.cluster_to_hosts(start_host) or [start_host]
         logger.info("Using hosts: %s", hosts)
         for host in hosts:
             aggregator = aggregator_class(host, config)
             logs_by_id.update(
-                _query_logs_from_aggregator(
-                    aggregator, keywords, time, time_range
-                )
+                _query_logs_from_aggregator(aggregator, keywords, time, time_range)
             )
 
     if not logs_by_id:
@@ -180,9 +174,7 @@ def trace_mail_flow_to_file(
     graph = MailGraph()
     for trace_id, (host_for_trace, _) in logs_by_id.items():
         logger.info("Tracing mail ID: %s", trace_id)
-        trace_mail_flow(
-            trace_id, aggregator_class, config, host_for_trace, graph
-        )
+        trace_mail_flow(trace_id, aggregator_class, config, host_for_trace, graph)
 
     graph.to_dot(output_file)
     if output_file and output_file != "-":

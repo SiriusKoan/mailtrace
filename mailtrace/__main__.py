@@ -52,24 +52,16 @@ COMMON_OPTIONS = [
         help="The keyword, can be email address, domain, etc.",
         multiple=True,
     ),
-    click.option(
-        "--login-pass", type=str, required=False, help="The login password"
-    ),
-    click.option(
-        "--sudo-pass", type=str, required=False, help="The sudo password"
-    ),
+    click.option("--login-pass", type=str, required=False, help="The login password"),
+    click.option("--sudo-pass", type=str, required=False, help="The sudo password"),
     click.option(
         "--opensearch-pass",
         type=str,
         required=False,
         help="The opensearch password",
     ),
-    click.option(
-        "--ask-login-pass", is_flag=True, help="Ask for login password"
-    ),
-    click.option(
-        "--ask-sudo-pass", is_flag=True, help="Ask for sudo password"
-    ),
+    click.option("--ask-login-pass", is_flag=True, help="Ask for login password"),
+    click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password"),
     click.option(
         "--ask-opensearch-pass",
         is_flag=True,
@@ -97,9 +89,7 @@ def cli():
     pass
 
 
-def _prompt_password(
-    prompt: str, ask: bool, provided: str | None
-) -> str | None:
+def _prompt_password(prompt: str, ask: bool, provided: str | None) -> str | None:
     """Prompt for password if asked, otherwise return provided value."""
     if ask:
         return getpass.getpass(prompt=prompt)
@@ -135,18 +125,12 @@ def handle_passwords(
         )
         config.ssh_config.password = login_pass or config.ssh_config.password
         if not config.ssh_config.password:
-            logger.warning(
-                "Empty login password - no password will be used for login"
-            )
+            logger.warning("Empty login password - no password will be used for login")
 
-        sudo_pass = _prompt_password(
-            "Enter sudo password: ", ask_sudo_pass, sudo_pass
-        )
+        sudo_pass = _prompt_password("Enter sudo password: ", ask_sudo_pass, sudo_pass)
         config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
         if not config.ssh_config.sudo_pass:
-            logger.warning(
-                "Empty sudo password - no password will be used for sudo"
-            )
+            logger.warning("Empty sudo password - no password will be used for sudo")
 
     elif config.method == Method.OPENSEARCH:
         opensearch_pass = _prompt_password(
@@ -160,9 +144,7 @@ def handle_passwords(
                 "Empty opensearch password - no password will be used for opensearch"
             )
     else:
-        logger.warning(
-            f"Unknown method: {config.method}. No password handling."
-        )
+        logger.warning(f"Unknown method: {config.method}. No password handling.")
 
 
 def query_and_print_logs(
@@ -186,9 +168,7 @@ def query_and_print_logs(
     base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
-    mail_ids = list(
-        {log.mail_id for log in base_logs if log.mail_id is not None}
-    )
+    mail_ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
     if not mail_ids:
         logger.info("No mail IDs found")
         return {}
@@ -240,9 +220,7 @@ def trace_mail_loop(
 
         # If auto_continue is enabled, automatically continue to the next hop
         if config.auto_continue:
-            logger.info(
-                f"Auto-continue enabled. Continuing to {result.relay_host}"
-            )
+            logger.info(f"Auto-continue enabled. Continuing to {result.relay_host}")
             trace_next_hop_ans = "y"
         else:
             trace_next_hop_ans: str = input(
@@ -321,9 +299,7 @@ def run(
         return
 
     host_for_trace = logs_by_id[trace_id][0]
-    trace_mail_loop(
-        trace_id, logs_by_id, aggregator_class, config, host_for_trace
-    )
+    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, host_for_trace)
 
 
 @cli.command()
@@ -377,6 +353,50 @@ def trace(
         time_range=time_range,
         output_file=output,
     )
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file (falls back to MAILTRACE_CONFIG env var)",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse"]),
+    default="stdio",
+    help="MCP transport type (default: stdio)",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    help="Port for SSE transport (default: 8080)",
+)
+def mcp(config_path: str | None, transport: str, port: int) -> None:
+    """Start the MCP server for LLM integration.
+
+    The MCP server exposes mailtrace tools for use by LLM assistants
+    like Claude.
+
+    Examples:
+
+        # Start with stdio transport (for Claude Code)
+        mailtrace mcp --config /path/to/config.yaml
+
+        # Start with SSE transport for remote access
+        mailtrace mcp --config /path/to/config.yaml --transport sse --port 8080
+    """
+    from mailtrace.mcp import run_server
+
+    config = load_config(config_path)
+    configure_logging(config)
+
+    logger.info(f"Starting MCP server with {transport} transport...")
+    run_server(config, transport=transport, port=port)
 
 
 if __name__ == "__main__":
