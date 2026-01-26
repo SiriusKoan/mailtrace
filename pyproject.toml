@@ -6,6 +6,7 @@ authors = [{ name = "SiriusKoan", email = "me@siriuskoan.one" }]
 readme = "README.md"
 dependencies = [
     "click>=8.2.1",
+    "dnspython>=2.4.0",
     "graphviz>=0.21",
     "mcp>=1.6.0",
     "networkx>=3.5",

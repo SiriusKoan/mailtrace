@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+from mailtrace.utils import get_hosts
+
+if TYPE_CHECKING:
+    from mailtrace.mx_discovery import MXDiscovery
 
 # Valid log levels for configuration
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -120,6 +127,21 @@ class OpenSearchMappingConfig:
 
 
 @dataclass
+class MXDiscoveryConfig:
+    """Configuration for MX record auto-discovery.
+
+    Attributes:
+        servers: List of DNS server IPs to query (empty = system resolver)
+        timeout: DNS query timeout in seconds
+        cache_ttl: Cache TTL in seconds (0 = no cache)
+    """
+
+    servers: list[str] = field(default_factory=list)
+    timeout: int = 5
+    cache_ttl: int = 0
+
+
+@dataclass
 class OpenSearchConfig:
     """Configuration for OpenSearch connections.
 
@@ -175,6 +197,10 @@ class Config:
     clusters: dict[str, list[str]] = field(default_factory=dict)
     domain: str = ""
     auto_continue: bool = False
+    mx_discovery: MXDiscoveryConfig = field(default_factory=MXDiscoveryConfig)
+    _mx_resolver: MXDiscovery | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -193,10 +219,28 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
+        if isinstance(self.mx_discovery, dict):
+            self.mx_discovery = MXDiscoveryConfig(**self.mx_discovery)
+
+        # Initialize MX resolver
+        from mailtrace.mx_discovery import MXDiscovery
+
+        self._mx_resolver = MXDiscovery(self.mx_discovery)
 
     def cluster_to_hosts(self, name: str) -> list[str] | None:
-        """Get list of hosts for a given cluster name."""
-        return self.clusters.get(name)
+        """Get list of hosts for a given cluster name, expanding mx: entries."""
+        raw_entries = self.clusters.get(name)
+        if raw_entries is None:
+            return None
+
+        # Expand mx: entries and merge
+        hosts: list[str] = []
+        assert self._mx_resolver is not None  # Always set in __post_init__
+        for entry in raw_entries:
+            hosts.extend(self._mx_resolver.expand_entry(entry))
+
+        # Apply hostname expansion, deduplicate preserving order
+        return list(dict.fromkeys(get_hosts(hosts, self.domain)))
 
 
 def _load_env_passwords(config_data: dict) -> None:
