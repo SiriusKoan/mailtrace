@@ -3,6 +3,14 @@ method: ssh
 log_level: INFO
 timeout: 30
 auto_continue: false
+
+# MX auto-discovery settings (optional)
+# Enables automatic discovery of mail servers via DNS MX lookups
+# mx_discovery:
+#   servers: []        # Custom DNS servers (empty = system resolver)
+#   timeout: 5         # DNS query timeout in seconds
+#   cache_ttl: 0       # Cache TTL in seconds (0 = no cache)
+
 ssh_config:
   username: username
   password: ""
@@ -46,7 +54,13 @@ opensearch_config:
     service: "log.syslog.appname"
     queueid: "postfix.queueid.keyword"
     queued_as: "postfix.queued_as.keyword"
+# Clusters define groups of mail servers to trace logs from
+# Use "mx:" prefix for auto-discovery via DNS MX lookups
 clusters:
   mx-cluster:
     - mx-cluster.mydomain.com
     - mx-cluster.mydomain.com
+  # Example with MX auto-discovery:
+  # auto-discovered:
+  #   - "mx:example.com"           # Resolve mail servers via MX lookup
+  #   - static-backup.example.com  # Static entry (no lookup)
