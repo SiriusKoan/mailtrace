@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import yaml
+from dotenv import load_dotenv
 
 from mailtrace.utils import get_hosts
 
@@ -282,6 +284,11 @@ def load_config(config_path: str | None = None) -> Config:
     config_path = config_path or os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    # Load .env file from the same directory as the config file.
+    # override=False ensures shell env vars take precedence over .env.
+    dotenv_path = Path(config_path).resolve().parent / ".env"
+    load_dotenv(dotenv_path=dotenv_path, override=False)
 
     with open(config_path) as f:
         config_data = yaml.safe_load(f)
