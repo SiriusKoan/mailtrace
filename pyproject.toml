@@ -36,6 +36,16 @@ dev = [
     "pytest-cov>=7.0.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests requiring dev OpenSearch (deselected by default)",
+]
+addopts = "-m 'not e2e'"
+filterwarnings = [
+    "ignore::UserWarning:opensearchpy",
+    "ignore::urllib3.exceptions.InsecureRequestWarning",
+]
+
 [tool.flake8]
 exclude = ".venv"
 ignore = ['E501', 'E704', 'W503']
