@@ -11,6 +11,8 @@ auto_continue: false
 #   timeout: 5         # DNS query timeout in seconds
 #   cache_ttl: 0       # Cache TTL in seconds (0 = no cache)
 
+# Passwords can also be loaded from environment variables or a .env file
+# placed alongside this config file. See .env.example for supported variables.
 ssh_config:
   username: username
   password: ""

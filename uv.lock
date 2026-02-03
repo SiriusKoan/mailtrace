@@ -552,7 +552,7 @@ wheels = [
 [[package]]
 name = "mailtrace"
 version = "0.2.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "dnspython" },
@@ -562,6 +562,7 @@ dependencies = [
     { name = "opensearch-py" },
     { name = "paramiko" },
     { name = "pydot" },
+    { name = "python-dotenv" },
     { name = "pyyaml" },
 ]
 
@@ -587,6 +588,7 @@ requires-dist = [
     { name = "opensearch-py", specifier = ">=3.0.0" },
     { name = "paramiko", specifier = ">=3.5.1" },
     { name = "pydot", specifier = ">=4.0.1" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.2" },
 ]
 
