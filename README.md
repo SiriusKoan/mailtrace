@@ -150,6 +150,66 @@ smtp-relay-2.example.com -> mail-delivery.example.com [key=1, label=9EF8A12BC3D]
 
 This shows mail with queue ID `8DCB211F769` flowing from `smtp-relay-1` to `smtp-relay-2`, where it received new queue ID `9EF8A12BC3D` before final delivery.
 
+### Cluster Flow Conservation Check
+
+The `flow-check` command verifies that every inbound mail to a cluster reaches a terminal state (delivered locally or relayed out), flagging incomplete or bounced flows as problematic.
+
+```bash
+mailtrace flow-check \
+    -c ~/.config/mailtrace.yaml \
+    --cluster mx-cluster \
+    --time "2026-01-25 13:00:00" \
+    --time-range 1h
+```
+
+#### How It Works
+
+1. Queries all hosts in the specified cluster for log entries within the time window
+2. Identifies inbound mails (from clients outside the cluster)
+3. For each inbound mail, classifies its terminal state:
+   - **`delivered_locally`**: Delivered via `postfix/local` or `postfix/virtual`
+   - **`relayed_out`**: Relayed to a host outside the cluster
+   - **`bounced`**: Non-delivery notification generated
+   - **`incomplete`**: No terminal state found in the logs
+   - **`internal_relay`**: Relayed within the cluster (traced recursively until terminal)
+4. Returns a JSON report with summary and per-flow details
+
+#### Options
+
+- `--cluster` (required): Cluster name as defined in the config file
+- `--time`: Reference time center (`YYYY-MM-DD HH:MM:SS`). Defaults to now
+- `--time-range`: Duration to search before and after the reference time (e.g., `1h`, `30m`). Default: `1h`
+- `-k, --key`: Optional keyword filter (email address or domain). Can be specified multiple times
+- `-o, --output`: Output file path for JSON result. Defaults to stdout
+
+#### Output Format
+
+```json
+{
+  "cluster": "mx-cluster",
+  "time": "2026-01-25 13:00:00",
+  "time_range": "1h",
+  "keywords": null,
+  "out_of_window_mail_ids": [],
+  "summary": {
+    "total_inbound": 4,
+    "complete": 4,
+    "problematic": 0
+  },
+  "complete_flows": [
+    {
+      "inbound_mail_id": "A90771E005C",
+      "inbound_host": "csmx1",
+      "source": "unknown",
+      "status": "complete",
+      "terminal_state": "relayed_out",
+      "branches": 1
+    }
+  ],
+  "problematic_flows": []
+}
+```
+
 ## Using as a Library
 
 Mailtrace can also be used as a Python library in your own scripts:
@@ -208,6 +268,7 @@ for mail_id, (host, log_entries) in logs_by_id.items():
 - **`trace_mail_flow_to_file(config, aggregator_class, start_host, keywords, time, time_range, output_file=None)`** - Trace mail flow and output as Graphviz dot format (file or stdout)
 - **`query_logs_by_keywords(config, aggregator_class, start_host, keywords, time, time_range)`** - Query logs and return mail IDs with their log entries
 - **`trace_mail_flow(trace_id, aggregator_class, config, host, graph)`** - Trace a specific mail ID and build a MailGraph
+- **`check_cluster_flow(config, aggregator_class, cluster, time, time_range, keywords=None)`** - Check flow conservation for a cluster, returns `FlowCheckResult`
 - **`MailGraph()`** - Create and manipulate mail flow graphs
   - `add_hop(from_host, to_host, queue_id)` - Add a mail hop between hosts
   - `to_dot(path=None)` - Write graph to DOT format (file path or stdout if None)
@@ -258,6 +319,18 @@ Parameters:
 - `keywords`: Email addresses or domains to search for (finds mail IDs automatically)
 - `time`: Reference time for log search
 - `time_range`: Time range for log search
+
+**`mailtrace_check_flow`** - Check cluster flow conservation
+
+Verifies that all inbound mail to a cluster reached a terminal state (delivered locally or relayed out).
+
+Parameters:
+- `cluster` (required): Cluster name as defined in config
+- `time`: Reference time (`YYYY-MM-DD HH:MM:SS`). Defaults to now
+- `time_range`: Time range (e.g., `1h`, `30m`). Default: `1h`
+- `keywords`: Optional keyword filter (email addresses or domains)
+
+Returns JSON with summary, complete/problematic flows, and out-of-window mail IDs.
 
 ### Claude Code Configuration
 

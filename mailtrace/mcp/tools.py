@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mailtrace.aggregator import select_aggregator
 from mailtrace.config import Config
+from mailtrace.flow_check import check_cluster_flow
 from mailtrace.trace import query_logs_by_keywords
 from mailtrace.utils import time_validation
 
@@ -89,6 +90,33 @@ class TraceMailInput(BaseModel):
         """Validate that either mail_id or keywords is provided."""
         if not self.mail_id and not self.keywords:
             raise ValueError("Either 'mail_id' or 'keywords' must be provided")
+
+
+class CheckFlowInput(BaseModel):
+    """Input model for mailtrace_check_flow tool."""
+
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True
+    )
+
+    cluster: str = Field(
+        ...,
+        description="Cluster name to check (must be in config)",
+        min_length=1,
+    )
+    time: Optional[str] = Field(
+        default=None,
+        description="Reference time (YYYY-MM-DD HH:MM:SS). "
+        "Defaults to now.",
+    )
+    time_range: str = Field(
+        default="1h",
+        description="Time range (e.g., '1h', '30m'). Default: 1h",
+    )
+    keywords: Optional[list[str]] = Field(
+        default=None,
+        description="Optional keyword filter (email/domain)",
+    )
 
 
 def register_resources(mcp: FastMCP, config: Config) -> None:
@@ -343,6 +371,90 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
                     "error": {
                         "code": "CONNECTION_FAILED",
                         "message": f"Failed to trace mail: {e}",
+                    }
+                }
+            )
+
+    @mcp.tool(
+        name="mailtrace_check_flow",
+        annotations=ToolAnnotations(
+            title="Check Cluster Flow Conservation",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    async def mailtrace_check_flow(
+        params: CheckFlowInput,
+    ) -> str:
+        """Check that all inbound mail to a cluster reached
+        a terminal state.
+
+        Args:
+            params: Check parameters including cluster, time,
+                time_range.
+
+        Returns:
+            JSON with summary, complete/problematic flows,
+            out-of-window mail IDs.
+        """
+        try:
+            import datetime as dt
+
+            check_time = params.time or dt.datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+            if params.time:
+                error = time_validation(check_time, params.time_range)
+                if error:
+                    return json.dumps(
+                        {
+                            "error": {
+                                "code": "INVALID_TIME_FORMAT",
+                                "message": error,
+                            }
+                        }
+                    )
+
+            aggregator_class = select_aggregator(config)
+            result = check_cluster_flow(
+                config=config,
+                aggregator_class=aggregator_class,
+                cluster=params.cluster,
+                time=check_time,
+                time_range=params.time_range,
+                keywords=params.keywords,
+            )
+
+            return json.dumps(result.to_dict(), indent=2, default=str)
+
+        except ValueError as e:
+            return json.dumps(
+                {
+                    "error": {
+                        "code": "INVALID_CLUSTER",
+                        "message": str(e),
+                    }
+                }
+            )
+        except FileNotFoundError as e:
+            return json.dumps(
+                {
+                    "error": {
+                        "code": "CONFIG_ERROR",
+                        "message": str(e),
+                    }
+                }
+            )
+        except Exception as e:
+            logger.exception("Error in mailtrace_check_flow")
+            return json.dumps(
+                {
+                    "error": {
+                        "code": "CONNECTION_FAILED",
+                        "message": f"Failed: {e}",
                     }
                 }
             )
