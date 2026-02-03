@@ -6,6 +6,7 @@ import click
 from mailtrace.aggregator import do_trace, select_aggregator
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.flow_check import check_cluster_flow
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
 from mailtrace.trace import trace_mail_flow_to_file
@@ -397,6 +398,113 @@ def mcp(config_path: str | None, transport: str, port: int) -> None:
 
     logger.info(f"Starting MCP server with {transport} transport...")
     run_server(config, transport=transport, port=port)
+
+
+@cli.command("flow-check")
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file",
+)
+@click.option(
+    "--cluster",
+    type=str,
+    required=True,
+    help="Cluster name to check",
+)
+@click.option(
+    "--time",
+    "time_param",
+    type=str,
+    required=False,
+    default=None,
+    help="Reference time (YYYY-MM-DD HH:MM:SS). Default: now",
+)
+@click.option(
+    "--time-range",
+    type=str,
+    default="1h",
+    help="Time range (e.g., 1h, 30m). Default: 1h",
+)
+@click.option(
+    "-k",
+    "--key",
+    type=str,
+    required=False,
+    help="Optional keyword filter",
+    multiple=True,
+)
+@click.option("--login-pass", type=str, required=False)
+@click.option("--sudo-pass", type=str, required=False)
+@click.option("--opensearch-pass", type=str, required=False)
+@click.option("--ask-login-pass", is_flag=True)
+@click.option("--ask-sudo-pass", is_flag=True)
+@click.option("--ask-opensearch-pass", is_flag=True)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(),
+    required=False,
+    default=None,
+    help="Output file for JSON result",
+)
+def flow_check(
+    config_path,
+    cluster,
+    time_param,
+    time_range,
+    key,
+    login_pass,
+    sudo_pass,
+    opensearch_pass,
+    ask_login_pass,
+    ask_sudo_pass,
+    ask_opensearch_pass,
+    output,
+):
+    """Check cluster flow conservation."""
+    import datetime as dt
+    import json
+
+    config = load_config(config_path)
+    configure_logging(config)
+    handle_passwords(
+        config,
+        ask_login_pass,
+        login_pass,
+        ask_sudo_pass,
+        sudo_pass,
+        ask_opensearch_pass,
+        opensearch_pass,
+    )
+
+    check_time = time_param or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if time_param:
+        err = time_validation(check_time, time_range)
+        if err:
+            raise ValueError(err)
+
+    aggregator_class = select_aggregator(config)
+    keywords = list(key) if key else None
+
+    result = check_cluster_flow(
+        config=config,
+        aggregator_class=aggregator_class,
+        cluster=cluster,
+        time=check_time,
+        time_range=time_range,
+        keywords=keywords,
+    )
+
+    result_json = json.dumps(result.to_dict(), indent=2, default=str)
+    if output and output != "-":
+        with open(output, "w") as f:
+            f.write(result_json)
+    else:
+        print(result_json)
 
 
 if __name__ == "__main__":

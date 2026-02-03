@@ -1,5 +1,6 @@
 from .aggregator import select_aggregator
 from .config import Config, load_config
+from .flow_check import FlowCheckResult, check_cluster_flow
 from .graph import MailGraph
 from .mcp import create_server, run_server
 from .trace import (
@@ -10,7 +11,9 @@ from .trace import (
 
 __all__ = [
     "Config",
+    "FlowCheckResult",
     "MailGraph",
+    "check_cluster_flow",
     "create_server",
     "load_config",
     "query_logs_by_keywords",
