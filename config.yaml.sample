@@ -56,6 +56,7 @@ opensearch_config:
     service: "log.syslog.appname"
     queueid: "postfix.queueid.keyword"
     queued_as: "postfix.queued_as.keyword"
+    message_id: "postfix.message-id.keyword"  # RFC 2822 Message-ID for cross-host batch tracing
 # Clusters define groups of mail servers to trace logs from
 # Use "mx:" prefix for auto-discovery via DNS MX lookups
 clusters:

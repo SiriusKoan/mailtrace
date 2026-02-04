@@ -7,7 +7,10 @@ from mailtrace.models import LogEntry
 from mailtrace.utils import analyze_log_from_message
 
 # Mail ID validation pattern (alphanumeric only)
-_MAIL_ID_RE = re.compile(r"^[0-9A-Z]+$")
+_MAIL_ID_RE = re.compile(r"^[0-9A-Za-z]+$")
+
+# Message-ID extraction from syslog message text (e.g., "message-id=<foo@bar>")
+_MESSAGE_ID_RE = re.compile(r"message-id=<([^>]+)>")
 
 
 def _get_nested_value(data: Any, key: str) -> Any:
@@ -64,7 +67,7 @@ class LogParser(ABC):
     @staticmethod
     def _enrich_from_message(entry: LogEntry) -> LogEntry:
         """
-        Extract relay info from message if not already present.
+        Extract relay info and message_id from message if not already present.
 
         Args:
             entry: The LogEntry to enrich
@@ -72,6 +75,12 @@ class LogParser(ABC):
         Returns:
             LogEntry: The enriched log entry
         """
+        # Extract message_id from message text if not already set
+        if entry.message_id is None:
+            mid_match = _MESSAGE_ID_RE.search(entry.message)
+            if mid_match:
+                entry.message_id = mid_match.group(1)
+
         if all(
             [
                 entry.relay_host,
@@ -313,6 +322,7 @@ class OpensearchParser(LogParser):
             service=_get_nested_value(log, self.mapping.service),
             mail_id=mail_id,
             message=message,
+            message_id=self._get_mapped_value("message_id", log),
             # Structured fields (may be None, will be enriched from message)
             queued_as=self._get_validated_mail_id(log, "queued_as"),
             relay_host=self._get_mapped_value("relay_host", log),

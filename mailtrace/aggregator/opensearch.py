@@ -71,7 +71,11 @@ class OpenSearch(LogAggregator):
         if facility_field:
             search = search.query("match", **{facility_field: "mail"})
 
-        search = search.query("terms", **{self.config.mapping.hostname: self.hosts})
+        # Skip hostname filter for:
+        # - message_id queries (cross-host by nature)
+        # - mail_id queries when no specific hosts are configured (cross-host trace)
+        if not query.message_id and not (query.mail_id and not self.hosts):
+            search = search.query("terms", **{self.config.mapping.hostname: self.hosts})
 
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
@@ -94,6 +98,17 @@ class OpenSearch(LogAggregator):
                 search = search.query(
                     "match_phrase",
                     **{self.config.mapping.message: keyword},
+                )
+
+        if query.message_id:
+            message_id_field = self.config.mapping.message_id
+            if message_id_field:
+                search = search.query("term", **{message_id_field: query.message_id})
+            else:
+                # Fallback: search message text for message-id=<value>
+                search = search.query(
+                    "match_phrase",
+                    **{self.config.mapping.message: f"message-id=<{query.message_id}>"},
                 )
 
         if query.mail_id:
