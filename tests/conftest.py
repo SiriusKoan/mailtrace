@@ -106,9 +106,7 @@ def _ensure_opensearch() -> bool:
 def _ensure_dev_opensearch():
     """Bootstrap dev OpenSearch if not already running."""
     if not _ensure_opensearch():
-        pytest.skip(
-            "Failed to bootstrap dev OpenSearch " "(is Docker running?)"
-        )
+        pytest.skip("Failed to bootstrap dev OpenSearch (is Docker running?)")
 
 
 @pytest.fixture(scope="session")

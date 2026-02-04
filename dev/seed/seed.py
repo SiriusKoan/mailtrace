@@ -84,6 +84,7 @@ def create_index(client: OpenSearch) -> None:
                                 "keyword": {"type": "keyword"},
                             }
                         },
+                        "message-id": {"type": "keyword"},
                     }
                 },
             }

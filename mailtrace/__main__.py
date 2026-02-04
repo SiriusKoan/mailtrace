@@ -283,7 +283,7 @@ def run(
         hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
         logger.info(f"Using hosts: {hosts}")
         for host in hosts:
-            print(host)
+            print_blue(f"== Querying host: {host} ==")
             aggregator = aggregator_class(host, config)
             logs_by_id_from_host = query_and_print_logs(
                 aggregator, key, time, time_range

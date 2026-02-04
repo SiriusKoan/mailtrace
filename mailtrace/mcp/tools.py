@@ -68,6 +68,10 @@ class TraceMailInput(BaseModel):
         default=None,
         description="Mail queue ID to trace directly",
     )
+    message_id: Optional[str] = Field(
+        default=None,
+        description="RFC 2822 Message-ID header to trace across all hops",
+    )
     keywords: list[str] = Field(
         default_factory=list,
         description="Email addresses or domains to search for (finds mail IDs automatically)",
@@ -87,17 +91,17 @@ class TraceMailInput(BaseModel):
         return [k.strip() for k in v if k.strip()]
 
     def model_post_init(self, __context) -> None:
-        """Validate that either mail_id or keywords is provided."""
-        if not self.mail_id and not self.keywords:
-            raise ValueError("Either 'mail_id' or 'keywords' must be provided")
+        """Validate that either mail_id, message_id, or keywords is provided."""
+        if not self.mail_id and not self.message_id and not self.keywords:
+            raise ValueError(
+                "Either 'mail_id', 'message_id', or 'keywords' must be provided"
+            )
 
 
 class CheckFlowInput(BaseModel):
     """Input model for mailtrace_check_flow tool."""
 
-    model_config = ConfigDict(
-        str_strip_whitespace=True, validate_assignment=True
-    )
+    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
 
     cluster: str = Field(
         ...,
@@ -106,8 +110,7 @@ class CheckFlowInput(BaseModel):
     )
     time: Optional[str] = Field(
         default=None,
-        description="Reference time (YYYY-MM-DD HH:MM:SS). "
-        "Defaults to now.",
+        description="Reference time (YYYY-MM-DD HH:MM:SS). Defaults to now.",
     )
     time_range: str = Field(
         default="1h",
@@ -249,6 +252,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
 
         Can trace by:
         - mail_id: Trace a specific mail queue ID directly
+        - message_id: Trace by RFC 2822 Message-ID across all hops
         - keywords: Search for emails by address/domain, then trace all found
 
         Returns the complete mail flow as a Graphviz DOT graph plus
@@ -263,7 +267,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             edges, hop_count, and traced mail IDs.
         """
         from mailtrace.graph import MailGraph
-        from mailtrace.trace import trace_mail_flow
+        from mailtrace.trace import (
+            trace_mail_flow,
+            trace_mail_flow_by_message_id,
+        )
 
         try:
             # Validate time parameters if provided
@@ -282,12 +289,27 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             # Get aggregator class
             aggregator_class = select_aggregator(config)
 
-            # Determine mail IDs to trace
-            mail_ids_to_trace: list[tuple[str, str]] = []  # (mail_id, host)
+            graph = MailGraph()
+            traced_ids = []
+            search_mode = "keywords"
 
-            if params.mail_id:
+            if params.message_id:
+                # Direct message_id batch trace
+                search_mode = "message_id"
+                aggregator = aggregator_class(params.host, config)
+                trace_mail_flow_by_message_id(params.message_id, aggregator, graph)
+                traced_ids.append(params.message_id)
+            elif params.mail_id:
                 # Direct mail_id provided
-                mail_ids_to_trace.append((params.mail_id, params.host))
+                search_mode = "mail_id"
+                trace_mail_flow(
+                    trace_id=params.mail_id,
+                    aggregator_class=aggregator_class,
+                    config=config,
+                    host=params.host,
+                    graph=graph,
+                )
+                traced_ids.append(params.mail_id)
             else:
                 # Search by keywords first
                 logs_by_id = query_logs_by_keywords(
@@ -314,37 +336,34 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
                     )
 
                 for mail_id, (host, _) in logs_by_id.items():
-                    mail_ids_to_trace.append((mail_id, host))
-
-            # Create graph and trace all mail IDs
-            graph = MailGraph()
-            traced_ids = []
-            for mail_id, host in mail_ids_to_trace:
-                trace_mail_flow(
-                    trace_id=mail_id,
-                    aggregator_class=aggregator_class,
-                    config=config,
-                    host=host,
-                    graph=graph,
-                )
-                traced_ids.append(mail_id)
+                    trace_mail_flow(
+                        trace_id=mail_id,
+                        aggregator_class=aggregator_class,
+                        config=config,
+                        host=host,
+                        graph=graph,
+                    )
+                    traced_ids.append(mail_id)
 
             # Get graph data
             result = graph.to_dict()
             result["trace"] = {
                 "start_host": params.host,
                 "mail_ids": traced_ids,
-                "search_mode": "mail_id" if params.mail_id else "keywords",
+                "search_mode": search_mode,
             }
             if params.keywords:
                 result["trace"]["keywords"] = params.keywords
+            if params.message_id:
+                result["trace"]["message_id"] = params.message_id
 
             if not result["edges"]:
-                search_target = (
-                    f"mail ID: {params.mail_id}"
-                    if params.mail_id
-                    else f"keywords: {params.keywords}"
-                )
+                if params.message_id:
+                    search_target = f"message ID: {params.message_id}"
+                elif params.mail_id:
+                    search_target = f"mail ID: {params.mail_id}"
+                else:
+                    search_target = f"keywords: {params.keywords}"
                 return json.dumps(
                     {
                         "error": {
@@ -402,9 +421,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         try:
             import datetime as dt
 
-            check_time = params.time or dt.datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
+            check_time = params.time or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             if params.time:
                 error = time_validation(check_time, params.time_range)

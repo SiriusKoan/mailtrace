@@ -107,6 +107,7 @@ class OpenSearchMappingConfig:
         queueid: OpenSearch field for queue ID
         queued_as: OpenSearch field for queued as
         mail_id: OpenSearch field for mail ID
+        message_id: OpenSearch field for RFC 2822 Message-ID header
         relay_host: OpenSearch field for relay hostname
         relay_ip: OpenSearch field for relay IP address
         relay_port: OpenSearch field for relay port number
@@ -121,6 +122,7 @@ class OpenSearchMappingConfig:
     queueid: str = "log.syslog.structured_data.queueid"
     queued_as: str = "log.syslog.structured_data.queued_as"
     mail_id: str = ""
+    message_id: str = ""
     relay_host: str = ""
     relay_ip: str = ""
     relay_port: str = ""

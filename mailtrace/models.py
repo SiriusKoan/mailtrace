@@ -11,6 +11,7 @@ class LogEntry:
         service: Service that generated the log entry (e.g., postfix/smtp)
         mail_id: Unique identifier for the mail message, if available
         message: The actual log message content
+        message_id: RFC 2822 Message-ID header value (without angle brackets), if available
         queued_as: The new mail ID when message was queued at next hop (OpenSearch structured field)
         relay_host: Hostname of the relay, if available
         relay_ip: IP address of the relay, if available
@@ -24,6 +25,7 @@ class LogEntry:
     service: str
     mail_id: str | None
     message: str
+    message_id: str | None = None
     queued_as: str | None = None
     relay_host: str | None = None
     relay_ip: str | None = None
@@ -41,11 +43,13 @@ class LogQuery:
     Attributes:
         keywords: List of keywords to search for in log messages
         mail_id: Specific mail ID to filter by
+        message_id: RFC 2822 Message-ID to search across all hops
         time: Specific timestamp to filter by
         time_range: Time range specification for filtering entries
     """
 
     keywords: list[str] = field(default_factory=list)
     mail_id: str | None = None
+    message_id: str | None = None
     time: str | None = None
     time_range: str | None = None
