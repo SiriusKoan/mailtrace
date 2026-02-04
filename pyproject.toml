@@ -59,5 +59,9 @@ include = ["mailtrace"]
 typeCheckingMode = "basic"
 reportMissingImports = "error"
 
+[tool.setuptools.packages.find]
+include = ["mailtrace*"]
+exclude = ["demo*", "dev*"]
+
 [tool.black]
 line-length = 79

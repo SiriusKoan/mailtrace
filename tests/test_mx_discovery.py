@@ -118,7 +118,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.Timeout()
 
                 result = discovery.resolve("example.com")
@@ -133,7 +135,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.NXDOMAIN()
 
                 result = discovery.resolve("nonexistent.invalid")
@@ -148,7 +152,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.NoAnswer()
 
                 result = discovery.resolve("example.com")

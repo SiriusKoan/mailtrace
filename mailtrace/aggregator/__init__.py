@@ -13,16 +13,33 @@ logger = logging.getLogger("mailtrace")
 
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
-_QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+)")
+_QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Za-z]+)")
 _RELAY_RE = re.compile(
     r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
 )
+_MESSAGE_ID_RE = re.compile(r"message-id=<([^>]+)>")
 
 # Services that perform mail relay (string constants)
 _RELAY_SERVICES = {
     "postfix/smtp",
     "postfix/lmtp",
 }
+
+
+def extract_message_ids(logs: list[LogEntry]) -> set[str]:
+    """Extract unique message_ids from a list of log entries.
+
+    Checks both the structured message_id field and the message text.
+    """
+    message_ids: set[str] = set()
+    for entry in logs:
+        if entry.message_id:
+            message_ids.add(entry.message_id)
+        else:
+            match = _MESSAGE_ID_RE.search(entry.message)
+            if match:
+                message_ids.add(match.group(1))
+    return message_ids
 
 
 def _extract_next_mail_id(log_entry: LogEntry) -> str | None:
@@ -92,10 +109,7 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
 
-    # Print all log entries
-    print("=== Log Entries ===")
     for log_entry in log_entries:
-        print(log_entry)
         logger.debug("LogEntry: %s", log_entry)
         if log_entry.service not in _RELAY_SERVICES:
             continue
@@ -135,6 +149,7 @@ def select_aggregator(config: Config) -> type[LogAggregator]:
 
 __all__ = [
     "do_trace",
+    "extract_message_ids",
     "SSHHost",
     "OpenSearch",
     "RelayResult",

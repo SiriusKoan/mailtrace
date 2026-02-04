@@ -7,7 +7,12 @@ the CLI and as a library.
 
 import logging
 
-from mailtrace.aggregator import do_trace
+from mailtrace.aggregator import (
+    _RELAY_SERVICES,
+    _parse_relay_info,
+    do_trace,
+    extract_message_ids,
+)
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method
 from mailtrace.graph import MailGraph
@@ -66,6 +71,96 @@ def trace_mail_flow(
         aggregator = aggregator_class(current_host, config)
 
 
+def _build_hostname_map(
+    all_logs: list[LogEntry],
+) -> dict[str, str]:
+    """Build a map from short hostname to the canonical log hostname.
+
+    Relay entries use FQDNs (e.g. mailer4.test.cc.cs.nctu.edu.tw) but
+    log entries use short names (e.g. mailer4).  This map lets us
+    normalize relay hostnames to match the log hostnames so the graph
+    nodes connect properly.
+    """
+    hostname_map: dict[str, str] = {}
+    for entry in all_logs:
+        if entry.hostname:
+            short = entry.hostname.split(".")[0]
+            hostname_map[short] = entry.hostname
+            hostname_map[entry.hostname] = entry.hostname
+    return hostname_map
+
+
+def _normalize_host(host: str, hostname_map: dict[str, str]) -> str:
+    """Resolve a relay hostname to the canonical log hostname."""
+    short = host.split(".")[0]
+    return hostname_map.get(short, host)
+
+
+def _reconstruct_chain(all_logs: list[LogEntry], graph: MailGraph) -> None:
+    """Reconstruct the mail flow graph from a batch of logs.
+
+    Groups logs by queue_id and finds relay hops to build the graph.
+    """
+    hostname_map = _build_hostname_map(all_logs)
+
+    # Group logs by queue_id
+    logs_by_qid: dict[str, list[LogEntry]] = {}
+    for entry in all_logs:
+        if entry.mail_id:
+            logs_by_qid.setdefault(entry.mail_id, []).append(entry)
+
+    # For each queue_id group, find relay entries
+    for qid, entries in logs_by_qid.items():
+        hostname = entries[0].hostname if entries else None
+        if not hostname:
+            continue
+
+        for entry in entries:
+            if entry.service not in _RELAY_SERVICES:
+                continue
+            result = _parse_relay_info(entry)
+            if result and result.relay_host:
+                to_host = _normalize_host(result.relay_host, hostname_map)
+                logger.info(
+                    "Batch trace: %s relayed from %s to %s",
+                    qid,
+                    hostname,
+                    to_host,
+                )
+                graph.add_hop(
+                    from_host=hostname,
+                    to_host=to_host,
+                    queue_id=qid,
+                )
+
+
+def trace_mail_flow_by_message_id(
+    message_id: str,
+    aggregator: LogAggregator,
+    graph: MailGraph,
+) -> list[LogEntry]:
+    """Trace mail by message_id in a single batch query.
+
+    Queries all logs matching the message_id across all hosts,
+    then reconstructs the chain from the batch results.
+
+    Args:
+        message_id: RFC 2822 Message-ID to trace.
+        aggregator: LogAggregator instance for querying.
+        graph: MailGraph instance to build the flow visualization.
+
+    Returns:
+        All log entries found for this message_id.
+    """
+    logger.info("Batch tracing message_id: %s", message_id)
+    all_logs = aggregator.query_by(LogQuery(message_id=message_id))
+    logger.debug(
+        "Found %d log entries for message_id %s", len(all_logs), message_id
+    )
+    _reconstruct_chain(all_logs, graph)
+    return all_logs
+
+
 def _query_logs_from_aggregator(
     aggregator: LogAggregator,
     keywords: list[str],
@@ -100,6 +195,60 @@ def _query_logs_from_aggregator(
     return logs_by_id
 
 
+def _query_logs_by_message_id(
+    aggregator: LogAggregator,
+    keywords: list[str],
+    time: str,
+    time_range: str,
+) -> dict[str, tuple[str, list[LogEntry]]]:
+    """Query logs using message_id optimization for OpenSearch.
+
+    1. Keyword search → base logs
+    2. Extract message_ids from base logs
+    3. For each message_id → single query gets ALL logs across ALL hops
+    4. Group results by queue_id
+    """
+    base_logs = aggregator.query_by(
+        LogQuery(keywords=keywords, time=time, time_range=time_range)
+    )
+
+    # Extract message_ids from initial results
+    message_ids = extract_message_ids(base_logs)
+    if not message_ids:
+        # Fall back to queue_id approach
+        logger.debug(
+            "No message_ids found in base logs, falling back to queue_id"
+        )
+        mail_ids = list(
+            {log.mail_id for log in base_logs if log.mail_id is not None}
+        )
+        logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
+        for mail_id in mail_ids:
+            mail_logs = aggregator.query_by(LogQuery(mail_id=mail_id))
+            actual_host = (
+                mail_logs[0].hostname if mail_logs else aggregator.host
+            )
+            logs_by_id[mail_id] = (actual_host, mail_logs)
+        return logs_by_id
+
+    # Query by each message_id to get ALL logs across ALL hops
+    all_logs: list[LogEntry] = []
+    for mid in message_ids:
+        logger.info("Querying by message_id: %s", mid)
+        mid_logs = aggregator.query_by(LogQuery(message_id=mid))
+        all_logs.extend(mid_logs)
+
+    # Group by queue_id
+    logs_by_id = {}
+    for entry in all_logs:
+        if entry.mail_id and entry.mail_id not in logs_by_id:
+            logs_by_id[entry.mail_id] = (entry.hostname, [])
+        if entry.mail_id:
+            logs_by_id[entry.mail_id][1].append(entry)
+
+    return logs_by_id
+
+
 def query_logs_by_keywords(
     config: Config,
     aggregator_class: type[LogAggregator],
@@ -110,6 +259,8 @@ def query_logs_by_keywords(
 ) -> dict[str, tuple[str, list[LogEntry]]]:
     """
     Query logs by keywords and return mail IDs with their logs.
+
+    For OpenSearch, uses message_id optimization when available.
 
     Args:
         config: Configuration object containing connection settings.
@@ -126,7 +277,7 @@ def query_logs_by_keywords(
 
     if config.method == Method.OPENSEARCH:
         aggregator = aggregator_class(start_host, config)
-        logs_by_id = _query_logs_from_aggregator(
+        logs_by_id = _query_logs_by_message_id(
             aggregator, keywords, time, time_range
         )
     elif config.method == Method.SSH:
@@ -158,8 +309,8 @@ def trace_mail_flow_to_file(
     """
     Trace mail flow and save the graph to a Graphviz dot file.
 
-    This is the main entry point for automated mail tracing that generates
-    a complete graph of the mail delivery path.
+    For OpenSearch, uses message_id-based batch tracing when available.
+    For SSH, uses per-hop tracing.
 
     Args:
         config: Configuration object containing connection settings.
@@ -182,11 +333,39 @@ def trace_mail_flow_to_file(
     logger.info("Found %d mail ID(s) to trace", len(logs_by_id))
 
     graph = MailGraph()
-    for trace_id, (host_for_trace, _) in logs_by_id.items():
-        logger.info("Tracing mail ID: %s", trace_id)
-        trace_mail_flow(
-            trace_id, aggregator_class, config, host_for_trace, graph
-        )
+
+    if config.method == Method.OPENSEARCH:
+        # Extract message_ids from the queried logs for batch tracing
+        all_logs = [
+            entry
+            for _, log_entries in logs_by_id.values()
+            for entry in log_entries
+        ]
+        message_ids = extract_message_ids(all_logs)
+
+        if message_ids:
+            # Batch trace: single query per message_id
+            aggregator = aggregator_class(start_host, config)
+            traced_mids: set[str] = set()
+            for mid in message_ids:
+                if mid in traced_mids:
+                    continue
+                traced_mids.add(mid)
+                trace_mail_flow_by_message_id(mid, aggregator, graph)
+        else:
+            # Fallback to per-hop tracing
+            for trace_id, (host_for_trace, _) in logs_by_id.items():
+                logger.info("Tracing mail ID: %s", trace_id)
+                trace_mail_flow(
+                    trace_id, aggregator_class, config, host_for_trace, graph
+                )
+    else:
+        # SSH: per-hop tracing
+        for trace_id, (host_for_trace, _) in logs_by_id.items():
+            logger.info("Tracing mail ID: %s", trace_id)
+            trace_mail_flow(
+                trace_id, aggregator_class, config, host_for_trace, graph
+            )
 
     graph.to_dot(output_file)
     if output_file and output_file != "-":
@@ -197,6 +376,7 @@ def trace_mail_flow_to_file(
 
 __all__ = [
     "trace_mail_flow",
+    "trace_mail_flow_by_message_id",
     "trace_mail_flow_to_file",
     "query_logs_by_keywords",
 ]

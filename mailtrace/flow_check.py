@@ -6,7 +6,11 @@ import re
 from dataclasses import asdict, dataclass
 from enum import Enum
 
-from mailtrace.aggregator import _RELAY_SERVICES, _parse_relay_info
+from mailtrace.aggregator import (
+    _RELAY_SERVICES,
+    _parse_relay_info,
+    extract_message_ids,
+)
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config
 from mailtrace.models import LogEntry, LogQuery
@@ -171,11 +175,7 @@ def classify_terminal_state(
                     rip = relay_match.group("ip")
                     if rhost not in cluster_set and rip not in cluster_set:
                         return (FlowStatus.COMPLETE, "relayed_out")
-                    else:
-                        return (
-                            FlowStatus.PROBLEMATIC,
-                            "internal_relay",
-                        )
+                    return (FlowStatus.PROBLEMATIC, "internal_relay")
 
     return (FlowStatus.PROBLEMATIC, "incomplete")
 
@@ -204,6 +204,75 @@ def is_out_of_time_window(
         return entry < window_start or entry > window_end
     except (ValueError, TypeError):
         return True
+
+
+# --- Helper for MailFlow creation ---
+
+
+def _create_mail_flow(
+    mail_id: str,
+    host: str,
+    source: str,
+    status: FlowStatus,
+    terminal_state: str,
+    branches: int = 1,
+) -> MailFlow:
+    """Create a MailFlow with appropriate fields based on status."""
+    if status == FlowStatus.COMPLETE:
+        return MailFlow(
+            inbound_mail_id=mail_id,
+            inbound_host=host,
+            source=source,
+            status=status,
+            terminal_state=terminal_state,
+            branches=branches,
+        )
+    return MailFlow(
+        inbound_mail_id=mail_id,
+        inbound_host=host,
+        source=source,
+        status=status,
+        terminal_state=terminal_state,
+        last_seen_host=host,
+        last_seen_mail_id=mail_id,
+    )
+
+
+# --- Message-ID based batch classification ---
+
+
+def _classify_flow_from_batch(
+    inbound_mail_id: str,
+    all_logs_for_message: list[LogEntry],
+    cluster_hosts: list[str],
+) -> tuple[FlowStatus, str]:
+    """Classify terminal state from batch logs fetched by message_id.
+
+    Groups logs by queue_id and checks each group for terminal state.
+    Only considers logs from hosts within the cluster to determine
+    the terminal state from the cluster's perspective.
+    """
+    cluster_set = set(cluster_hosts)
+
+    # Filter logs to only those from cluster hosts, then group by queue_id
+    logs_by_qid: dict[str, list[LogEntry]] = {}
+    for entry in all_logs_for_message:
+        if entry.mail_id and entry.hostname in cluster_set:
+            logs_by_qid.setdefault(entry.mail_id, []).append(entry)
+
+    # Check each queue_id group for terminal state
+    has_bounce = False
+    for qid, entries in logs_by_qid.items():
+        status, reason = classify_terminal_state(entries, cluster_hosts)
+        if status == FlowStatus.COMPLETE:
+            return (FlowStatus.COMPLETE, reason)
+        if reason == "bounced":
+            has_bounce = True
+
+    if has_bounce:
+        return (FlowStatus.PROBLEMATIC, "bounced")
+
+    return (FlowStatus.PROBLEMATIC, "incomplete")
 
 
 # --- Core orchestrator ---
@@ -284,6 +353,88 @@ def _trace_to_terminal(
     return (status, reason, host, mail_id)
 
 
+def _check_cluster_flow_with_message_id(
+    config: Config,
+    aggregator_class: type[LogAggregator],
+    cluster_hosts: list[str],
+    all_logs: list[LogEntry],
+    inbound: dict[str, dict],
+    time: str,
+    time_range: str,
+) -> tuple[list[MailFlow], list[MailFlow], list[str]]:
+    """Optimized flow check using message_id batch queries."""
+    complete_flows: list[MailFlow] = []
+    problematic_flows: list[MailFlow] = []
+    out_of_window: list[str] = []
+
+    # Collect message_ids from inbound mail logs
+    inbound_message_ids: dict[str, str] = {}  # message_id -> inbound_mail_id
+    for mail_id, info in inbound.items():
+        logs = info["logs"]
+        mids = extract_message_ids(logs)
+        for mid in mids:
+            inbound_message_ids[mid] = mail_id
+
+    # Use a single aggregator without hostname filter
+    aggregator = aggregator_class("", config)
+
+    # Step 1: Query by message_id to discover all queue_ids in the flow
+    mid_qids_cache: dict[str, set[str]] = {}  # message_id -> set of queue_ids
+    for mid in inbound_message_ids:
+        if mid not in mid_qids_cache:
+            mid_logs = aggregator.query_by(LogQuery(message_id=mid))
+            mid_qids_cache[mid] = {e.mail_id for e in mid_logs if e.mail_id}
+
+    # Step 2: Query full logs for each discovered queue_id
+    qid_logs_cache: dict[str, list[LogEntry]] = {}  # queue_id -> full logs
+    all_qids = set()
+    for qids in mid_qids_cache.values():
+        all_qids.update(qids)
+    for qid in all_qids:
+        if qid not in qid_logs_cache:
+            qid_logs_cache[qid] = aggregator.query_by(LogQuery(mail_id=qid))
+
+    for mail_id, info in inbound.items():
+        host = info["host"]
+        source = info["source"]
+        logs = info["logs"]
+
+        # Find message_ids for this inbound mail
+        mids = extract_message_ids(logs)
+
+        if mids:
+            # Collect all queue_ids related to this message
+            related_qids: set[str] = set()
+            for mid in mids:
+                related_qids.update(mid_qids_cache.get(mid, set()))
+
+            # Merge full logs for all related queue_ids
+            batch_logs: list[LogEntry] = []
+            for qid in related_qids:
+                batch_logs.extend(qid_logs_cache.get(qid, []))
+
+            # Check out-of-window
+            for entry in batch_logs:
+                if is_out_of_time_window(entry.datetime, time, time_range):
+                    if entry.mail_id and entry.mail_id not in out_of_window:
+                        out_of_window.append(entry.mail_id)
+
+            status, reason = _classify_flow_from_batch(
+                mail_id, batch_logs, cluster_hosts
+            )
+        else:
+            # No message_id available, classify from initial logs only
+            status, reason = classify_terminal_state(logs, cluster_hosts)
+
+        flow = _create_mail_flow(mail_id, host, source, status, reason)
+        if status == FlowStatus.COMPLETE:
+            complete_flows.append(flow)
+        else:
+            problematic_flows.append(flow)
+
+    return complete_flows, problematic_flows, out_of_window
+
+
 def check_cluster_flow(
     config: Config,
     aggregator_class: type[LogAggregator],
@@ -317,6 +468,60 @@ def check_cluster_flow(
     # Find inbound mails
     inbound = find_inbound_mails(all_logs, cluster_hosts)
 
+    # Try message_id optimization for OpenSearch
+    from mailtrace.config import Method
+
+    if config.method == Method.OPENSEARCH:
+        complete_flows, problematic_flows, out_of_window = (
+            _check_cluster_flow_with_message_id(
+                config,
+                aggregator_class,
+                cluster_hosts,
+                all_logs,
+                inbound,
+                time,
+                time_range,
+            )
+        )
+    else:
+        # Fallback: original per-hop tracing
+        complete_flows, problematic_flows, out_of_window = (
+            _check_cluster_flow_per_hop(
+                config,
+                aggregator_class,
+                cluster_hosts,
+                inbound,
+                time,
+                time_range,
+            )
+        )
+
+    total = len(inbound)
+    return FlowCheckResult(
+        cluster=cluster,
+        time=time,
+        time_range=time_range,
+        keywords=keywords,
+        out_of_window_mail_ids=out_of_window,
+        summary={
+            "total_inbound": total,
+            "complete": len(complete_flows),
+            "problematic": len(problematic_flows),
+        },
+        complete_flows=complete_flows,
+        problematic_flows=problematic_flows,
+    )
+
+
+def _check_cluster_flow_per_hop(
+    config: Config,
+    aggregator_class: type[LogAggregator],
+    cluster_hosts: list[str],
+    inbound: dict[str, dict],
+    time: str,
+    time_range: str,
+) -> tuple[list[MailFlow], list[MailFlow], list[str]]:
+    """Original per-hop flow check (for SSH backend)."""
     complete_flows: list[MailFlow] = []
     problematic_flows: list[MailFlow] = []
     out_of_window: list[str] = []
@@ -331,25 +536,18 @@ def check_cluster_flow(
 
         if status == FlowStatus.COMPLETE:
             complete_flows.append(
-                MailFlow(
-                    inbound_mail_id=mail_id,
-                    inbound_host=host,
-                    source=source,
-                    status=FlowStatus.COMPLETE,
-                    terminal_state=reason,
-                    branches=1,
-                )
+                _create_mail_flow(mail_id, host, source, status, reason)
             )
             continue
 
-        # Need to trace further (internal relay or incomplete)
+        # Need to trace further for internal_relay
         if reason == "internal_relay":
             relays = do_trace_all(mail_id, aggregator_class(host, config))
             resolved = False
             for relay in relays:
                 if relay.mail_id:
                     traced_ids.append(relay.mail_id)
-                    t_status, t_reason, t_host, t_mid = _trace_to_terminal(
+                    t_status, _, _, _ = _trace_to_terminal(
                         relay.mail_id,
                         relay.relay_host,
                         aggregator_class,
@@ -385,43 +583,17 @@ def check_cluster_flow(
                         last_seen_mail_id=traced_ids[-1],
                     )
                 )
-        elif reason == "bounced":
-            problematic_flows.append(
-                MailFlow(
-                    inbound_mail_id=mail_id,
-                    inbound_host=host,
-                    source=source,
-                    status=FlowStatus.PROBLEMATIC,
-                    terminal_state="bounced",
-                    last_seen_host=host,
-                    last_seen_mail_id=mail_id,
-                )
-            )
         else:
+            # Handle bounced and incomplete cases uniformly
+            terminal_state = "bounced" if reason == "bounced" else "incomplete"
             problematic_flows.append(
-                MailFlow(
-                    inbound_mail_id=mail_id,
-                    inbound_host=host,
-                    source=source,
-                    status=FlowStatus.PROBLEMATIC,
-                    terminal_state="incomplete",
-                    last_seen_host=host,
-                    last_seen_mail_id=mail_id,
+                _create_mail_flow(
+                    mail_id,
+                    host,
+                    source,
+                    FlowStatus.PROBLEMATIC,
+                    terminal_state,
                 )
             )
 
-    total = len(inbound)
-    return FlowCheckResult(
-        cluster=cluster,
-        time=time,
-        time_range=time_range,
-        keywords=keywords,
-        out_of_window_mail_ids=out_of_window,
-        summary={
-            "total_inbound": total,
-            "complete": len(complete_flows),
-            "problematic": len(problematic_flows),
-        },
-        complete_flows=complete_flows,
-        problematic_flows=problematic_flows,
-    )
+    return complete_flows, problematic_flows, out_of_window
