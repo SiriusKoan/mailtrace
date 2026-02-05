@@ -485,15 +485,13 @@ def check_cluster_flow(
         )
     else:
         # Fallback: original per-hop tracing
-        complete_flows, problematic_flows, out_of_window = (
-            _check_cluster_flow_per_hop(
-                config,
-                aggregator_class,
-                cluster_hosts,
-                inbound,
-                time,
-                time_range,
-            )
+        complete_flows, problematic_flows, out_of_window = _check_cluster_flow_per_hop(
+            config,
+            aggregator_class,
+            cluster_hosts,
+            inbound,
+            time,
+            time_range,
         )
 
     total = len(inbound)

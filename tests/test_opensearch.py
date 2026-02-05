@@ -683,6 +683,7 @@ class TestOpenSearchConfiguration:
 
         assert config.port == 9200
         assert config.use_ssl is False
-        assert config.verify_certs is False
+        # SECURITY: verify_certs defaults to True for secure connections
+        assert config.verify_certs is True
         assert config.time_zone == "+00:00"
         assert config.timeout == 10

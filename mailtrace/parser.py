@@ -290,11 +290,7 @@ class OpensearchParser(LogParser):
 
         # Parse mail_id from message content
         mail_id_candidate = message_content.split(":")[0]
-        return (
-            mail_id_candidate
-            if check_mail_id_valid(mail_id_candidate)
-            else None
-        )
+        return mail_id_candidate if check_mail_id_valid(mail_id_candidate) else None
 
     def parse(self, log: dict) -> LogEntry:
         """

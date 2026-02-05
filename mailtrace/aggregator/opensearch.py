@@ -13,8 +13,6 @@ from mailtrace.utils import get_hosts, time_range_to_timedelta
 
 logger = logging.getLogger("mailtrace")
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 class OpenSearch(LogAggregator):
     """
@@ -36,12 +34,20 @@ class OpenSearch(LogAggregator):
             host (str): The hostname or cluster name to filter logs for.
             config (Config): Configuration object.
         """
-
         self.host = host
         self.config: OpenSearchConfig = config.opensearch_config
-        self.hosts = get_hosts(
-            config.cluster_to_hosts(host) or [host], config.domain
-        )
+        self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
+
+        # SECURITY: Warn if SSL certificate verification is disabled
+        if self.config.use_ssl and not self.config.verify_certs:
+            logger.warning(
+                "SSL certificate verification is DISABLED for OpenSearch connection. "
+                "This is INSECURE and vulnerable to man-in-the-middle attacks. "
+                "Set verify_certs=true in production."
+            )
+            # Only suppress warnings when explicitly configured to skip verification
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
@@ -77,9 +83,7 @@ class OpenSearch(LogAggregator):
         # - message_id queries (cross-host by nature)
         # - mail_id queries when no specific hosts are configured (cross-host trace)
         if not query.message_id and not (query.mail_id and not self.hosts):
-            search = search.query(
-                "terms", **{self.config.mapping.hostname: self.hosts}
-            )
+            search = search.query("terms", **{self.config.mapping.hostname: self.hosts})
 
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
@@ -107,16 +111,12 @@ class OpenSearch(LogAggregator):
         if query.message_id:
             message_id_field = self.config.mapping.message_id
             if message_id_field:
-                search = search.query(
-                    "term", **{message_id_field: query.message_id}
-                )
+                search = search.query("term", **{message_id_field: query.message_id})
             else:
                 # Fallback: search message text for message-id=<value>
                 search = search.query(
                     "match_phrase",
-                    **{
-                        self.config.mapping.message: f"message-id=<{query.message_id}>"
-                    },
+                    **{self.config.mapping.message: f"message-id=<{query.message_id}>"},
                 )
 
         if query.mail_id:
@@ -127,16 +127,12 @@ class OpenSearch(LogAggregator):
             else:
                 search = search.query(
                     "wildcard",
-                    **{
-                        self.config.mapping.message: f"{query.mail_id.lower()}*"
-                    },
+                    **{self.config.mapping.message: f"{query.mail_id.lower()}*"},
                 )
 
         logger.debug(f"Query: {search.to_dict()}")
         response = search.execute()
-        logger.debug(
-            f"Opensearch Response:\n{[hit.to_dict() for hit in response]}"
-        )
+        logger.debug(f"Opensearch Response:\n{[hit.to_dict() for hit in response]}")
 
         parser = OpensearchParser(mapping=self.config.mapping)
         parsed_log_entries = [

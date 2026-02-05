@@ -1,5 +1,7 @@
 import datetime
 import logging
+import os
+import shlex
 
 import paramiko
 
@@ -35,7 +37,29 @@ class SSHHost(LogAggregator):
         self.ssh_config = config.ssh_config
         self.host_config = self.ssh_config.get_host_config(host)
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.WarningPolicy())
+
+        # SECURITY: Configure SSH host key verification
+        known_hosts_file = self.ssh_config.known_hosts_file
+        if known_hosts_file:
+            # Load known_hosts file for host key verification
+            known_hosts_path = os.path.expanduser(known_hosts_file)
+            if os.path.exists(known_hosts_path):
+                self.client.load_host_keys(known_hosts_path)
+                logger.debug(f"Loaded known_hosts from: {known_hosts_path}")
+            else:
+                logger.warning(
+                    f"known_hosts file not found: {known_hosts_path}. "
+                    "Host key verification may fail."
+                )
+            # Reject unknown host keys by default (secure)
+            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            # SECURITY WARNING: Host key verification disabled
+            logger.warning(
+                "SSH host key verification is DISABLED (known_hosts_file is empty). "
+                "This is INSECURE and not recommended for production use."
+            )
+            self.client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
         # Prepare connection parameters
         connect_params = {
@@ -52,8 +76,6 @@ class SSHHost(LogAggregator):
 
         # Load and merge SSH config file if specified
         if self.ssh_config.ssh_config_file:
-            import os
-
             ssh_config = paramiko.SSHConfig()
             config_path = os.path.expanduser(self.ssh_config.ssh_config_file)
             try:
@@ -76,9 +98,7 @@ class SSHHost(LogAggregator):
                 if "port" in ssh_host_config:
                     connect_params["port"] = int(ssh_host_config["port"])
                 if "identityfile" in ssh_host_config:
-                    connect_params["key_filename"] = ssh_host_config[
-                        "identityfile"
-                    ]
+                    connect_params["key_filename"] = ssh_host_config["identityfile"]
             else:
                 logger.debug(
                     f"SSH config file not found for {self.host}, using Mailtrace config settings."
@@ -86,9 +106,7 @@ class SSHHost(LogAggregator):
 
         self.client.connect(**connect_params)
 
-    def _execute_command(
-        self, command: str, sudo: bool = False
-    ) -> tuple[str, str]:
+    def _execute_command(self, command: str, sudo: bool = False) -> tuple[str, str]:
         """
         Execute a command on the remote host via SSH.
 
@@ -122,8 +140,8 @@ class SSHHost(LogAggregator):
         Returns:
             True if the file exists, False otherwise
         """
-
-        command = f"stat {file_path}"
+        # SECURITY: Escape file path to prevent command injection
+        command = f"stat {shlex.quote(file_path)}"
         stdout_content, _ = self._execute_command(command)
         return stdout_content != ""
 
@@ -140,9 +158,7 @@ class SSHHost(LogAggregator):
 
         if query.time and query.time_range:
             # get logs by time
-            timestamp = datetime.datetime.strptime(
-                query.time, "%Y-%m-%d %H:%M:%S"
-            )
+            timestamp = datetime.datetime.strptime(query.time, "%Y-%m-%d %H:%M:%S")
             time_range = time_range_to_timedelta(query.time_range)
             start_time = timestamp - time_range
             end_time = timestamp + time_range
@@ -164,11 +180,15 @@ class SSHHost(LogAggregator):
 
         Returns:
             String containing chained grep commands or empty string if no keywords
-        """
 
+        Note:
+            Keywords are shell-escaped using shlex.quote() to prevent command injection.
+        """
         if not keywords:
             return ""
-        return "".join(f"| grep -iE {keyword}" for keyword in keywords)
+        # Combine keywords into a single regex for an OR search, which is more efficient.
+        patterns = "|".join(keywords)
+        return f"| grep -iE {shlex.quote(patterns)}"
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         """
@@ -189,10 +209,11 @@ class SSHHost(LogAggregator):
         for log_file in self.host_config.log_files:
             if not self._check_file_exists(log_file):
                 continue
+            # SECURITY: Escape file path to prevent command injection
             complete_command = " ".join(
                 [
                     command,
-                    log_file,
+                    shlex.quote(log_file),
                     self._compose_keyword_command(query.keywords),
                 ]
             )
@@ -202,9 +223,7 @@ class SSHHost(LogAggregator):
             logs += stdout
         parser = PARSERS[self.host_config.log_parser]()
         parsed_logs = [
-            parser.parse_with_enrichment(line)
-            for line in logs.splitlines()
-            if line
+            parser.parse_with_enrichment(line) for line in logs.splitlines() if line
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]

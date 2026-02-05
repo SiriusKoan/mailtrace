@@ -67,8 +67,7 @@ class MXDiscovery:
             return hosts
         except dns.resolver.Timeout:
             logger.warning(
-                f"MX lookup failed for {domain}: "
-                f"Timeout after {self.config.timeout}s"
+                f"MX lookup failed for {domain}: Timeout after {self.config.timeout}s"
             )
             return []
         except dns.resolver.NXDOMAIN:
