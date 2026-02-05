@@ -97,6 +97,20 @@ def _prompt_password(prompt: str, ask: bool, provided: str | None) -> str | None
     return provided
 
 
+def _warn_cli_password(
+    password: str | None, name: str, ask_flag: str, env_var: str
+) -> None:
+    """Log security warning if password was provided via CLI argument."""
+    if password:
+        logger.warning(
+            "SECURITY: %s provided via CLI argument is visible in shell history. "
+            "Consider using %s or %s env var instead.",
+            name,
+            ask_flag,
+            env_var,
+        )
+
+
 def handle_passwords(
     config: Config,
     ask_login_pass: bool,
@@ -119,7 +133,26 @@ def handle_passwords(
         sudo_pass: The sudo password (may be None).
         ask_opensearch_pass: Boolean, whether to prompt for OpenSearch password.
         opensearch_pass: The OpenSearch password (may be None).
+
+    Security Note:
+        Passwords passed via CLI arguments (--login-pass, --sudo-pass, --opensearch-pass)
+        are visible in shell history and process listings. Use --ask-*-pass flags or
+        environment variables for better security.
     """
+    # SECURITY WARNING: CLI password arguments are visible in shell history and ps output
+    _warn_cli_password(
+        login_pass, "Password", "--ask-login-pass", "MAILTRACE_SSH_PASSWORD"
+    )
+    _warn_cli_password(
+        sudo_pass, "Sudo password", "--ask-sudo-pass", "MAILTRACE_SUDO_PASSWORD"
+    )
+    _warn_cli_password(
+        opensearch_pass,
+        "OpenSearch password",
+        "--ask-opensearch-pass",
+        "MAILTRACE_OPENSEARCH_PASSWORD",
+    )
+
     if config.method == Method.SSH:
         login_pass = _prompt_password(
             "Enter login password: ", ask_login_pass, login_pass

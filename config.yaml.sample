@@ -13,6 +13,12 @@ auto_continue: false
 
 # Passwords can also be loaded from environment variables or a .env file
 # placed alongside this config file. See .env.example for supported variables.
+#
+# SECURITY RECOMMENDATIONS:
+# - Use SSH keys instead of passwords when possible
+# - Use environment variables or interactive prompts for passwords
+# - Enable SSL certificate verification in production (verify_certs: true)
+# - Keep known_hosts_file configured for SSH host key verification
 ssh_config:
   username: username
   password: ""
@@ -21,6 +27,9 @@ ssh_config:
   sudo: true
   timeout: 10
   ssh_config_file: demo/docker/ssh_config
+  # SECURITY: Path to known_hosts file for SSH host key verification.
+  # Set to empty string to disable verification (NOT RECOMMENDED for production).
+  known_hosts_file: ~/.ssh/known_hosts
   host_config:
     log_files:
       - /var/log/mail.log
@@ -45,7 +54,9 @@ opensearch_config:
   password: ""
   index: "mailtrace-logs-*" # OpenSearch index name or pattern for log storage
   use_ssl: true # Whether to use SSL/TLS encryption
-  verify_certs: false # Whether to verify SSL certificates (set to true in production)
+  # SECURITY: verify_certs should be true in production to prevent MITM attacks.
+  # Only set to false for local development with self-signed certificates.
+  verify_certs: true # Whether to verify SSL certificates
   time_zone: "+00:00" # Timezone offset for log timestamps
   timeout: 10 # Connection timeout in seconds
   mapping: # Mapping of application field names to OpenSearch field names

@@ -53,6 +53,9 @@ class SSHConfig:
         sudo: Whether to use sudo for log file access
         timeout: SSH connection timeout in seconds
         ssh_config_file: Path to SSH config file (e.g., ~/.ssh/config or custom)
+        known_hosts_file: Path to known_hosts file for host key verification.
+            Defaults to ~/.ssh/known_hosts. Set to empty string to disable
+            host key verification (INSECURE - not recommended for production).
         host_config: Default host configuration for log files
         hosts: Dictionary mapping hostnames to their specific configurations
     """
@@ -64,6 +67,7 @@ class SSHConfig:
     sudo: bool = True
     timeout: int = 10
     ssh_config_file: str = ""
+    known_hosts_file: str = "~/.ssh/known_hosts"
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
@@ -154,7 +158,9 @@ class OpenSearchConfig:
         username: Username for OpenSearch authentication
         password: Password for OpenSearch authentication
         use_ssl: Whether to use SSL/TLS encryption
-        verify_certs: Whether to verify SSL certificates
+        verify_certs: Whether to verify SSL certificates (default: True).
+            SECURITY WARNING: Setting to False disables certificate validation
+            and makes the connection vulnerable to man-in-the-middle attacks.
         index: OpenSearch index name for log storage
         time_zone: Timezone offset for log timestamps
         mapping: Mapping of application field names to OpenSearch field names
@@ -165,7 +171,7 @@ class OpenSearchConfig:
     username: str = ""
     password: str = ""
     use_ssl: bool = False
-    verify_certs: bool = False
+    verify_certs: bool = True
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10

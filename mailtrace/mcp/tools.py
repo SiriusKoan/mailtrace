@@ -18,6 +18,49 @@ from mailtrace.utils import time_validation
 logger = logging.getLogger("mailtrace.mcp")
 
 
+def _sanitize_error_message(error: Exception) -> str:
+    """Sanitize error message to avoid leaking sensitive information.
+
+    This function removes potentially sensitive information like hostnames,
+    usernames, file paths, and connection details from error messages before
+    returning them to clients.
+
+    Args:
+        error: The exception to sanitize
+
+    Returns:
+        A sanitized error message suitable for external clients
+    """
+    error_type = type(error).__name__
+    error_msg = str(error)
+
+    # Map common error types to generic messages
+    sensitive_patterns = {
+        "AuthenticationException": "Authentication failed. Check credentials.",
+        "SSHException": "SSH connection failed. Check host and credentials.",
+        "NoValidConnectionsError": "Unable to connect to the host.",
+        "socket.timeout": "Connection timed out.",
+        "ConnectionRefusedError": "Connection refused by the host.",
+        "HostKeyVerificationError": "SSH host key verification failed.",
+        "ConnectionError": "Failed to establish connection.",
+        "TimeoutError": "Operation timed out.",
+    }
+
+    for pattern, generic_msg in sensitive_patterns.items():
+        if pattern in error_type or pattern in error_msg:
+            return generic_msg
+
+    # For unknown errors, return type without full message (may contain sensitive data)
+    # Log the full error server-side for debugging
+    logger.debug("Full error details: %s: %s", error_type, error_msg)
+    return f"Operation failed ({error_type}). Check server logs for details."
+
+
+def _error_response(code: str, message: str) -> str:
+    """Create a JSON error response."""
+    return json.dumps({"error": {"code": code, "message": message}})
+
+
 class QueryLogsInput(BaseModel):
     """Input model for mailtrace_query_logs tool."""
 
@@ -167,14 +210,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             if params.time and params.time_range:
                 error = time_validation(params.time, params.time_range)
                 if error:
-                    return json.dumps(
-                        {
-                            "error": {
-                                "code": "INVALID_TIME_FORMAT",
-                                "message": error,
-                            }
-                        }
-                    )
+                    return _error_response("INVALID_TIME_FORMAT", error)
 
             # Get aggregator class
             aggregator_class = select_aggregator(config)
@@ -190,17 +226,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             )
 
             if not logs_by_id:
-                return json.dumps(
-                    {
-                        "error": {
-                            "code": "NO_RESULTS",
-                            "message": (
-                                f"No mail logs found for keywords: "
-                                f"{params.keywords}. Try widening the time "
-                                "range or checking different keywords."
-                            ),
-                        }
-                    }
+                return _error_response(
+                    "NO_RESULTS",
+                    f"No mail logs found for keywords: {params.keywords}. "
+                    "Try widening the time range or checking different keywords.",
                 )
 
             # Format response
@@ -223,19 +252,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             return json.dumps(response, indent=2, default=str)
 
         except FileNotFoundError as e:
-            return json.dumps(
-                {"error": {"code": "CONFIG_ERROR", "message": str(e)}}
-            )
+            return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_query_logs")
-            return json.dumps(
-                {
-                    "error": {
-                        "code": "CONNECTION_FAILED",
-                        "message": f"Failed to query logs: {e}",
-                    }
-                }
-            )
+            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
 
     @mcp.tool(
         name="mailtrace_trace_mail",
@@ -277,14 +297,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             if params.time and params.time_range:
                 error = time_validation(params.time, params.time_range)
                 if error:
-                    return json.dumps(
-                        {
-                            "error": {
-                                "code": "INVALID_TIME_FORMAT",
-                                "message": error,
-                            }
-                        }
-                    )
+                    return _error_response("INVALID_TIME_FORMAT", error)
 
             # Get aggregator class
             aggregator_class = select_aggregator(config)
@@ -322,17 +335,10 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
                 )
 
                 if not logs_by_id:
-                    return json.dumps(
-                        {
-                            "error": {
-                                "code": "NO_RESULTS",
-                                "message": (
-                                    f"No mail logs found for keywords: "
-                                    f"{params.keywords}. Try widening the time "
-                                    "range or checking different keywords."
-                                ),
-                            }
-                        }
+                    return _error_response(
+                        "NO_RESULTS",
+                        f"No mail logs found for keywords: {params.keywords}. "
+                        "Try widening the time range or checking different keywords.",
                     )
 
                 for mail_id, (host, _) in logs_by_id.items():
@@ -364,35 +370,20 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
                     search_target = f"mail ID: {params.mail_id}"
                 else:
                     search_target = f"keywords: {params.keywords}"
-                return json.dumps(
-                    {
-                        "error": {
-                            "code": "NO_RESULTS",
-                            "message": (
-                                f"No relay hops found for {search_target}. "
-                                "The mail may have been delivered locally "
-                                "or the search criteria may be incorrect."
-                            ),
-                        }
-                    }
+                return _error_response(
+                    "NO_RESULTS",
+                    f"No relay hops found for {search_target}. "
+                    "The mail may have been delivered locally "
+                    "or the search criteria may be incorrect.",
                 )
 
             return json.dumps(result, indent=2, default=str)
 
         except FileNotFoundError as e:
-            return json.dumps(
-                {"error": {"code": "CONFIG_ERROR", "message": str(e)}}
-            )
+            return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_trace_mail")
-            return json.dumps(
-                {
-                    "error": {
-                        "code": "CONNECTION_FAILED",
-                        "message": f"Failed to trace mail: {e}",
-                    }
-                }
-            )
+            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
 
     @mcp.tool(
         name="mailtrace_check_flow",
@@ -426,14 +417,7 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             if params.time:
                 error = time_validation(check_time, params.time_range)
                 if error:
-                    return json.dumps(
-                        {
-                            "error": {
-                                "code": "INVALID_TIME_FORMAT",
-                                "message": error,
-                            }
-                        }
-                    )
+                    return _error_response("INVALID_TIME_FORMAT", error)
 
             aggregator_class = select_aggregator(config)
             result = check_cluster_flow(
@@ -448,30 +432,9 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             return json.dumps(result.to_dict(), indent=2, default=str)
 
         except ValueError as e:
-            return json.dumps(
-                {
-                    "error": {
-                        "code": "INVALID_CLUSTER",
-                        "message": str(e),
-                    }
-                }
-            )
+            return _error_response("INVALID_CLUSTER", str(e))
         except FileNotFoundError as e:
-            return json.dumps(
-                {
-                    "error": {
-                        "code": "CONFIG_ERROR",
-                        "message": str(e),
-                    }
-                }
-            )
+            return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_check_flow")
-            return json.dumps(
-                {
-                    "error": {
-                        "code": "CONNECTION_FAILED",
-                        "message": f"Failed: {e}",
-                    }
-                }
-            )
+            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
