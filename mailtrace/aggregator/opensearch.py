@@ -13,8 +13,6 @@ from mailtrace.utils import get_hosts, time_range_to_timedelta
 
 logger = logging.getLogger("mailtrace")
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 class OpenSearch(LogAggregator):
     """
@@ -36,10 +34,20 @@ class OpenSearch(LogAggregator):
             host (str): The hostname or cluster name to filter logs for.
             config (Config): Configuration object.
         """
-
         self.host = host
         self.config: OpenSearchConfig = config.opensearch_config
         self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
+
+        # SECURITY: Warn if SSL certificate verification is disabled
+        if self.config.use_ssl and not self.config.verify_certs:
+            logger.warning(
+                "SSL certificate verification is DISABLED for OpenSearch connection. "
+                "This is INSECURE and vulnerable to man-in-the-middle attacks. "
+                "Set verify_certs=true in production."
+            )
+            # Only suppress warnings when explicitly configured to skip verification
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         self.client = OpenSearchClient(
             hosts=[{"host": self.config.host, "port": self.config.port}],
             http_auth=(self.config.username, self.config.password),
