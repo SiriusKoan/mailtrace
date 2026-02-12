@@ -230,12 +230,8 @@ def trace_mail_loop(
     while True:
         result = do_trace(trace_id, aggregator)
         if result is None:
-            # Retry without hostname filter (some machines lack proper reverse DNS)
-            aggregator = aggregator_class("", config)
-            result = do_trace(trace_id, aggregator)
-            if result is None:
-                logger.info("No more hops")
-                break
+            logger.info("No more hops")
+            break
 
         print_blue(
             f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) "

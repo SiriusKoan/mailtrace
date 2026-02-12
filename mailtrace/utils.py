@@ -116,8 +116,8 @@ def get_hosts(hostnames: list[str], domain: str) -> list[str]:
 class RelayResult:
     """Result of analyzing a log entry to extract relay information."""
 
-    mail_id: str | None
-    relay_host: str | None
+    mail_id: str
+    relay_host: str
     relay_ip: str | None
     relay_port: int | None
     smtp_code: int | None

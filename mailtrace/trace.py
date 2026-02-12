@@ -42,12 +42,8 @@ def trace_mail_flow(
     while True:
         result = do_trace(trace_id, aggregator)
         if result is None:
-            # Retry without hostname filter (some machines lack proper reverse DNS)
-            aggregator = aggregator_class("", config)
-            result = do_trace(trace_id, aggregator)
-            if result is None:
-                logger.info("No more hops for %s", trace_id)
-                break
+            logger.info("No more hops for %s", trace_id)
+            break
 
         logger.info(
             "Relayed from %s to %s with new ID %s",

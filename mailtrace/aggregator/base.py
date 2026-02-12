@@ -54,7 +54,7 @@ class LogAggregator(ABC):
         """
         for log_entry in log_entries:
             # Check if relay information is available in the log entry
-            if not log_entry.relay_host:
+            if not log_entry.relay_host or not log_entry.queued_as:
                 continue
 
             logger.info(
@@ -62,11 +62,11 @@ class LogAggregator(ABC):
                 log_entry.relay_host,
                 log_entry.relay_ip,
                 log_entry.relay_port,
-                log_entry.mail_id,
+                log_entry.queued_as,
             )
 
             return RelayResult(
-                mail_id=log_entry.mail_id,
+                mail_id=log_entry.queued_as,
                 relay_host=log_entry.relay_host,
                 relay_ip=log_entry.relay_ip,
                 relay_port=log_entry.relay_port,

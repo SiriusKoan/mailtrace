@@ -63,11 +63,11 @@ class SSHHost(LogAggregator):
             except FileNotFoundError:
                 logger.warning(f"SSH config file not found: {config_path}")
 
-            if self.host in ssh_config.get_hostnames():
+            if ssh_host_config := ssh_config.lookup(self.host):
                 logger.debug(f"SSH config file found for {self.host}")
                 # Merge SSH config settings with our parameters
                 # SSH config values take precedence for connection settings
-                ssh_host_config = ssh_config.lookup(self.host)
+                # ssh_host_config = ssh_config.lookup(self.host)
                 # Only override with SSH config if the setting exists there
                 if "hostname" in ssh_host_config:
                     connect_params["hostname"] = ssh_host_config["hostname"]
@@ -202,7 +202,9 @@ class SSHHost(LogAggregator):
             logs += stdout
         parser = PARSERS[self.host_config.log_parser]()
         parsed_logs = [
-            parser.parse_with_enrichment(line) for line in logs.splitlines() if line
+            parser.parse_with_enrichment(line)
+            for line in logs.splitlines()
+            if line
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
