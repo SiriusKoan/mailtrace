@@ -159,14 +159,18 @@ def trace_mail_flow_by_message_id(
     return all_logs
 
 
-def _query_logs_from_aggregator(
+def _query_logs_batch(
     aggregator: LogAggregator,
     keywords: list[str],
     time: str,
     time_range: str,
 ) -> dict[str, tuple[str, list[LogEntry]]]:
-    """
-    Query logs from a single aggregator and return mail IDs with their logs.
+    """Query logs using Message-ID + batch optimization.
+
+    Works uniformly for both OpenSearch and SSH backends:
+    1. Keyword search (time-restricted) → initial queue-IDs + Message-IDs
+    2. Message-ID queries (no time restriction) → all related queue-IDs
+    3. Batch fetch ALL queue-IDs in one query (no time restriction)
 
     Args:
         aggregator: The aggregator instance to query logs from.
@@ -177,64 +181,37 @@ def _query_logs_from_aggregator(
     Returns:
         Dictionary mapping mail IDs to (actual_host, log_entries).
     """
+    # Step 1: keyword search (time-restricted)
     base_logs = aggregator.query_by(
         LogQuery(keywords=keywords, time=time, time_range=time_range)
     )
-    mail_ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
-
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    for mail_id in mail_ids:
-        mail_logs = aggregator.query_by(LogQuery(mail_id=mail_id))
-        actual_host = mail_logs[0].hostname if mail_logs else aggregator.host
-        logs_by_id[mail_id] = (actual_host, mail_logs)
-
-    return logs_by_id
-
-
-def _query_logs_by_message_id(
-    aggregator: LogAggregator,
-    keywords: list[str],
-    time: str,
-    time_range: str,
-) -> dict[str, tuple[str, list[LogEntry]]]:
-    """Query logs using message_id optimization for OpenSearch.
-
-    1. Keyword search → base logs
-    2. Extract message_ids from base logs
-    3. For each message_id → single query gets ALL logs across ALL hops
-    4. Group results by queue_id
-    """
-    base_logs = aggregator.query_by(
-        LogQuery(keywords=keywords, time=time, time_range=time_range)
+    initial_mail_ids = list(
+        {log.mail_id for log in base_logs if log.mail_id is not None}
     )
+    if not initial_mail_ids:
+        return {}
 
-    # Extract message_ids from initial results
+    # Step 2: find ALL related queue-IDs via Message-ID (no time restriction)
     message_ids = extract_message_ids(base_logs)
-    if not message_ids:
-        # Fall back to queue_id approach
-        logger.debug("No message_ids found in base logs, falling back to queue_id")
-        mail_ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
-        logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-        for mail_id in mail_ids:
-            mail_logs = aggregator.query_by(LogQuery(mail_id=mail_id))
-            actual_host = mail_logs[0].hostname if mail_logs else aggregator.host
-            logs_by_id[mail_id] = (actual_host, mail_logs)
-        return logs_by_id
+    all_queue_ids = set(initial_mail_ids)
 
-    # Query by each message_id to get ALL logs across ALL hops
-    all_logs: list[LogEntry] = []
     for mid in message_ids:
         logger.info("Querying by message_id: %s", mid)
         mid_logs = aggregator.query_by(LogQuery(message_id=mid))
-        all_logs.extend(mid_logs)
+        all_queue_ids.update(
+            log.mail_id for log in mid_logs if log.mail_id
+        )
 
-    # Group by queue_id
-    logs_by_id = {}
-    for entry in all_logs:
-        if entry.mail_id and entry.mail_id not in logs_by_id:
-            logs_by_id[entry.mail_id] = (entry.hostname, [])
-        if entry.mail_id:
-            logs_by_id[entry.mail_id][1].append(entry)
+    # Step 3: batch fetch ALL queue-IDs at once (no time restriction)
+    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
+    batch_logs = aggregator.query_by(
+        LogQuery(mail_ids=list(all_queue_ids))
+    )
+    for entry in batch_logs:
+        if entry.mail_id and entry.mail_id in all_queue_ids:
+            logs_by_id.setdefault(
+                entry.mail_id, (entry.hostname, [])
+            )[1].append(entry)
 
     return logs_by_id
 
@@ -250,7 +227,7 @@ def query_logs_by_keywords(
     """
     Query logs by keywords and return mail IDs with their logs.
 
-    For OpenSearch, uses message_id optimization when available.
+    Uses Message-ID batch optimization for both OpenSearch and SSH backends.
 
     Args:
         config: Configuration object containing connection settings.
@@ -267,14 +244,14 @@ def query_logs_by_keywords(
 
     if config.method == Method.OPENSEARCH:
         aggregator = aggregator_class(start_host, config)
-        logs_by_id = _query_logs_by_message_id(aggregator, keywords, time, time_range)
+        logs_by_id = _query_logs_batch(aggregator, keywords, time, time_range)
     elif config.method == Method.SSH:
         hosts = config.cluster_to_hosts(start_host) or [start_host]
         logger.info("Using hosts: %s", hosts)
         for host in hosts:
             aggregator = aggregator_class(host, config)
             logs_by_id.update(
-                _query_logs_from_aggregator(aggregator, keywords, time, time_range)
+                _query_logs_batch(aggregator, keywords, time, time_range)
             )
 
     if not logs_by_id:
@@ -295,8 +272,8 @@ def trace_mail_flow_to_file(
     """
     Trace mail flow and save the graph to a Graphviz dot file.
 
-    For OpenSearch, uses message_id-based batch tracing when available.
-    For SSH, uses per-hop tracing.
+    Uses batch-fetched logs from query_logs_by_keywords to reconstruct
+    the graph without additional queries.
 
     Args:
         config: Configuration object containing connection settings.
@@ -320,34 +297,11 @@ def trace_mail_flow_to_file(
 
     graph = MailGraph()
 
-    if config.method == Method.OPENSEARCH:
-        # Extract message_ids from the queried logs for batch tracing
-        all_logs = [
-            entry for _, log_entries in logs_by_id.values() for entry in log_entries
-        ]
-        message_ids = extract_message_ids(all_logs)
-
-        if message_ids:
-            # Batch trace: single query per message_id
-            aggregator = aggregator_class(start_host, config)
-            traced_mids: set[str] = set()
-            for mid in message_ids:
-                if mid in traced_mids:
-                    continue
-                traced_mids.add(mid)
-                trace_mail_flow_by_message_id(mid, aggregator, graph)
-        else:
-            # Fallback to per-hop tracing
-            for trace_id, (host_for_trace, _) in logs_by_id.items():
-                logger.info("Tracing mail ID: %s", trace_id)
-                trace_mail_flow(
-                    trace_id, aggregator_class, config, host_for_trace, graph
-                )
-    else:
-        # SSH: per-hop tracing
-        for trace_id, (host_for_trace, _) in logs_by_id.items():
-            logger.info("Tracing mail ID: %s", trace_id)
-            trace_mail_flow(trace_id, aggregator_class, config, host_for_trace, graph)
+    # Reconstruct the graph from already-fetched logs (no extra queries)
+    all_logs = [
+        entry for _, log_entries in logs_by_id.values() for entry in log_entries
+    ]
+    _reconstruct_chain(all_logs, graph)
 
     graph.to_dot(output_file)
     if output_file and output_file != "-":

@@ -204,6 +204,14 @@ class SSHHost(LogAggregator):
             ValueError: If there's an error executing the command on the remote host
         """
 
+        # Build effective keywords: merge explicit keywords with message_id
+        # and mail_ids for server-side grep pre-filtering
+        effective_keywords = list(query.keywords) if query.keywords else []
+        if query.message_id:
+            effective_keywords.append(f"message-id=<{query.message_id}>")
+        if query.mail_ids:
+            effective_keywords.extend(query.mail_ids)
+
         logs: str = ""
         command = self._compose_read_command(query)
         for log_file in self.host_config.log_files:
@@ -214,7 +222,7 @@ class SSHHost(LogAggregator):
                 [
                     command,
                     shlex.quote(log_file),
-                    self._compose_keyword_command(query.keywords),
+                    self._compose_keyword_command(effective_keywords),
                 ]
             )
             stdout, stderr = self._execute_command(complete_command)
@@ -227,4 +235,7 @@ class SSHHost(LogAggregator):
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
+        if query.mail_ids:
+            target = set(query.mail_ids)
+            return [log for log in parsed_logs if log.mail_id in target]
         return parsed_logs

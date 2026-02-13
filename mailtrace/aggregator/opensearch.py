@@ -3,6 +3,7 @@ from datetime import datetime
 
 import urllib3
 from opensearchpy import OpenSearch as OpenSearchClient
+from opensearchpy import Q
 from opensearchpy.helpers.search import Search
 
 from mailtrace.aggregator.base import LogAggregator
@@ -81,8 +82,13 @@ class OpenSearch(LogAggregator):
 
         # Skip hostname filter for:
         # - message_id queries (cross-host by nature)
+        # - mail_ids queries (batch queue-IDs span hosts)
         # - mail_id queries when no specific hosts are configured (cross-host trace)
-        if not query.message_id and not (query.mail_id and not self.hosts):
+        if (
+            not query.message_id
+            and not query.mail_ids
+            and not (query.mail_id and not self.hosts)
+        ):
             search = search.query("terms", **{self.config.mapping.hostname: self.hosts})
 
         if query.time and query.time_range:
@@ -128,6 +134,26 @@ class OpenSearch(LogAggregator):
                 search = search.query(
                     "wildcard",
                     **{self.config.mapping.message: f"{query.mail_id.lower()}*"},
+                )
+
+        if query.mail_ids:
+            queueid_field = self.config.mapping.queueid
+            if queueid_field:
+                search = search.query(
+                    "terms", **{queueid_field: query.mail_ids}
+                )
+            else:
+                mail_id_queries = [
+                    Q(
+                        "wildcard",
+                        **{self.config.mapping.message: f"{mid.lower()}*"},
+                    )
+                    for mid in query.mail_ids
+                ]
+                search = search.query(
+                    "bool",
+                    should=mail_id_queries,
+                    minimum_should_match=1,
                 )
 
         logger.debug(f"Query: {search.to_dict()}")

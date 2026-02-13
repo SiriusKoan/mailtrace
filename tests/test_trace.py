@@ -259,11 +259,11 @@ class TestTraceMailFlowByMessageId:
 class TestQueryLogsByKeywords:
     """Tests for query_logs_by_keywords function."""
 
-    @patch("mailtrace.trace._query_logs_by_message_id")
+    @patch("mailtrace.trace._query_logs_batch")
     def test_uses_message_id_optimization_for_opensearch(
         self, mock_query, opensearch_config
     ):
-        """Uses message_id optimization for OpenSearch method."""
+        """Uses batch optimization for OpenSearch method."""
         mock_aggregator_class = MagicMock()
         mock_query.return_value = {"ABC123": ("mx1", [])}
 
@@ -278,7 +278,7 @@ class TestQueryLogsByKeywords:
 
         mock_query.assert_called_once()
 
-    @patch("mailtrace.trace._query_logs_from_aggregator")
+    @patch("mailtrace.trace._query_logs_batch")
     def test_queries_each_host_for_ssh(self, mock_query, ssh_config):
         """Queries each host in cluster for SSH method."""
         mock_aggregator_class = MagicMock()

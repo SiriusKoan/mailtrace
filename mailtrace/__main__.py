@@ -3,7 +3,12 @@ import logging
 
 import click
 
-from mailtrace.aggregator import do_trace, select_aggregator
+from mailtrace.aggregator import (
+    do_trace,
+    do_trace_from_logs,
+    extract_message_ids,
+    select_aggregator,
+)
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
 from mailtrace.flow_check import check_cluster_flow
@@ -178,6 +183,11 @@ def query_and_print_logs(
     """
     Queries logs using the aggregator and prints logs grouped by mail ID.
 
+    Uses Message-ID based batch fetching to avoid N+1 queries:
+    1. Keyword search (time-restricted) -> initial queue-IDs + Message-IDs
+    2. Message-ID queries (no time restriction) -> all related queue-IDs
+    3. Batch query all queue-IDs (no time restriction) -> all logs at once
+
     Args:
         aggregator: The aggregator instance to query logs.
         key: Keywords for the log query.
@@ -186,23 +196,58 @@ def query_and_print_logs(
 
     Returns:
         Dictionary mapping mail IDs to (host, list of LogEntry) tuples.
+        Includes both initially-matched IDs and related IDs found via
+        Message-ID for the trace cache.
     """
+    # Step 1: keyword search (time-restricted)
     base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
-    mail_ids = list({log.mail_id for log in base_logs if log.mail_id is not None})
-    if not mail_ids:
+    initial_mail_ids = list(
+        {log.mail_id for log in base_logs if log.mail_id is not None}
+    )
+    if not initial_mail_ids:
         logger.info("No mail IDs found")
         return {}
 
+    # Step 2: find ALL related queue-IDs via Message-ID (no time restriction)
+    message_ids = extract_message_ids(base_logs)
+    all_queue_ids = set(initial_mail_ids)
+
+    for mid in message_ids:
+        logger.info("Querying by message_id: %s", mid)
+        mid_logs = aggregator.query_by(LogQuery(message_id=mid))
+        all_queue_ids.update(
+            log.mail_id for log in mid_logs if log.mail_id
+        )
+
+    # Step 3: batch fetch ALL queue-IDs at once (no time restriction)
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    for mail_id in mail_ids:
-        logs = aggregator.query_by(LogQuery(mail_id=mail_id))
-        logs_by_id[mail_id] = (aggregator.host, logs)
-        print_blue(f"== Mail ID: {mail_id} ==")
-        for log in logs:
-            print(str(log))
-        print_blue("==============\n")
+    batch_logs = aggregator.query_by(
+        LogQuery(mail_ids=list(all_queue_ids))
+    )
+    for entry in batch_logs:
+        if entry.mail_id and entry.mail_id in all_queue_ids:
+            logs_by_id.setdefault(
+                entry.mail_id, (entry.hostname, [])
+            )[1].append(entry)
+
+    # Step 4: fallback for any initial IDs not covered
+    for mail_id in initial_mail_ids:
+        if mail_id not in logs_by_id:
+            logs = aggregator.query_by(LogQuery(mail_id=mail_id))
+            logs_by_id[mail_id] = (aggregator.host, logs)
+
+    # Step 5: print ONLY initially-matched queue-IDs
+    for mail_id in initial_mail_ids:
+        if mail_id in logs_by_id:
+            _, logs = logs_by_id[mail_id]
+            logs.sort(key=lambda e: e.datetime)
+            print_blue(f"== Mail ID: {mail_id} ==")
+            for log in logs:
+                print(str(log))
+            print_blue("==============\n")
+
     return logs_by_id
 
 
@@ -227,17 +272,23 @@ def trace_mail_loop(
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
 
-    aggregator = aggregator_class(host, config)
-
     while True:
-        result = do_trace(trace_id, aggregator)
-        if result is None:
-            # Retry without hostname filter (some machines lack proper reverse DNS)
-            aggregator = aggregator_class("", config)
+        # Cache-first: use pre-fetched logs if available
+        if trace_id in logs_by_id:
+            _, cached_logs = logs_by_id[trace_id]
+            result = do_trace_from_logs(trace_id, cached_logs)
+        else:
+            # Cache miss: query live
+            aggregator = aggregator_class(host, config)
             result = do_trace(trace_id, aggregator)
             if result is None:
-                logger.info("No more hops")
-                break
+                # Retry without hostname filter (some machines lack proper reverse DNS)
+                aggregator = aggregator_class("", config)
+                result = do_trace(trace_id, aggregator)
+
+        if result is None:
+            logger.info("No more hops")
+            break
 
         print_blue(
             f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) "
@@ -249,22 +300,24 @@ def trace_mail_loop(
             logger.info(f"Auto-continue enabled. Continuing to {result.relay_host}")
             trace_next_hop_ans = "y"
         else:
-            trace_next_hop_ans: str = input(
-                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
-            ).lower()
+            print(
+                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): ",
+                end="", flush=True,
+            )
+            trace_next_hop_ans: str = input().lower()
 
+        logger.info("User selected: %r", trace_next_hop_ans)
         if trace_next_hop_ans in ["", "y"]:
             trace_id = result.mail_id
-            aggregator = aggregator_class(result.relay_host, config)
+            host = result.relay_host
         elif trace_next_hop_ans == "n":
-            logger.info("Trace stopped")
+            logger.info("Trace stopped by user")
             break
         elif trace_next_hop_ans == "local":
             trace_id = result.mail_id
-            aggregator = aggregator_class(host, config)
         else:
             trace_id = result.mail_id
-            aggregator = aggregator_class(trace_next_hop_ans, config)
+            host = trace_next_hop_ans
 
 
 @cli.command()
@@ -319,7 +372,9 @@ def run(
         logger.info("No mail IDs found to trace.")
         return
 
-    trace_id = input("Enter trace ID: ")
+    print("Enter trace ID: ", end="", flush=True)
+    trace_id = input()
+    logger.info("User selected trace ID: %s", trace_id)
     if trace_id not in logs_by_id:
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
