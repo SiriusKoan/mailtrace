@@ -114,7 +114,7 @@ mailtrace trace \
 
 #### Pipe Directly to Graphviz
 
-You can pipe the output directly to Graphviz for instant visualization:
+You can pipe the output directly to Graphviz for instant visualization. Use `2>/dev/null` to suppress logging output (which goes to stderr):
 
 ```bash
 mailtrace trace \
@@ -122,7 +122,7 @@ mailtrace trace \
     -h mail.example.com \
     -k user@example.com \
     --time "2025-07-21 10:00:00" \
-    --time-range 10h | dot -Tpng > mail_trace.png
+    --time-range 10h 2>/dev/null | dot -Tpng > mail_trace.png
 ```
 
 Or to SVG for scalable graphics:
@@ -133,7 +133,7 @@ mailtrace trace \
     -h mail.example.com \
     -k user@example.com \
     --time "2025-07-21 10:00:00" \
-    --time-range 10h | dot -Tsvg > mail_trace.svg
+    --time-range 10h 2>/dev/null | dot -Tsvg > mail_trace.svg
 ```
 
 #### Example Graph Output
@@ -621,6 +621,27 @@ For security, sensitive information can be provided via environment variables in
 An aggregator can read the logs and find out the related ones. It then extracts information from the logs, including `hostname`, `mail_id`, etc.
 
 With the information extracted, it can find out the next stop of the mail flow. The tracing is performed by the `do_trace` function in `aggregator/__init__.py`, the core of this tool.
+
+### Message-ID Based Batch Fetching
+
+Mailtrace uses Message-ID headers to efficiently trace mail across multiple hosts. Instead of querying each queue-ID individually (N+1 queries), it:
+
+1. Searches by keyword (time-restricted) to find initial queue-IDs and Message-IDs
+2. Queries by Message-ID (no time restriction) to discover all related queue-IDs across hops
+3. Batch-fetches logs for all discovered queue-IDs in a single query
+
+This reduces the typical query count from **1 + N** (where N = number of queue-IDs) to **M + 2** (where M = unique Message-IDs, typically 1).
+
+### Message-ID Prerequisite
+
+For efficient cross-host tracing, mail messages must have a `Message-ID` header. Postfix adds this by default via the `cleanup` daemon when `always_add_missing_headers = yes` (the default setting).
+
+If your Postfix has this set to `no`, messages arriving without a `Message-ID` header will not receive one, and mailtrace will fall back to less efficient per-queue-ID queries:
+
+```
+# In Postfix main.cf (this is the default)
+always_add_missing_headers = yes
+```
 
 ## Demo
 

@@ -43,6 +43,7 @@ class LogQuery:
     Attributes:
         keywords: List of keywords to search for in log messages
         mail_id: Specific mail ID to filter by
+        mail_ids: List of mail IDs for batch query
         message_id: RFC 2822 Message-ID to search across all hops
         time: Specific timestamp to filter by
         time_range: Time range specification for filtering entries
@@ -50,6 +51,7 @@ class LogQuery:
 
     keywords: list[str] = field(default_factory=list)
     mail_id: str | None = None
+    mail_ids: list[str] | None = None
     message_id: str | None = None
     time: str | None = None
     time_range: str | None = None
