@@ -23,7 +23,11 @@ class TestGetNestedValue:
         "data,key,expected",
         [
             ({"name": "test"}, "name", "test"),
-            ({"host": {"name": "mx1.example.com"}}, "host.name", "mx1.example.com"),
+            (
+                {"host": {"name": "mx1.example.com"}},
+                "host.name",
+                "mx1.example.com",
+            ),
             (
                 {"log": {"syslog": {"facility": {"name": "mail"}}}},
                 "log.syslog.facility.name",
@@ -226,8 +230,14 @@ class TestSyslogParserRfc3164:
     @pytest.mark.parametrize(
         "log,expected_datetime",
         [
-            ("Feb 1 08:00:00 mx1 postfix/smtp[123]: ABC123: test", "Feb 1 08:00:00"),
-            ("Feb  1 08:00:00 mx1 postfix/smtp[123]: ABC123: test", "Feb 1 08:00:00"),
+            (
+                "Feb 1 08:00:00 mx1 postfix/smtp[123]: ABC123: test",
+                "Feb 1 08:00:00",
+            ),
+            (
+                "Feb  1 08:00:00 mx1 postfix/smtp[123]: ABC123: test",
+                "Feb 1 08:00:00",
+            ),
         ],
     )
     def test_parse_single_digit_day(self, log, expected_datetime):
