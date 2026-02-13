@@ -64,7 +64,9 @@ def _error_response(code: str, message: str) -> str:
 class QueryLogsInput(BaseModel):
     """Input model for mailtrace_query_logs tool."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True
+    )
 
     host: str = Field(
         ...,
@@ -96,7 +98,9 @@ class QueryLogsInput(BaseModel):
 class TraceMailInput(BaseModel):
     """Input model for mailtrace_trace_mail tool."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True
+    )
 
     host: str = Field(
         ...,
@@ -140,7 +144,9 @@ class TraceMailInput(BaseModel):
 class CheckFlowInput(BaseModel):
     """Input model for mailtrace_check_flow tool."""
 
-    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+    model_config = ConfigDict(
+        str_strip_whitespace=True, validate_assignment=True
+    )
 
     cluster: str = Field(
         ...,
@@ -251,7 +257,9 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_query_logs")
-            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
+            return _error_response(
+                "CONNECTION_FAILED", _sanitize_error_message(e)
+            )
 
     @mcp.tool(
         name="mailtrace_trace_mail",
@@ -306,7 +314,9 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
                 # Direct message_id batch trace
                 search_mode = "message_id"
                 aggregator = aggregator_class(params.host, config)
-                trace_mail_flow_by_message_id(params.message_id, aggregator, graph)
+                trace_mail_flow_by_message_id(
+                    params.message_id, aggregator, graph
+                )
                 traced_ids.append(params.message_id)
             elif params.mail_id:
                 # Direct mail_id provided
@@ -379,7 +389,9 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_trace_mail")
-            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
+            return _error_response(
+                "CONNECTION_FAILED", _sanitize_error_message(e)
+            )
 
     @mcp.tool(
         name="mailtrace_check_flow",
@@ -408,7 +420,9 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
         try:
             import datetime as dt
 
-            check_time = params.time or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            check_time = params.time or dt.datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
 
             if params.time:
                 error = time_validation(check_time, params.time_range)
@@ -433,4 +447,6 @@ def register_tools(mcp: FastMCP, config: Config) -> None:
             return _error_response("CONFIG_ERROR", str(e))
         except Exception as e:
             logger.exception("Error in mailtrace_check_flow")
-            return _error_response("CONNECTION_FAILED", _sanitize_error_message(e))
+            return _error_response(
+                "CONNECTION_FAILED", _sanitize_error_message(e)
+            )

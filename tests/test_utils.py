@@ -29,7 +29,11 @@ class TestTimeValidation:
     @pytest.mark.parametrize(
         "time,time_range,expected_msg",
         [
-            ("2025-01-15T10:30:00", "1h", "should be in format YYYY-MM-DD HH:MM:SS"),
+            (
+                "2025-01-15T10:30:00",
+                "1h",
+                "should be in format YYYY-MM-DD HH:MM:SS",
+            ),
             ("2025-01-15", "1h", "should be in format"),
             ("2025-01-15 10:30:00", "", "must be provided together"),
             ("", "1h", "must be provided together"),
@@ -118,7 +122,10 @@ class TestGetHosts:
     def test_multiple_hostnames(self):
         """Multiple hostnames are all processed."""
         result = get_hosts(["mx1", "mx2"], "example.com")
-        assert all(h in result for h in ["mx1", "mx2", "mx1.example.com", "mx2.example.com"])
+        assert all(
+            h in result
+            for h in ["mx1", "mx2", "mx1.example.com", "mx2.example.com"]
+        )
 
     def test_empty_domain(self):
         """Short hostname without domain only returns short form."""

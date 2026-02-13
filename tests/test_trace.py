@@ -132,12 +132,17 @@ class TestNormalizeHost:
     def test_resolves_fqdn_via_short(self):
         """Resolves FQDN by extracting short name."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        assert (
+            _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        )
 
     def test_returns_original_when_not_found(self):
         """Returns original hostname when not in map."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("unknown.host.com", hostname_map) == "unknown.host.com"
+        assert (
+            _normalize_host("unknown.host.com", hostname_map)
+            == "unknown.host.com"
+        )
 
     def test_empty_map(self):
         """Returns original hostname with empty map."""
@@ -190,7 +195,9 @@ class TestTraceMailFlow:
         mock_do_trace.return_value = None
 
         graph = MailGraph()
-        trace_mail_flow("ABC123", mock_aggregator_class, opensearch_config, "mx1", graph)
+        trace_mail_flow(
+            "ABC123", mock_aggregator_class, opensearch_config, "mx1", graph
+        )
 
         assert mock_do_trace.called
 
@@ -211,7 +218,9 @@ class TestTraceMailFlow:
         ]
 
         graph = MailGraph()
-        trace_mail_flow("ABC123", mock_aggregator_class, opensearch_config, "mx1", graph)
+        trace_mail_flow(
+            "ABC123", mock_aggregator_class, opensearch_config, "mx1", graph
+        )
 
         result = graph.to_dict()
         assert len(result["edges"]) == 1
@@ -219,13 +228,17 @@ class TestTraceMailFlow:
         assert result["edges"][0]["to"] == "relay1"
 
     @patch("mailtrace.trace.do_trace")
-    def test_retries_without_hostname_filter(self, mock_do_trace, opensearch_config):
+    def test_retries_without_hostname_filter(
+        self, mock_do_trace, opensearch_config
+    ):
         """Retries trace without hostname filter when first attempt fails."""
         mock_aggregator_class = MagicMock()
         mock_do_trace.side_effect = [None, None]
 
         graph = MailGraph()
-        trace_mail_flow("ABC123", mock_aggregator_class, opensearch_config, "mx1", graph)
+        trace_mail_flow(
+            "ABC123", mock_aggregator_class, opensearch_config, "mx1", graph
+        )
 
         assert mock_do_trace.call_count == 2
 
@@ -239,7 +252,9 @@ class TestTraceMailFlowByMessageId:
         mock_aggregator.query_by.return_value = sample_logs
 
         graph = MailGraph()
-        result = trace_mail_flow_by_message_id("test@example.com", mock_aggregator, graph)
+        result = trace_mail_flow_by_message_id(
+            "test@example.com", mock_aggregator, graph
+        )
 
         query = mock_aggregator.query_by.call_args[0][0]
         assert query.message_id == "test@example.com"
@@ -251,7 +266,9 @@ class TestTraceMailFlowByMessageId:
         mock_aggregator.query_by.return_value = []
 
         graph = MailGraph()
-        result = trace_mail_flow_by_message_id("notfound@example.com", mock_aggregator, graph)
+        result = trace_mail_flow_by_message_id(
+            "notfound@example.com", mock_aggregator, graph
+        )
 
         assert result == []
 
