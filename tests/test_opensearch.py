@@ -90,10 +90,10 @@ def mock_opensearch_hit():
 def mock_search():
     """Create a mock Search object with common setup."""
     mock = MagicMock()
-    mock.extra.return_value = mock
+    mock.source.return_value = mock
     mock.query.return_value = mock
     mock.filter.return_value = mock
-    mock.execute.return_value = []
+    mock.scan.return_value = iter([])
     return mock
 
 
@@ -346,7 +346,9 @@ class TestOpenSearchAggregator:
     """Tests for the OpenSearch aggregator class."""
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
-    def test_init_creates_client_with_correct_config(self, mock_client_class, config):
+    def test_init_creates_client_with_correct_config(
+        self, mock_client_class, config
+    ):
         """Aggregator initializes OpenSearch client with correct parameters."""
         OpenSearch(host="mx-cluster", config=config)
 
@@ -491,7 +493,9 @@ class TestOpenSearchAggregator:
         aggregator.query_by(query)
 
         calls = mock_search.query.call_args_list
-        hostname_calls = [c for c in calls if "terms" in str(c) and "host" in str(c)]
+        hostname_calls = [
+            c for c in calls if "terms" in str(c) and "host" in str(c)
+        ]
         assert len(hostname_calls) == 0
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
@@ -558,9 +562,7 @@ class TestOpenSearchAggregator:
         """Aggregator returns correctly parsed LogEntry objects."""
         mock_hit = MagicMock()
         mock_hit.to_dict.return_value = mock_opensearch_hit
-        mock_response = MagicMock()
-        mock_response.__iter__ = lambda self: iter([mock_hit])
-        mock_search.execute.return_value = mock_response
+        mock_search.scan.return_value = iter([mock_hit])
         mock_search_class.return_value = mock_search
 
         aggregator = OpenSearch(host="mx1", config=config)
@@ -572,17 +574,18 @@ class TestOpenSearchAggregator:
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
     @patch("mailtrace.aggregator.opensearch.Search")
-    def test_query_sets_result_size_limit(
+    def test_query_uses_scan_instead_of_execute(
         self, mock_search_class, mock_client_class, config, mock_search
     ):
-        """Aggregator sets result size limit to 1000."""
+        """Aggregator uses scan() for unlimited results instead of execute()."""
         mock_search_class.return_value = mock_search
         aggregator = OpenSearch(host="mx1", config=config)
 
         query = LogQuery(keywords=["test"])
         aggregator.query_by(query)
 
-        mock_search.extra.assert_called_once_with(size=1000)
+        mock_search.scan.assert_called_once()
+        mock_search.execute.assert_not_called()
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
     @patch("mailtrace.aggregator.opensearch.Search")
@@ -597,6 +600,26 @@ class TestOpenSearchAggregator:
         results = aggregator.query_by(query)
 
         assert results == []
+
+    @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
+    @patch("mailtrace.aggregator.opensearch.Search")
+    def test_query_applies_source_filtering(
+        self, mock_search_class, mock_client_class, config, mock_search
+    ):
+        """Aggregator applies _source includes from mapping config."""
+        mock_search_class.return_value = mock_search
+        aggregator = OpenSearch(host="mx1", config=config)
+
+        query = LogQuery(keywords=["test"])
+        aggregator.query_by(query)
+
+        mock_search.source.assert_called_once()
+        call_kwargs = mock_search.source.call_args
+        includes = call_kwargs.kwargs.get("includes")
+        # Should include at least the 3 required fields
+        assert "host.name" in includes
+        assert "message" in includes
+        assert "@timestamp" in includes
 
 
 class TestTimeRangeCalculation:

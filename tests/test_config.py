@@ -141,3 +141,58 @@ class TestOpenSearchMappingConfigWarnings:
         assert os_config.mapping.facility is None
         assert os_config.mapping.queueid is None
         assert os_config.mapping.hostname == "host.name"
+
+
+class TestOpenSearchMappingConfigSourceFields:
+    """Tests for get_source_fields() method."""
+
+    def test_default_mapping_returns_required_fields_only(self):
+        """Default config (all optional=None) returns only required fields."""
+        mapping = OpenSearchMappingConfig()
+        fields = mapping.get_source_fields()
+        assert set(fields) == {"host.name", "message", "@timestamp"}
+
+    def test_all_fields_configured(self):
+        """All fields configured returns all field values."""
+        mapping = OpenSearchMappingConfig(
+            hostname="host.name",
+            message="message",
+            timestamp="@timestamp",
+            facility="log.syslog.facility.name",
+            service="log.syslog.appname",
+            queueid="log.syslog.structured_data.queueid",
+            queued_as="log.syslog.structured_data.queued_as",
+            mail_id="postfix.mail_id",
+            message_id="postfix.message_id",
+            relay_host="postfix.relay_host",
+            relay_ip="postfix.relay_ip",
+            relay_port="postfix.relay_port",
+            smtp_code="postfix.smtp_code",
+        )
+        fields = mapping.get_source_fields()
+        assert len(fields) == 13
+        assert "log.syslog.facility.name" in fields
+        assert "postfix.message_id" in fields
+
+    def test_partial_fields_configured(self):
+        """Only configured fields appear in result."""
+        mapping = OpenSearchMappingConfig(
+            facility="log.syslog.facility.name",
+            queueid="custom.queueid",
+        )
+        fields = mapping.get_source_fields()
+        # 3 required + 2 optional
+        assert len(fields) == 5
+        assert "log.syslog.facility.name" in fields
+        assert "custom.queueid" in fields
+
+    def test_returns_field_values_not_names(self):
+        """Returns OpenSearch field paths, not Python attribute names."""
+        mapping = OpenSearchMappingConfig(
+            hostname="custom.host",
+            message="custom.msg",
+            timestamp="custom.ts",
+        )
+        fields = mapping.get_source_fields()
+        assert "custom.host" in fields
+        assert "hostname" not in fields

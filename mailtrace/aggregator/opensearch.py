@@ -37,7 +37,9 @@ class OpenSearch(LogAggregator):
         """
         self.host = host
         self.config: OpenSearchConfig = config.opensearch_config
-        self.hosts = get_hosts(config.cluster_to_hosts(host) or [host], config.domain)
+        self.hosts = get_hosts(
+            config.cluster_to_hosts(host) or [host], config.domain
+        )
 
         # SECURITY: Warn if SSL certificate verification is disabled
         if self.config.use_ssl and not self.config.verify_certs:
@@ -74,7 +76,9 @@ class OpenSearch(LogAggregator):
         """
 
         search = Search(using=self.client, index=self.config.index)
-        search = search.extra(size=1000)
+        search = search.source(
+            includes=self.config.mapping.get_source_fields()
+        )
 
         facility_field = self.config.mapping.facility
         if facility_field:
@@ -89,7 +93,9 @@ class OpenSearch(LogAggregator):
             and not query.mail_ids
             and not (query.mail_id and not self.hosts)
         ):
-            search = search.query("terms", **{self.config.mapping.hostname: self.hosts})
+            search = search.query(
+                "terms", **{self.config.mapping.hostname: self.hosts}
+            )
 
         if query.time and query.time_range:
             time = datetime.fromisoformat(query.time.replace("Z", "+00:00"))
@@ -117,12 +123,16 @@ class OpenSearch(LogAggregator):
         if query.message_id:
             message_id_field = self.config.mapping.message_id
             if message_id_field:
-                search = search.query("term", **{message_id_field: query.message_id})
+                search = search.query(
+                    "term", **{message_id_field: query.message_id}
+                )
             else:
                 # Fallback: search message text for message-id=<value>
                 search = search.query(
                     "match_phrase",
-                    **{self.config.mapping.message: f"message-id=<{query.message_id}>"},
+                    **{
+                        self.config.mapping.message: f"message-id=<{query.message_id}>"
+                    },
                 )
 
         if query.mail_id:
@@ -133,13 +143,17 @@ class OpenSearch(LogAggregator):
             else:
                 search = search.query(
                     "wildcard",
-                    **{self.config.mapping.message: f"{query.mail_id.lower()}*"},
+                    **{
+                        self.config.mapping.message: f"{query.mail_id.lower()}*"
+                    },
                 )
 
         if query.mail_ids:
             queueid_field = self.config.mapping.queueid
             if queueid_field:
-                search = search.query("terms", **{queueid_field: query.mail_ids})
+                search = search.query(
+                    "terms", **{queueid_field: query.mail_ids}
+                )
             else:
                 mail_id_queries = [
                     Q(
@@ -155,12 +169,14 @@ class OpenSearch(LogAggregator):
                 )
 
         logger.debug(f"Query: {search.to_dict()}")
-        response = search.execute()
-        logger.debug(f"Opensearch Response:\n{[hit.to_dict() for hit in response]}")
+        hits = list(search.scan())
+        logger.debug(
+            f"Opensearch Response:\n{[hit.to_dict() for hit in hits]}"
+        )
 
         parser = OpensearchParser(mapping=self.config.mapping)
         parsed_log_entries = [
-            parser.parse_with_enrichment(hit.to_dict()) for hit in response
+            parser.parse_with_enrichment(hit.to_dict()) for hit in hits
         ]
         logger.debug(
             f"Found {len(parsed_log_entries)} log entries.\n{parsed_log_entries}"
