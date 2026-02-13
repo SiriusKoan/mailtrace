@@ -23,7 +23,11 @@ class TestGetNestedValue:
         "data,key,expected",
         [
             ({"name": "test"}, "name", "test"),
-            ({"host": {"name": "mx1.example.com"}}, "host.name", "mx1.example.com"),
+            (
+                {"host": {"name": "mx1.example.com"}},
+                "host.name",
+                "mx1.example.com",
+            ),
             (
                 {"log": {"syslog": {"facility": {"name": "mail"}}}},
                 "log.syslog.facility.name",
@@ -128,7 +132,9 @@ class TestSyslogParserAutoDetect:
     def test_detects_rfc5424_by_digit(self):
         """Detects RFC 5424 format when log starts with digit."""
         parser = SyslogParser()
-        log = "2025-01-15T10:00:00.123+08:00 mx1 postfix/smtp[123]: ABC123: test"
+        log = (
+            "2025-01-15T10:00:00.123+08:00 mx1 postfix/smtp[123]: ABC123: test"
+        )
         entry = parser.parse(log)
         assert entry.datetime == "2025-01-15T10:00:00.123+08:00"
 
@@ -203,7 +209,9 @@ class TestSyslogParserRfc5424:
     def test_parse_lowercase_mail_id(self):
         """Parses RFC 5424 log with lowercase mail ID."""
         parser = SyslogParser()
-        log = "2025-01-15T10:00:00+00:00 mx1 postfix/smtp[123]: abc123def: test"
+        log = (
+            "2025-01-15T10:00:00+00:00 mx1 postfix/smtp[123]: abc123def: test"
+        )
         entry = parser.parse(log)
         assert entry.mail_id == "abc123def"
 
@@ -226,8 +234,14 @@ class TestSyslogParserRfc3164:
     @pytest.mark.parametrize(
         "log,expected_datetime",
         [
-            ("Feb 1 08:00:00 mx1 postfix/smtp[123]: ABC123: test", "Feb 1 08:00:00"),
-            ("Feb  1 08:00:00 mx1 postfix/smtp[123]: ABC123: test", "Feb 1 08:00:00"),
+            (
+                "Feb 1 08:00:00 mx1 postfix/smtp[123]: ABC123: test",
+                "Feb 1 08:00:00",
+            ),
+            (
+                "Feb  1 08:00:00 mx1 postfix/smtp[123]: ABC123: test",
+                "Feb 1 08:00:00",
+            ),
         ],
     )
     def test_parse_single_digit_day(self, log, expected_datetime):
