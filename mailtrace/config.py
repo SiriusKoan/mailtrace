@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -168,6 +168,18 @@ class OpenSearchMappingConfig:
                     field_name,
                     consequence,
                 )
+
+    def get_source_fields(self) -> list[str]:
+        """Return configured OpenSearch field names for _source filtering.
+
+        Collects all non-None field values from this mapping config.
+        Used to limit which fields OpenSearch returns in _source.
+        """
+        return [
+            getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        ]
 
 
 @dataclass

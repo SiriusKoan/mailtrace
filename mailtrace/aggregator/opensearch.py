@@ -76,7 +76,9 @@ class OpenSearch(LogAggregator):
         """
 
         search = Search(using=self.client, index=self.config.index)
-        search = search.extra(size=1000)
+        search = search.source(
+            includes=self.config.mapping.get_source_fields()
+        )
 
         facility_field = self.config.mapping.facility
         if facility_field:
@@ -167,14 +169,14 @@ class OpenSearch(LogAggregator):
                 )
 
         logger.debug(f"Query: {search.to_dict()}")
-        response = search.execute()
+        hits = list(search.scan())
         logger.debug(
-            f"Opensearch Response:\n{[hit.to_dict() for hit in response]}"
+            f"Opensearch Response:\n{[hit.to_dict() for hit in hits]}"
         )
 
         parser = OpensearchParser(mapping=self.config.mapping)
         parsed_log_entries = [
-            parser.parse_with_enrichment(hit.to_dict()) for hit in response
+            parser.parse_with_enrichment(hit.to_dict()) for hit in hits
         ]
         logger.debug(
             f"Found {len(parsed_log_entries)} log entries.\n{parsed_log_entries}"
