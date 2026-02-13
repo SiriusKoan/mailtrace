@@ -132,12 +132,17 @@ class TestNormalizeHost:
     def test_resolves_fqdn_via_short(self):
         """Resolves FQDN by extracting short name."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        assert (
+            _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        )
 
     def test_returns_original_when_not_found(self):
         """Returns original hostname when not in map."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("unknown.host.com", hostname_map) == "unknown.host.com"
+        assert (
+            _normalize_host("unknown.host.com", hostname_map)
+            == "unknown.host.com"
+        )
 
     def test_empty_map(self):
         """Returns original hostname with empty map."""
@@ -223,7 +228,9 @@ class TestTraceMailFlow:
         assert result["edges"][0]["to"] == "relay1"
 
     @patch("mailtrace.trace.do_trace")
-    def test_retries_without_hostname_filter(self, mock_do_trace, opensearch_config):
+    def test_retries_without_hostname_filter(
+        self, mock_do_trace, opensearch_config
+    ):
         """Retries trace without hostname filter when first attempt fails."""
         mock_aggregator_class = MagicMock()
         mock_do_trace.side_effect = [None, None]
@@ -269,11 +276,11 @@ class TestTraceMailFlowByMessageId:
 class TestQueryLogsByKeywords:
     """Tests for query_logs_by_keywords function."""
 
-    @patch("mailtrace.trace._query_logs_by_message_id")
+    @patch("mailtrace.trace._query_logs_batch")
     def test_uses_message_id_optimization_for_opensearch(
         self, mock_query, opensearch_config
     ):
-        """Uses message_id optimization for OpenSearch method."""
+        """Uses batch optimization for OpenSearch method."""
         mock_aggregator_class = MagicMock()
         mock_query.return_value = {"ABC123": ("mx1", [])}
 
@@ -288,7 +295,7 @@ class TestQueryLogsByKeywords:
 
         mock_query.assert_called_once()
 
-    @patch("mailtrace.trace._query_logs_from_aggregator")
+    @patch("mailtrace.trace._query_logs_batch")
     def test_queries_each_host_for_ssh(self, mock_query, ssh_config):
         """Queries each host in cluster for SSH method."""
         mock_aggregator_class = MagicMock()

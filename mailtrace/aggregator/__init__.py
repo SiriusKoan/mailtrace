@@ -14,7 +14,9 @@ logger = logging.getLogger("mailtrace")
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
 _QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Za-z]+)")
-_RELAY_RE = re.compile(r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)")
+_RELAY_RE = re.compile(
+    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
+)
 _MESSAGE_ID_RE = re.compile(r"message-id=<([^>]+)>")
 
 # Services that perform mail relay (string constants)
@@ -76,21 +78,75 @@ def _parse_relay_info(log_entry: LogEntry) -> RelayResult | None:
     )
 
 
+def _find_relay_in_logs(log_entries: list[LogEntry]) -> RelayResult | None:
+    """Find the first relay hop in a list of log entries.
+
+    Iterates through log entries, filtering for relay services, and returns
+    the first successfully parsed relay result.
+
+    Args:
+        log_entries: Log entries to search through.
+
+    Returns:
+        A RelayResult if a relay hop is found, None otherwise.
+    """
+    for log_entry in log_entries:
+        logger.info("LogEntry: %s", log_entry)
+        print(str(log_entry))
+        if log_entry.service not in _RELAY_SERVICES:
+            continue
+
+        result = _parse_relay_info(log_entry)
+        if result:
+            logger.info(
+                "Found relay %s [%s]:%d, new ID %s",
+                result.relay_host,
+                result.relay_ip,
+                result.relay_port,
+                result.mail_id,
+            )
+            return result
+
+    return None
+
+
+def do_trace_from_logs(
+    mail_id: str, logs: list[LogEntry]
+) -> RelayResult | None:
+    """
+    Extract relay info from pre-fetched log entries without querying.
+
+    Reuses the same relay-finding logic as do_trace(), but operates
+    on logs that have already been fetched, avoiding redundant queries.
+
+    Args:
+        mail_id: The mail ID (used only for logging).
+        logs: Pre-fetched log entries for this mail ID.
+
+    Returns:
+        A RelayResult if a relay hop is found, None otherwise.
+    """
+    logger.info("Tracing mail ID from cached logs: %s", mail_id)
+    sorted_logs = sorted(logs, key=lambda e: e.datetime)
+    result = _find_relay_in_logs(sorted_logs)
+    if not result:
+        logger.info("No next hop found for %s (from cache)", mail_id)
+    return result
+
+
 def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     """
     Trace a mail message through Postfix logs to find the next relay hop and new mail ID.
 
     This function queries log entries for a given mail ID and analyzes them to determine
     where the mail was relayed and captures the response details in a TraceResult.
-    All logs are printed before analysis is performed, and the function returns after
-    all logs have been examined.
 
     Args:
         mail_id: The original mail ID to trace through the logs.
         aggregator: LogAggregator instance to query logs from.
 
     Returns:
-        A TraceResult object containing:
+        A RelayResult object containing:
             mail_id: The new mail ID assigned when queued at the next hop
             relay_host: Hostname of the relay host
             relay_ip: IP address of the relay host
@@ -106,25 +162,10 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     """
     logger.info("Tracing mail ID: %s", mail_id)
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
-
-    for log_entry in log_entries:
-        logger.debug("LogEntry: %s", log_entry)
-        if log_entry.service not in _RELAY_SERVICES:
-            continue
-
-        result = _parse_relay_info(log_entry)
-        if result:
-            logger.info(
-                "Found relay %s [%s]:%d, new ID %s",
-                result.relay_host,
-                result.relay_ip,
-                result.relay_port,
-                result.mail_id,
-            )
-            return result
-
-    logger.info("No next hop found for %s", mail_id)
-    return None
+    result = _find_relay_in_logs(log_entries)
+    if not result:
+        logger.info("No next hop found for %s", mail_id)
+    return result
 
 
 def select_aggregator(config: Config) -> type[LogAggregator]:
@@ -147,6 +188,7 @@ def select_aggregator(config: Config) -> type[LogAggregator]:
 
 __all__ = [
     "do_trace",
+    "do_trace_from_logs",
     "extract_message_ids",
     "SSHHost",
     "OpenSearch",
