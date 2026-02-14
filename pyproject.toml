@@ -26,14 +26,12 @@ mailtrace = "mailtrace.__main__:cli"
 
 [dependency-groups]
 dev = [
-    "black>=25.1.0",
-    "flake8-pyproject>=1.2.3",
-    "isort>=6.0.1",
     "mcp[cli]>=1.26.0",
     "pyright>=1.1.402",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.0.0",
+    "ruff>=0.14.0",
 ]
 
 [tool.pytest.ini_options]
@@ -46,13 +44,16 @@ filterwarnings = [
     "ignore::urllib3.exceptions.InsecureRequestWarning",
 ]
 
-[tool.flake8]
-exclude = ".venv"
-ignore = ['E501', 'E704', 'W503']
+[tool.ruff]
+line-length = 79
+src = ["mailtrace"]
 
-[tool.isort]
-profile = "black"
-src_paths = ["mailtrace"]
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mailtrace"]
 
 [tool.pyright]
 include = ["mailtrace"]
@@ -63,5 +64,3 @@ reportMissingImports = "error"
 include = ["mailtrace*"]
 exclude = ["demo*", "dev*"]
 
-[tool.black]
-line-length = 79

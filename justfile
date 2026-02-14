@@ -1,9 +1,9 @@
 format:
-    uv run isort mailtrace/ tests/
-    uv run black mailtrace/ tests/
+    uv run ruff format mailtrace/ tests/
+    uv run ruff check --fix mailtrace/ tests/
 
 lint:
-    uv run flake8 mailtrace/ tests/
+    uv run ruff check mailtrace/ tests/
     uv run pyright mailtrace/ tests/
 
 test:
