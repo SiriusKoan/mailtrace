@@ -24,7 +24,9 @@ class MailGraph:
             to_host: Destination hostname (without mail ID)
             queue_id: Mail queue ID at the source host
         """
-        self.graph.add_edge(f'"{from_host}"', f'"{to_host}"', label=f'"{queue_id}"')
+        self.graph.add_edge(
+            f'"{from_host}"', f'"{to_host}"', label=f'"{queue_id}"'
+        )
 
     def to_dot(self, path: str | None = None):
         """

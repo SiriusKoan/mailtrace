@@ -6,9 +6,8 @@ import click
 from mailtrace.aggregator import do_trace, select_aggregator
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
-from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
-from mailtrace.trace import trace_mail_flow_to_file
+from mailtrace.trace import query_logs_by_keywords, trace_mail_flow_to_file
 from mailtrace.utils import print_blue, time_validation
 
 logger = logging.getLogger("mailtrace")
@@ -165,43 +164,20 @@ def handle_passwords(
         )
 
 
-def query_and_print_logs(
-    aggregator: LogAggregator,
-    key: list[str],
-    time: str,
-    time_range: str,
-) -> dict[str, tuple[str, list[LogEntry]]]:
+def print_logs_by_id(
+    logs_by_id: dict[str, tuple[str, list[LogEntry]]],
+) -> None:
     """
-    Queries logs using the aggregator and prints logs grouped by mail ID.
+    Prints logs grouped by mail ID.
 
     Args:
-        aggregator: The aggregator instance to query logs.
-        key: Keywords for the log query.
-        time: Specific time for the log query.
-        time_range: Time range for the log query.
-
-    Returns:
-        Dictionary mapping mail IDs to (host, list of LogEntry) tuples.
+        logs_by_id: Dictionary mapping mail IDs to (host, list of LogEntry) tuples.
     """
-    base_logs = aggregator.query_by(
-        LogQuery(keywords=key, time=time, time_range=time_range)
-    )
-    mail_ids = list(
-        {log.mail_id for log in base_logs if log.mail_id is not None}
-    )
-    if not mail_ids:
-        logger.info("No mail IDs found")
-        return {}
-
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    for mail_id in mail_ids:
-        logs = aggregator.query_by(LogQuery(mail_id=mail_id))
-        logs_by_id[mail_id] = (aggregator.host, logs)
+    for mail_id, (_, logs) in logs_by_id.items():
         print_blue(f"== Mail ID: {mail_id} ==")
         for log in logs:
             print(str(log))
         print_blue("==============\n")
-    return logs_by_id
 
 
 def trace_mail_loop(
@@ -296,20 +272,10 @@ def run(
 
     logger.info("Running mailtrace...")
     aggregator_class = select_aggregator(config)
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    if config.method == Method.OPENSEARCH:
-        aggregator = aggregator_class(start_host, config)
-        logs_by_id = query_and_print_logs(aggregator, key, time, time_range)
-    elif config.method == Method.SSH:
-        hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
-        logger.info(f"Using hosts: {hosts}")
-        for host in hosts:
-            print(host)
-            aggregator = aggregator_class(host, config)
-            logs_by_id_from_host = query_and_print_logs(
-                aggregator, key, time, time_range
-            )
-            logs_by_id.update(logs_by_id_from_host)
+    logs_by_id = query_logs_by_keywords(
+        config, aggregator_class, start_host, list(key), time, time_range
+    )
+    print_logs_by_id(logs_by_id)
 
     if not logs_by_id:
         logger.info("No mail IDs found to trace.")
@@ -336,7 +302,7 @@ def run(
     default=None,
     help='Output file for the Graphviz dot graph (use "-" or omit for stdout)',
 )
-def trace(
+def graph(
     config_path: str | None,
     start_host: str,
     key: list[str],

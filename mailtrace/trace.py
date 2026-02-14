@@ -9,7 +9,7 @@ import logging
 
 from mailtrace.aggregator import do_trace
 from mailtrace.aggregator.base import LogAggregator
-from mailtrace.config import Config, Method
+from mailtrace.config import Config
 from mailtrace.graph import MailGraph
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -118,23 +118,11 @@ def query_logs_by_keywords(
     Returns:
         Dictionary mapping mail IDs to (host, list of log entries).
     """
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-
-    if config.method == Method.OPENSEARCH:
-        aggregator = aggregator_class(start_host, config)
-        logs_by_id = _query_logs_from_aggregator(
-            aggregator, keywords, time, time_range
-        )
-    elif config.method == Method.SSH:
-        hosts = config.cluster_to_hosts(start_host) or [start_host]
-        logger.info("Using hosts: %s", hosts)
-        for host in hosts:
-            aggregator = aggregator_class(host, config)
-            logs_by_id.update(
-                _query_logs_from_aggregator(
-                    aggregator, keywords, time, time_range
-                )
-            )
+    # Both SSHHost and OpenSearch aggregators handle cluster resolution internally
+    aggregator = aggregator_class(start_host, config)
+    logs_by_id = _query_logs_from_aggregator(
+        aggregator, keywords, time, time_range
+    )
 
     if not logs_by_id:
         logger.info("No mail IDs found")
