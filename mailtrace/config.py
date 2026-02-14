@@ -97,7 +97,8 @@ class SSHConfig:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format or self.host_config.time_format,
+            time_format=host_config.time_format
+            or self.host_config.time_format,
         )
 
 
@@ -223,7 +224,9 @@ class OpenSearchConfig:
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
-    mapping: OpenSearchMappingConfig = field(default_factory=OpenSearchMappingConfig)
+    mapping: OpenSearchMappingConfig = field(
+        default_factory=OpenSearchMappingConfig
+    )
 
     def __post_init__(self) -> None:
         # Convert dict mapping to OpenSearchMappingConfig if needed
@@ -253,7 +256,9 @@ class Config:
     domain: str = ""
     auto_continue: bool = False
     mx_discovery: MXDiscoveryConfig = field(default_factory=MXDiscoveryConfig)
-    _mx_resolver: MXDiscovery | None = field(default=None, init=False, repr=False)
+    _mx_resolver: MXDiscovery | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -302,7 +307,9 @@ def _load_env_passwords(config_data: dict) -> None:
     if "opensearch_config" in config_data:
         os_config = config_data["opensearch_config"]
         if not os_config.get("password"):
-            os_config["password"] = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD", "")
+            os_config["password"] = os.getenv(
+                "MAILTRACE_OPENSEARCH_PASSWORD", ""
+            )
 
     # SSH passwords
     if "ssh_config" in config_data:

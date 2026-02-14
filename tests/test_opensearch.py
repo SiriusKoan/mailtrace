@@ -346,7 +346,9 @@ class TestOpenSearchAggregator:
     """Tests for the OpenSearch aggregator class."""
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")
-    def test_init_creates_client_with_correct_config(self, mock_client_class, config):
+    def test_init_creates_client_with_correct_config(
+        self, mock_client_class, config
+    ):
         """Aggregator initializes OpenSearch client with correct parameters."""
         OpenSearch(host="mx-cluster", config=config)
 
@@ -491,7 +493,9 @@ class TestOpenSearchAggregator:
         aggregator.query_by(query)
 
         calls = mock_search.query.call_args_list
-        hostname_calls = [c for c in calls if "terms" in str(c) and "host" in str(c)]
+        hostname_calls = [
+            c for c in calls if "terms" in str(c) and "host" in str(c)
+        ]
         assert len(hostname_calls) == 0
 
     @patch("mailtrace.aggregator.opensearch.OpenSearchClient")

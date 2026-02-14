@@ -4,11 +4,11 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from mailtrace.config import Config, Method
 from mailtrace.mcp.tools import QueryLogsInput, TraceMailInput, register_tools
 from mailtrace.models import LogEntry
-from mcp.server.fastmcp import FastMCP
 
 
 @pytest.fixture
@@ -337,7 +337,9 @@ class TestMailtraceTraceMailTool:
             assert data["error"]["code"] == "CONNECTION_FAILED"
 
     @pytest.mark.asyncio
-    async def test_trace_mail_with_keywords(self, mock_config, sample_logs_by_id):
+    async def test_trace_mail_with_keywords(
+        self, mock_config, sample_logs_by_id
+    ):
         """Test trace mail using keywords instead of mail_id."""
         mcp = FastMCP("test_mcp")
         register_tools(mcp, mock_config)

@@ -102,7 +102,10 @@ class TestExtractMessageIds:
     def test_empty_and_no_message_ids(self):
         """Returns empty set for empty logs or when no message_ids found."""
         assert extract_message_ids([]) == set()
-        assert extract_message_ids([make_log_entry(service="postfix/qmgr")]) == set()
+        assert (
+            extract_message_ids([make_log_entry(service="postfix/qmgr")])
+            == set()
+        )
 
 
 class TestExtractNextMailId:
@@ -110,7 +113,9 @@ class TestExtractNextMailId:
 
     def test_extracts_from_structured_field(self):
         """Extracts mail_id from queued_as structured field."""
-        entry = make_log_entry(message="status=sent", queued_as="STRUCTURED789")
+        entry = make_log_entry(
+            message="status=sent", queued_as="STRUCTURED789"
+        )
         assert _extract_next_mail_id(entry) == "STRUCTURED789"
 
     def test_extracts_from_message(self):
@@ -198,7 +203,9 @@ class TestDoTrace:
         """Returns None when no relay entry found."""
         mock_aggregator = MagicMock()
         mock_aggregator.query_by.return_value = [
-            make_log_entry(service="postfix/qmgr", message="from=<sender@example.com>")
+            make_log_entry(
+                service="postfix/qmgr", message="from=<sender@example.com>"
+            )
         ]
 
         assert do_trace("ABC123", mock_aggregator) is None

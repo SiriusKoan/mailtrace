@@ -14,7 +14,9 @@ logger = logging.getLogger("mailtrace")
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
 _QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Za-z]+)")
-_RELAY_RE = re.compile(r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)")
+_RELAY_RE = re.compile(
+    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
+)
 _MESSAGE_ID_RE = re.compile(r"message-id=<([^>]+)>")
 
 # Services that perform mail relay (string constants)
@@ -108,7 +110,9 @@ def _find_relay_in_logs(log_entries: list[LogEntry]) -> RelayResult | None:
     return None
 
 
-def do_trace_from_logs(mail_id: str, logs: list[LogEntry]) -> RelayResult | None:
+def do_trace_from_logs(
+    mail_id: str, logs: list[LogEntry]
+) -> RelayResult | None:
     """
     Extract relay info from pre-fetched log entries without querying.
 

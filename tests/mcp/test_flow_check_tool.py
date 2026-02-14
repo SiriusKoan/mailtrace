@@ -4,6 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from mailtrace.config import Config, Method
 from mailtrace.flow_check import (
@@ -12,7 +13,6 @@ from mailtrace.flow_check import (
     MailFlow,
 )
 from mailtrace.mcp.tools import CheckFlowInput, register_tools
-from mcp.server.fastmcp import FastMCP
 
 
 @pytest.fixture

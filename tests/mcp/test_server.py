@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 
 from mailtrace import create_server as mailtrace_create_server
 from mailtrace import run_server as mailtrace_run_server
@@ -10,7 +11,6 @@ from mailtrace.config import Config, Method
 from mailtrace.mcp import create_server as mcp_create_server
 from mailtrace.mcp import run_server as mcp_run_server
 from mailtrace.mcp.server import create_server, run_server
-from mcp.server.fastmcp import FastMCP
 
 
 @pytest.fixture
@@ -107,7 +107,9 @@ class TestResources:
         """Test that clusters resource returns valid JSON."""
         import json
 
-        mock_config.clusters = {"mx-cluster": ["mx1.example.com", "mx2.example.com"]}
+        mock_config.clusters = {
+            "mx-cluster": ["mx1.example.com", "mx2.example.com"]
+        }
 
         mcp = create_server(mock_config)
         resources = mcp._resource_manager._resources

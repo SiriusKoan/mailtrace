@@ -150,7 +150,9 @@ def trace_mail_flow_by_message_id(
     """
     logger.info("Batch tracing message_id: %s", message_id)
     all_logs = aggregator.query_by(LogQuery(message_id=message_id))
-    logger.debug("Found %d log entries for message_id %s", len(all_logs), message_id)
+    logger.debug(
+        "Found %d log entries for message_id %s", len(all_logs), message_id
+    )
     _reconstruct_chain(all_logs, graph)
     return all_logs
 
@@ -201,7 +203,9 @@ def _query_logs_batch(
     batch_logs = aggregator.query_by(LogQuery(mail_ids=list(all_queue_ids)))
     for entry in batch_logs:
         if entry.mail_id and entry.mail_id in all_queue_ids:
-            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[1].append(entry)
+            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[
+                1
+            ].append(entry)
 
     return logs_by_id
 
@@ -240,7 +244,9 @@ def query_logs_by_keywords(
         logger.info("Using hosts: %s", hosts)
         for host in hosts:
             aggregator = aggregator_class(host, config)
-            logs_by_id.update(_query_logs_batch(aggregator, keywords, time, time_range))
+            logs_by_id.update(
+                _query_logs_batch(aggregator, keywords, time, time_range)
+            )
 
     if not logs_by_id:
         logger.info("No mail IDs found")
@@ -287,7 +293,9 @@ def trace_mail_flow_to_file(
 
     # Reconstruct the graph from already-fetched logs (no extra queries)
     all_logs = [
-        entry for _, log_entries in logs_by_id.values() for entry in log_entries
+        entry
+        for _, log_entries in logs_by_id.values()
+        for entry in log_entries
     ]
     _reconstruct_chain(all_logs, graph)
 

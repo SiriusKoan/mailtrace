@@ -132,12 +132,17 @@ class TestNormalizeHost:
     def test_resolves_fqdn_via_short(self):
         """Resolves FQDN by extracting short name."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        assert (
+            _normalize_host("mx1.other.com", hostname_map) == "mx1.example.com"
+        )
 
     def test_returns_original_when_not_found(self):
         """Returns original hostname when not in map."""
         hostname_map = {"mx1": "mx1.example.com"}
-        assert _normalize_host("unknown.host.com", hostname_map) == "unknown.host.com"
+        assert (
+            _normalize_host("unknown.host.com", hostname_map)
+            == "unknown.host.com"
+        )
 
     def test_empty_map(self):
         """Returns original hostname with empty map."""
@@ -223,7 +228,9 @@ class TestTraceMailFlow:
         assert result["edges"][0]["to"] == "relay1"
 
     @patch("mailtrace.trace.do_trace")
-    def test_retries_without_hostname_filter(self, mock_do_trace, opensearch_config):
+    def test_retries_without_hostname_filter(
+        self, mock_do_trace, opensearch_config
+    ):
         """Retries trace without hostname filter when first attempt fails."""
         mock_aggregator_class = MagicMock()
         mock_do_trace.side_effect = [None, None]

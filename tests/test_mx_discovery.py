@@ -118,7 +118,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.Timeout()
 
                 result = discovery.resolve("example.com")
@@ -133,7 +135,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.NXDOMAIN()
 
                 result = discovery.resolve("nonexistent.invalid")
@@ -148,7 +152,9 @@ class TestMXDiscoveryErrors:
         discovery = MXDiscovery(config)
 
         with caplog.at_level(logging.WARNING):
-            with patch.object(dns.resolver.Resolver, "resolve") as mock_resolve:
+            with patch.object(
+                dns.resolver.Resolver, "resolve"
+            ) as mock_resolve:
                 mock_resolve.side_effect = dns.resolver.NoAnswer()
 
                 result = discovery.resolve("example.com")
@@ -168,7 +174,9 @@ class TestMXDiscoveryCustomServers:
         mock_mx = MagicMock()
         mock_mx.exchange = "mx.example.com."
 
-        with patch("mailtrace.mx_discovery.dns.resolver.Resolver") as MockResolver:
+        with patch(
+            "mailtrace.mx_discovery.dns.resolver.Resolver"
+        ) as MockResolver:
             mock_resolver = MagicMock()
             mock_resolver.resolve.return_value = [mock_mx]
             MockResolver.return_value = mock_resolver
@@ -185,7 +193,9 @@ class TestMXDiscoveryCustomServers:
         mock_mx = MagicMock()
         mock_mx.exchange = "mx.example.com."
 
-        with patch("mailtrace.mx_discovery.dns.resolver.Resolver") as MockResolver:
+        with patch(
+            "mailtrace.mx_discovery.dns.resolver.Resolver"
+        ) as MockResolver:
             mock_resolver = MagicMock()
             mock_resolver.resolve.return_value = [mock_mx]
             MockResolver.return_value = mock_resolver
@@ -195,7 +205,9 @@ class TestMXDiscoveryCustomServers:
         # When servers=[], the code doesn't set nameservers attribute
         # Verify nameservers was never assigned (no setattr call for nameservers)
         nameserver_calls = [
-            call for call in mock_resolver.mock_calls if "nameservers" in str(call)
+            call
+            for call in mock_resolver.mock_calls
+            if "nameservers" in str(call)
         ]
         assert len(nameserver_calls) == 0
         # Also verify the resolution succeeded
@@ -304,7 +316,9 @@ class TestClusterToHostsWithMX:
             log_level="INFO",
             ssh_config=SSHConfig(username="test", password="test"),
             opensearch_config=OpenSearchConfig(),
-            clusters={"my-cluster": ["host1.example.com", "host2.example.com"]},
+            clusters={
+                "my-cluster": ["host1.example.com", "host2.example.com"]
+            },
             domain="example.com",
         )
 
@@ -395,7 +409,9 @@ clusters:
     - static.example.com
 domain: example.com
 """
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
             f.write(config_yaml)
             f.flush()
 
@@ -420,7 +436,9 @@ ssh_config:
   password: testpass
 opensearch_config: {}
 """
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
             f.write(config_yaml)
             f.flush()
 

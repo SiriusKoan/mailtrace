@@ -42,7 +42,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["A1001CC0001"][0]
-        trace_mail_flow("A1001CC0001", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "A1001CC0001", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         assert result["hop_count"] == 2
@@ -68,7 +70,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["A2001CC0002"][0]
-        trace_mail_flow("A2001CC0002", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "A2001CC0002", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         assert result["hop_count"] == 2
@@ -94,7 +98,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["C3001CC0003"][0]
-        trace_mail_flow("C3001CC0003", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "C3001CC0003", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         assert result["hop_count"] == 2
@@ -120,7 +126,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["C3002CC0004"][0]
-        trace_mail_flow("C3002CC0004", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "C3002CC0004", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         assert result["hop_count"] == 2
@@ -144,7 +152,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["C3003CC0005"][0]
-        trace_mail_flow("C3003CC0005", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "C3003CC0005", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         # mx1 -> list1, then deferred (no queued_as for failed relay)
@@ -153,7 +163,9 @@ class TestTrace:
         assert edges[0]["from"] == "mx1"
         assert edges[0]["to"] == "list1"
 
-    def test_scenario6_fanout_mx1_list1_local(self, dev_config, aggregator_class):
+    def test_scenario6_fanout_mx1_list1_local(
+        self, dev_config, aggregator_class
+    ):
         """S6: mx1 -> list1 (fan-out to 2 local recipients)."""
         logs = query_logs_by_keywords(
             dev_config,
@@ -167,7 +179,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["C3004CC0006"][0]
-        trace_mail_flow("C3004CC0006", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "C3004CC0006", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         # mx1 -> list1, then local delivery (no further relay)
@@ -176,7 +190,9 @@ class TestTrace:
         assert edges[0]["from"] == "mx1"
         assert edges[0]["to"] == "list1"
 
-    def test_scenario7_bounce_smtp1_relay1_list1(self, dev_config, aggregator_class):
+    def test_scenario7_bounce_smtp1_relay1_list1(
+        self, dev_config, aggregator_class
+    ):
         """S7: smtp1 -> relay1 -> list1 (bounced, NDN back)."""
         logs = query_logs_by_keywords(
             dev_config,
@@ -190,7 +206,9 @@ class TestTrace:
 
         graph = MailGraph()
         host = logs["A1003CC0007"][0]
-        trace_mail_flow("A1003CC0007", aggregator_class, dev_config, host, graph)
+        trace_mail_flow(
+            "A1003CC0007", aggregator_class, dev_config, host, graph
+        )
 
         result = graph.to_dict()
         # smtp1 -> relay1 -> list1 (bounce stops further relay)
@@ -245,7 +263,9 @@ class TestFlowCheck:
             "C3004CC0006",
         }
 
-    def test_maillist_cluster_mixed_outcomes(self, dev_config, aggregator_class):
+    def test_maillist_cluster_mixed_outcomes(
+        self, dev_config, aggregator_class
+    ):
         """maillist-cluster: 3 complete + 2 problematic flows."""
         result = check_cluster_flow(
             config=dev_config,
@@ -287,7 +307,9 @@ class TestFlowCheck:
         assert "D1003CC0007" in problematic_ids
 
         bounced = [
-            f for f in result.problematic_flows if f.inbound_mail_id == "D1003CC0007"
+            f
+            for f in result.problematic_flows
+            if f.inbound_mail_id == "D1003CC0007"
         ]
         assert len(bounced) == 1
         assert bounced[0].terminal_state == "bounced"
@@ -306,7 +328,9 @@ class TestFlowCheck:
         complete_ids = {f.inbound_mail_id for f in result.complete_flows}
         assert "D3004CC0006" in complete_ids
 
-    def test_mailer_cluster_no_external_inbound(self, dev_config, aggregator_class):
+    def test_mailer_cluster_no_external_inbound(
+        self, dev_config, aggregator_class
+    ):
         """mailer-cluster: outbound-only, internal clients are not inbound."""
         result = check_cluster_flow(
             config=dev_config,
@@ -359,7 +383,9 @@ class TestQueryLogs:
         # C3001CC0003 delivers to team@mail.example.org
         assert len(logs) >= 1
 
-    def test_query_nonexistent_returns_empty(self, dev_config, aggregator_class):
+    def test_query_nonexistent_returns_empty(
+        self, dev_config, aggregator_class
+    ):
         """Query for nonexistent mail ID returns empty."""
         logs = query_logs_by_keywords(
             dev_config,

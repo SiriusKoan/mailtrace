@@ -131,7 +131,9 @@ class TestTraceMailInputValidation:
         """Test that either mail_id or keywords is required."""
         with pytest.raises(ValidationError) as exc_info:
             TraceMailInput(host="mail.example.com")
-        assert "mail_id" in str(exc_info.value) or "keywords" in str(exc_info.value)
+        assert "mail_id" in str(exc_info.value) or "keywords" in str(
+            exc_info.value
+        )
 
     def test_keywords_only_is_valid(self):
         """Test that providing only keywords is valid."""

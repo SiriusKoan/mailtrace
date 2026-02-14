@@ -1,8 +1,9 @@
 """MCP server setup and configuration."""
 
+from mcp.server.fastmcp import FastMCP
+
 from mailtrace.config import Config
 from mailtrace.mcp.tools import register_resources, register_tools
-from mcp.server.fastmcp import FastMCP
 
 
 def create_server(config: Config, port: int = 8080) -> FastMCP:

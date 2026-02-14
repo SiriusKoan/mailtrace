@@ -45,7 +45,9 @@ def check_config(config: Config) -> dict[str, Any]:
                 errors.append(
                     {
                         "field": f.name,
-                        "message": (f"Required field '{f.name}' is not configured"),
+                        "message": (
+                            f"Required field '{f.name}' is not configured"
+                        ),
                     }
                 )
             elif f.name in _NICE_TO_HAVE:
