@@ -3,6 +3,22 @@ method: ssh
 log_level: INFO
 timeout: 30
 auto_continue: false
+
+# MX auto-discovery settings (optional)
+# Enables automatic discovery of mail servers via DNS MX lookups
+# mx_discovery:
+#   servers: []        # Custom DNS servers (empty = system resolver)
+#   timeout: 5         # DNS query timeout in seconds
+#   cache_ttl: 0       # Cache TTL in seconds (0 = no cache)
+
+# Passwords can also be loaded from environment variables or a .env file
+# placed alongside this config file. See .env.example for supported variables.
+#
+# SECURITY RECOMMENDATIONS:
+# - Use SSH keys instead of passwords when possible
+# - Use environment variables or interactive prompts for passwords
+# - Enable SSL certificate verification in production (verify_certs: true)
+# - Keep known_hosts_file configured for SSH host key verification
 ssh_config:
   username: username
   password: ""
@@ -11,6 +27,9 @@ ssh_config:
   sudo: true
   timeout: 10
   ssh_config_file: demo/docker/ssh_config
+  # SECURITY: Path to known_hosts file for SSH host key verification.
+  # Set to empty string to disable verification (NOT RECOMMENDED for production).
+  known_hosts_file: ~/.ssh/known_hosts
   host_config:
     log_files:
       - /var/log/mail.log
@@ -35,18 +54,36 @@ opensearch_config:
   password: ""
   index: "mailtrace-logs-*" # OpenSearch index name or pattern for log storage
   use_ssl: true # Whether to use SSL/TLS encryption
-  verify_certs: false # Whether to verify SSL certificates (set to true in production)
+  # SECURITY: verify_certs should be true in production to prevent MITM attacks.
+  # Only set to false for local development with self-signed certificates.
+  verify_certs: true # Whether to verify SSL certificates
   time_zone: "+00:00" # Timezone offset for log timestamps
   timeout: 10 # Connection timeout in seconds
   mapping: # Mapping of application field names to OpenSearch field names
-    facility: "log.syslog.facility.name"
+    # Required fields (must match your OpenSearch index):
     hostname: "host.name"
     message: "message"
     timestamp: "@timestamp"
-    service: "log.syslog.appname"
-    queueid: "postfix.queueid.keyword"
-    queued_as: "postfix.queued_as.keyword"
+    # Optional fields - uncomment and set to match your index.
+    # Omitted fields default to null (disabled).
+    # Enabling these improves query performance and accuracy.
+    # facility: "log.syslog.facility.name"    # Filters to mail-only logs (recommended)
+    # service: "log.syslog.appname"           # Service name in parsed output
+    # queueid: "postfix.queueid.keyword"      # Fast queue ID lookup (vs message parsing)
+    # queued_as: "postfix.queued_as.keyword"   # Fast queued-as lookup
+    # message_id: "postfix.message-id.keyword" # Fast Message-ID lookup (vs text search)
+    # mail_id: null                            # Structured mail ID field
+    # relay_host: null                         # Relay hostname field
+    # relay_ip: null                           # Relay IP field
+    # relay_port: null                         # Relay port field
+    # smtp_code: null                          # SMTP return code field
+# Clusters define groups of mail servers to trace logs from
+# Use "mx:" prefix for auto-discovery via DNS MX lookups
 clusters:
   mx-cluster:
     - mx-cluster.mydomain.com
     - mx-cluster.mydomain.com
+  # Example with MX auto-discovery:
+  # auto-discovered:
+  #   - "mx:example.com"           # Resolve mail servers via MX lookup
+  #   - static-backup.example.com  # Static entry (no lookup)

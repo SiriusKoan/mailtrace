@@ -1,5 +1,7 @@
 import datetime
 import logging
+import os
+import shlex
 
 import paramiko
 
@@ -35,7 +37,29 @@ class SSHHost(LogAggregator):
         self.ssh_config = config.ssh_config
         self.host_config = self.ssh_config.get_host_config(host)
         self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.WarningPolicy())
+
+        # SECURITY: Configure SSH host key verification
+        known_hosts_file = self.ssh_config.known_hosts_file
+        if known_hosts_file:
+            # Load known_hosts file for host key verification
+            known_hosts_path = os.path.expanduser(known_hosts_file)
+            if os.path.exists(known_hosts_path):
+                self.client.load_host_keys(known_hosts_path)
+                logger.debug(f"Loaded known_hosts from: {known_hosts_path}")
+            else:
+                logger.warning(
+                    f"known_hosts file not found: {known_hosts_path}. "
+                    "Host key verification may fail."
+                )
+            # Reject unknown host keys by default (secure)
+            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        else:
+            # SECURITY WARNING: Host key verification disabled
+            logger.warning(
+                "SSH host key verification is DISABLED (known_hosts_file is empty). "
+                "This is INSECURE and not recommended for production use."
+            )
+            self.client.set_missing_host_key_policy(paramiko.WarningPolicy())
 
         # Prepare connection parameters
         connect_params = {
@@ -52,8 +76,6 @@ class SSHHost(LogAggregator):
 
         # Load and merge SSH config file if specified
         if self.ssh_config.ssh_config_file:
-            import os
-
             ssh_config = paramiko.SSHConfig()
             config_path = os.path.expanduser(self.ssh_config.ssh_config_file)
             try:
@@ -122,8 +144,8 @@ class SSHHost(LogAggregator):
         Returns:
             True if the file exists, False otherwise
         """
-
-        command = f"stat {file_path}"
+        # SECURITY: Escape file path to prevent command injection
+        command = f"stat {shlex.quote(file_path)}"
         stdout_content, _ = self._execute_command(command)
         return stdout_content != ""
 
@@ -164,11 +186,15 @@ class SSHHost(LogAggregator):
 
         Returns:
             String containing chained grep commands or empty string if no keywords
-        """
 
+        Note:
+            Keywords are shell-escaped using shlex.quote() to prevent command injection.
+        """
         if not keywords:
             return ""
-        return "".join(f"| grep -iE {keyword}" for keyword in keywords)
+        # Combine keywords into a single regex for an OR search, which is more efficient.
+        patterns = "|".join(keywords)
+        return f"| grep -iE {shlex.quote(patterns)}"
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
         """
@@ -184,16 +210,25 @@ class SSHHost(LogAggregator):
             ValueError: If there's an error executing the command on the remote host
         """
 
+        # Build effective keywords: merge explicit keywords with message_id
+        # and mail_ids for server-side grep pre-filtering
+        effective_keywords = list(query.keywords) if query.keywords else []
+        if query.message_id:
+            effective_keywords.append(f"message-id=<{query.message_id}>")
+        if query.mail_ids:
+            effective_keywords.extend(query.mail_ids)
+
         logs: str = ""
         command = self._compose_read_command(query)
         for log_file in self.host_config.log_files:
             if not self._check_file_exists(log_file):
                 continue
+            # SECURITY: Escape file path to prevent command injection
             complete_command = " ".join(
                 [
                     command,
-                    log_file,
-                    self._compose_keyword_command(query.keywords),
+                    shlex.quote(log_file),
+                    self._compose_keyword_command(effective_keywords),
                 ]
             )
             stdout, stderr = self._execute_command(complete_command)
@@ -208,4 +243,7 @@ class SSHHost(LogAggregator):
         ]
         if query.mail_id:
             return [log for log in parsed_logs if log.mail_id == query.mail_id]
+        if query.mail_ids:
+            target = set(query.mail_ids)
+            return [log for log in parsed_logs if log.mail_id in target]
         return parsed_logs

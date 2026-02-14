@@ -1,9 +1,21 @@
+from __future__ import annotations
+
+import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+from dotenv import load_dotenv
+
+from mailtrace.utils import get_hosts
+
+if TYPE_CHECKING:
+    from mailtrace.mx_discovery import MXDiscovery
+
+_logger = logging.getLogger("mailtrace")
 
 # Valid log levels for configuration
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -44,6 +56,9 @@ class SSHConfig:
         sudo: Whether to use sudo for log file access
         timeout: SSH connection timeout in seconds
         ssh_config_file: Path to SSH config file (e.g., ~/.ssh/config or custom)
+        known_hosts_file: Path to known_hosts file for host key verification.
+            Defaults to ~/.ssh/known_hosts. Set to empty string to disable
+            host key verification (INSECURE - not recommended for production).
         host_config: Default host configuration for log files
         hosts: Dictionary mapping hostnames to their specific configurations
     """
@@ -55,6 +70,7 @@ class SSHConfig:
     sudo: bool = True
     timeout: int = 10
     ssh_config_file: str = ""
+    known_hosts_file: str = "~/.ssh/known_hosts"
     host_config: HostConfig = field(default_factory=HostConfig)
     hosts: dict[str, HostConfig] = field(default_factory=dict)
 
@@ -90,33 +106,95 @@ class SSHConfig:
 class OpenSearchMappingConfig:
     """Mapping of application field names to OpenSearch field names.
 
+    Fields are classified as:
+    - Required: must be configured (timestamp, message, hostname)
+    - Optional with fallback: falls back to message-text parsing if None
+    - Optional enrichment: skipped in queries if None
+
     Attributes:
-        facility: OpenSearch field for log facility
-        hostname: OpenSearch field for host name
-        message: OpenSearch field for log message
-        timestamp: OpenSearch field for log timestamp
-        service: OpenSearch field for service name
-        queueid: OpenSearch field for queue ID
-        queued_as: OpenSearch field for queued as
-        mail_id: OpenSearch field for mail ID
-        relay_host: OpenSearch field for relay hostname
-        relay_ip: OpenSearch field for relay IP address
-        relay_port: OpenSearch field for relay port number
-        smtp_code: OpenSearch field for SMTP return code
+        facility: OpenSearch field for log facility (optional enrichment)
+        hostname: OpenSearch field for host name (required)
+        message: OpenSearch field for log message (required)
+        timestamp: OpenSearch field for log timestamp (required)
+        service: OpenSearch field for service name (optional enrichment)
+        queueid: OpenSearch field for queue ID (optional with fallback)
+        queued_as: OpenSearch field for queued as (optional with fallback)
+        mail_id: OpenSearch field for mail ID (optional with fallback)
+        message_id: OpenSearch field for RFC 2822 Message-ID header (optional with fallback)
+        relay_host: OpenSearch field for relay hostname (optional enrichment)
+        relay_ip: OpenSearch field for relay IP address (optional enrichment)
+        relay_port: OpenSearch field for relay port number (optional enrichment)
+        smtp_code: OpenSearch field for SMTP return code (optional enrichment)
     """
 
-    facility: str = "log.syslog.facility.name"
+    # Required fields
     hostname: str = "host.name"
     message: str = "message"
     timestamp: str = "@timestamp"
-    service: str = "log.syslog.appname"
-    queueid: str = "log.syslog.structured_data.queueid"
-    queued_as: str = "log.syslog.structured_data.queued_as"
-    mail_id: str = ""
-    relay_host: str = ""
-    relay_ip: str = ""
-    relay_port: str = ""
-    smtp_code: str = ""
+
+    # Optional with fallback (falls back to message-text parsing)
+    queueid: str | None = None
+    queued_as: str | None = None
+    mail_id: str | None = None
+    message_id: str | None = None
+
+    # Optional enrichment (skipped if None)
+    facility: str | None = None
+    service: str | None = None
+    relay_host: str | None = None
+    relay_ip: str | None = None
+    relay_port: str | None = None
+    smtp_code: str | None = None
+
+    def __post_init__(self) -> None:
+        # Validate required fields
+        for field_name in ("timestamp", "message", "hostname"):
+            if not getattr(self, field_name):
+                raise ValueError(
+                    f"Required mapping field '{field_name}' must be configured"
+                )
+
+        # Warn about missing nice-to-have fields
+        _nice_to_have = {
+            "facility": "facility filtering won't be applied",
+            "service": "service name won't appear in parsed output",
+            "queueid": "queue ID lookups will fall back to message text search",
+            "message_id": "Message-ID lookups will fall back to message text search",
+        }
+        for field_name, consequence in _nice_to_have.items():
+            if not getattr(self, field_name):
+                _logger.warning(
+                    "Mapping field '%s' is not configured: %s",
+                    field_name,
+                    consequence,
+                )
+
+    def get_source_fields(self) -> list[str]:
+        """Return configured OpenSearch field names for _source filtering.
+
+        Collects all non-None field values from this mapping config.
+        Used to limit which fields OpenSearch returns in _source.
+        """
+        return [
+            getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        ]
+
+
+@dataclass
+class MXDiscoveryConfig:
+    """Configuration for MX record auto-discovery.
+
+    Attributes:
+        servers: List of DNS server IPs to query (empty = system resolver)
+        timeout: DNS query timeout in seconds
+        cache_ttl: Cache TTL in seconds (0 = no cache)
+    """
+
+    servers: list[str] = field(default_factory=list)
+    timeout: int = 5
+    cache_ttl: int = 0
 
 
 @dataclass
@@ -129,7 +207,9 @@ class OpenSearchConfig:
         username: Username for OpenSearch authentication
         password: Password for OpenSearch authentication
         use_ssl: Whether to use SSL/TLS encryption
-        verify_certs: Whether to verify SSL certificates
+        verify_certs: Whether to verify SSL certificates (default: True).
+            SECURITY WARNING: Setting to False disables certificate validation
+            and makes the connection vulnerable to man-in-the-middle attacks.
         index: OpenSearch index name for log storage
         time_zone: Timezone offset for log timestamps
         mapping: Mapping of application field names to OpenSearch field names
@@ -140,7 +220,7 @@ class OpenSearchConfig:
     username: str = ""
     password: str = ""
     use_ssl: bool = False
-    verify_certs: bool = False
+    verify_certs: bool = True
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
@@ -175,6 +255,10 @@ class Config:
     clusters: dict[str, list[str]] = field(default_factory=dict)
     domain: str = ""
     auto_continue: bool = False
+    mx_discovery: MXDiscoveryConfig = field(default_factory=MXDiscoveryConfig)
+    _mx_resolver: MXDiscovery | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -193,10 +277,28 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
+        if isinstance(self.mx_discovery, dict):
+            self.mx_discovery = MXDiscoveryConfig(**self.mx_discovery)
+
+        # Initialize MX resolver
+        from mailtrace.mx_discovery import MXDiscovery
+
+        self._mx_resolver = MXDiscovery(self.mx_discovery)
 
     def cluster_to_hosts(self, name: str) -> list[str] | None:
-        """Get list of hosts for a given cluster name."""
-        return self.clusters.get(name)
+        """Get list of hosts for a given cluster name, expanding mx: entries."""
+        raw_entries = self.clusters.get(name)
+        if raw_entries is None:
+            return None
+
+        # Expand mx: entries and merge
+        hosts: list[str] = []
+        assert self._mx_resolver is not None  # Always set in __post_init__
+        for entry in raw_entries:
+            hosts.extend(self._mx_resolver.expand_entry(entry))
+
+        # Apply hostname expansion, deduplicate preserving order
+        return list(dict.fromkeys(get_hosts(hosts, self.domain)))
 
 
 def _load_env_passwords(config_data: dict) -> None:
@@ -238,6 +340,11 @@ def load_config(config_path: str | None = None) -> Config:
     config_path = config_path or os.getenv("MAILTRACE_CONFIG", "config.yaml")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    # Load .env file from the same directory as the config file.
+    # override=False ensures shell env vars take precedence over .env.
+    dotenv_path = Path(config_path).resolve().parent / ".env"
+    load_dotenv(dotenv_path=dotenv_path, override=False)
 
     with open(config_path) as f:
         config_data = yaml.safe_load(f)

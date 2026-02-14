@@ -3,9 +3,16 @@ import logging
 
 import click
 
-from mailtrace.aggregator import do_trace, select_aggregator
+from mailtrace.aggregator import (
+    do_trace,
+    do_trace_from_logs,
+    extract_message_ids,
+    select_aggregator,
+)
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.doctor import check_config
+from mailtrace.flow_check import check_cluster_flow
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
 from mailtrace.trace import trace_mail_flow_to_file
@@ -106,6 +113,17 @@ def _prompt_password(
     return provided
 
 
+def _warn_cli_password(
+    password: str | None, name: str, ask_flag: str, env_var: str
+) -> None:
+    """Log security warning if password was provided via CLI argument."""
+    if password:
+        logger.warning(
+            f"SECURITY: {name} provided via CLI argument is visible in shell history. "
+            f"Consider using {ask_flag} or {env_var} env var instead."
+        )
+
+
 def handle_passwords(
     config: Config,
     ask_login_pass: bool,
@@ -128,7 +146,29 @@ def handle_passwords(
         sudo_pass: The sudo password (may be None).
         ask_opensearch_pass: Boolean, whether to prompt for OpenSearch password.
         opensearch_pass: The OpenSearch password (may be None).
+
+    Security Note:
+        Passwords passed via CLI arguments (--login-pass, --sudo-pass, --opensearch-pass)
+        are visible in shell history and process listings. Use --ask-*-pass flags or
+        environment variables for better security.
     """
+    # SECURITY WARNING: CLI password arguments are visible in shell history and ps output
+    _warn_cli_password(
+        login_pass, "Password", "--ask-login-pass", "MAILTRACE_SSH_PASSWORD"
+    )
+    _warn_cli_password(
+        sudo_pass,
+        "Sudo password",
+        "--ask-sudo-pass",
+        "MAILTRACE_SUDO_PASSWORD",
+    )
+    _warn_cli_password(
+        opensearch_pass,
+        "OpenSearch password",
+        "--ask-opensearch-pass",
+        "MAILTRACE_OPENSEARCH_PASSWORD",
+    )
+
     if config.method == Method.SSH:
         login_pass = _prompt_password(
             "Enter login password: ", ask_login_pass, login_pass
@@ -174,6 +214,11 @@ def query_and_print_logs(
     """
     Queries logs using the aggregator and prints logs grouped by mail ID.
 
+    Uses Message-ID based batch fetching to avoid N+1 queries:
+    1. Keyword search (time-restricted) -> initial queue-IDs + Message-IDs
+    2. Message-ID queries (no time restriction) -> all related queue-IDs
+    3. Batch query all queue-IDs (no time restriction) -> all logs at once
+
     Args:
         aggregator: The aggregator instance to query logs.
         key: Keywords for the log query.
@@ -182,25 +227,54 @@ def query_and_print_logs(
 
     Returns:
         Dictionary mapping mail IDs to (host, list of LogEntry) tuples.
+        Includes both initially-matched IDs and related IDs found via
+        Message-ID for the trace cache.
     """
+    # Step 1: keyword search (time-restricted)
     base_logs = aggregator.query_by(
         LogQuery(keywords=key, time=time, time_range=time_range)
     )
-    mail_ids = list(
+    initial_mail_ids = list(
         {log.mail_id for log in base_logs if log.mail_id is not None}
     )
-    if not mail_ids:
+    if not initial_mail_ids:
         logger.info("No mail IDs found")
         return {}
 
+    # Step 2: find ALL related queue-IDs via Message-ID (no time restriction)
+    message_ids = extract_message_ids(base_logs)
+    all_queue_ids = set(initial_mail_ids)
+
+    for mid in message_ids:
+        logger.info("Querying by message_id: %s", mid)
+        mid_logs = aggregator.query_by(LogQuery(message_id=mid))
+        all_queue_ids.update(log.mail_id for log in mid_logs if log.mail_id)
+
+    # Step 3: batch fetch ALL queue-IDs at once (no time restriction)
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    for mail_id in mail_ids:
-        logs = aggregator.query_by(LogQuery(mail_id=mail_id))
-        logs_by_id[mail_id] = (aggregator.host, logs)
-        print_blue(f"== Mail ID: {mail_id} ==")
-        for log in logs:
-            print(str(log))
-        print_blue("==============\n")
+    batch_logs = aggregator.query_by(LogQuery(mail_ids=list(all_queue_ids)))
+    for entry in batch_logs:
+        if entry.mail_id and entry.mail_id in all_queue_ids:
+            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[
+                1
+            ].append(entry)
+
+    # Step 4: fallback for any initial IDs not covered
+    for mail_id in initial_mail_ids:
+        if mail_id not in logs_by_id:
+            logs = aggregator.query_by(LogQuery(mail_id=mail_id))
+            logs_by_id[mail_id] = (aggregator.host, logs)
+
+    # Step 5: print ONLY initially-matched queue-IDs
+    for mail_id in initial_mail_ids:
+        if mail_id in logs_by_id:
+            _, logs = logs_by_id[mail_id]
+            logs.sort(key=lambda e: e.datetime)
+            print_blue(f"== Mail ID: {mail_id} ==")
+            for log in logs:
+                print(str(log))
+            print_blue("==============\n")
+
     return logs_by_id
 
 
@@ -225,10 +299,20 @@ def trace_mail_loop(
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
 
-    aggregator = aggregator_class(host, config)
-
     while True:
-        result = do_trace(trace_id, aggregator)
+        # Cache-first: use pre-fetched logs if available
+        if trace_id in logs_by_id:
+            _, cached_logs = logs_by_id[trace_id]
+            result = do_trace_from_logs(trace_id, cached_logs)
+        else:
+            # Cache miss: query live
+            aggregator = aggregator_class(host, config)
+            result = do_trace(trace_id, aggregator)
+            if result is None:
+                # Retry without hostname filter (some machines lack proper reverse DNS)
+                aggregator = aggregator_class("", config)
+                result = do_trace(trace_id, aggregator)
+
         if result is None:
             logger.info("No more hops")
             break
@@ -245,22 +329,25 @@ def trace_mail_loop(
             )
             trace_next_hop_ans = "y"
         else:
-            trace_next_hop_ans: str = input(
-                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
-            ).lower()
+            print(
+                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): ",
+                end="",
+                flush=True,
+            )
+            trace_next_hop_ans: str = input().lower()
 
+        logger.info("User selected: %r", trace_next_hop_ans)
         if trace_next_hop_ans in ["", "y"]:
             trace_id = result.mail_id
-            aggregator = aggregator_class(result.relay_host, config)
+            host = result.relay_host
         elif trace_next_hop_ans == "n":
-            logger.info("Trace stopped")
+            logger.info("Trace stopped by user")
             break
         elif trace_next_hop_ans == "local":
             trace_id = result.mail_id
-            aggregator = aggregator_class(host, config)
         else:
             trace_id = result.mail_id
-            aggregator = aggregator_class(trace_next_hop_ans, config)
+            host = trace_next_hop_ans
 
 
 @cli.command()
@@ -304,7 +391,7 @@ def run(
         hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
         logger.info(f"Using hosts: {hosts}")
         for host in hosts:
-            print(host)
+            print_blue(f"== Querying host: {host} ==")
             aggregator = aggregator_class(host, config)
             logs_by_id_from_host = query_and_print_logs(
                 aggregator, key, time, time_range
@@ -315,7 +402,9 @@ def run(
         logger.info("No mail IDs found to trace.")
         return
 
-    trace_id = input("Enter trace ID: ")
+    print("Enter trace ID: ", end="", flush=True)
+    trace_id = input()
+    logger.info("User selected trace ID: %s", trace_id)
     if trace_id not in logs_by_id:
         logger.info(f"Trace ID {trace_id} not found in logs")
         return
@@ -377,6 +466,213 @@ def trace(
         time_range=time_range,
         output_file=output,
     )
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file (falls back to MAILTRACE_CONFIG env var)",
+)
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse"]),
+    default="stdio",
+    help="MCP transport type (default: stdio)",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    help="Port for SSE transport (default: 8080)",
+)
+def mcp(config_path: str | None, transport: str, port: int) -> None:
+    """Start the MCP server for LLM integration.
+
+    The MCP server exposes mailtrace tools for use by LLM assistants
+    like Claude.
+
+    Examples:
+
+        # Start with stdio transport (for Claude Code)
+        mailtrace mcp --config /path/to/config.yaml
+
+        # Start with SSE transport for remote access
+        mailtrace mcp --config /path/to/config.yaml --transport sse --port 8080
+    """
+    from mailtrace.mcp import run_server
+
+    config = load_config(config_path)
+    configure_logging(config)
+
+    logger.info(f"Starting MCP server with {transport} transport...")
+    run_server(config, transport=transport, port=port)
+
+
+@cli.command("flow-check")
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file",
+)
+@click.option(
+    "--cluster",
+    type=str,
+    required=True,
+    help="Cluster name to check",
+)
+@click.option(
+    "--time",
+    "time_param",
+    type=str,
+    required=False,
+    default=None,
+    help="Reference time (YYYY-MM-DD HH:MM:SS). Default: now",
+)
+@click.option(
+    "--time-range",
+    type=str,
+    default="1h",
+    help="Time range (e.g., 1h, 30m). Default: 1h",
+)
+@click.option(
+    "-k",
+    "--key",
+    type=str,
+    required=False,
+    help="Optional keyword filter",
+    multiple=True,
+)
+@click.option("--login-pass", type=str, required=False)
+@click.option("--sudo-pass", type=str, required=False)
+@click.option("--opensearch-pass", type=str, required=False)
+@click.option("--ask-login-pass", is_flag=True)
+@click.option("--ask-sudo-pass", is_flag=True)
+@click.option("--ask-opensearch-pass", is_flag=True)
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(),
+    required=False,
+    default=None,
+    help="Output file for JSON result",
+)
+def flow_check(
+    config_path,
+    cluster,
+    time_param,
+    time_range,
+    key,
+    login_pass,
+    sudo_pass,
+    opensearch_pass,
+    ask_login_pass,
+    ask_sudo_pass,
+    ask_opensearch_pass,
+    output,
+):
+    """Check cluster flow conservation."""
+    import datetime as dt
+    import json
+
+    config = load_config(config_path)
+    configure_logging(config)
+    handle_passwords(
+        config,
+        ask_login_pass,
+        login_pass,
+        ask_sudo_pass,
+        sudo_pass,
+        ask_opensearch_pass,
+        opensearch_pass,
+    )
+
+    check_time = time_param or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if time_param:
+        err = time_validation(check_time, time_range)
+        if err:
+            raise ValueError(err)
+
+    aggregator_class = select_aggregator(config)
+    keywords = list(key) if key else None
+
+    result = check_cluster_flow(
+        config=config,
+        aggregator_class=aggregator_class,
+        cluster=cluster,
+        time=check_time,
+        time_range=time_range,
+        keywords=keywords,
+    )
+
+    result_json = json.dumps(result.to_dict(), indent=2, default=str)
+    if output and output != "-":
+        with open(output, "w") as f:
+            f.write(result_json)
+    else:
+        print(result_json)
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(),
+    required=False,
+    help="Path to configuration file",
+)
+def doctor(config_path: str | None) -> None:
+    """Validate configuration and report potential issues."""
+    config = load_config(config_path)
+    configure_logging(config)
+    result = check_config(config)
+
+    # Print method
+    click.echo(f"Method: {result['method']}")
+    click.echo()
+
+    # Print errors
+    if result["errors"]:
+        click.secho("Errors:", fg="red", bold=True)
+        for err in result["errors"]:
+            click.secho(
+                f"  x {err['field']}: {err['message']}",
+                fg="red",
+            )
+        click.echo()
+
+    # Print warnings
+    if result["warnings"]:
+        click.secho("Warnings:", fg="yellow", bold=True)
+        for warn in result["warnings"]:
+            click.secho(
+                f"  ! {warn['field']}: {warn['message']}",
+                fg="yellow",
+            )
+        click.echo()
+
+    # Print configured fields
+    click.secho("Configured mapping fields:", bold=True)
+    for field_name in result["configured_fields"]:
+        click.secho(f"  + {field_name}", fg="green")
+
+    # Print unconfigured fields
+    if result["unconfigured_fields"]:
+        click.echo()
+        click.secho("Unconfigured mapping fields:", bold=True)
+        for field_name in result["unconfigured_fields"]:
+            click.echo(f"  - {field_name}")
+
+    # Exit with error code if critical errors found
+    if result["errors"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
