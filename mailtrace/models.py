@@ -32,6 +32,16 @@ class LogEntry:
     relay_port: int | None = None
     smtp_code: int | None = None
 
+    def __repr__(self) -> str:
+        from dataclasses import fields
+
+        parts = []
+        for f in fields(self):
+            val = getattr(self, f.name)
+            if val is not None:
+                parts.append(f"{f.name}={val!r}")
+        return f"LogEntry({', '.join(parts)})"
+
     def __str__(self) -> str:
         return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"
 

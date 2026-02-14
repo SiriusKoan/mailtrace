@@ -60,14 +60,23 @@ opensearch_config:
   time_zone: "+00:00" # Timezone offset for log timestamps
   timeout: 10 # Connection timeout in seconds
   mapping: # Mapping of application field names to OpenSearch field names
-    facility: "log.syslog.facility.name"
+    # Required fields (must match your OpenSearch index):
     hostname: "host.name"
     message: "message"
     timestamp: "@timestamp"
-    service: "log.syslog.appname"
-    queueid: "postfix.queueid.keyword"
-    queued_as: "postfix.queued_as.keyword"
-    message_id: "postfix.message-id.keyword"  # RFC 2822 Message-ID for cross-host batch tracing
+    # Optional fields - uncomment and set to match your index.
+    # Omitted fields default to null (disabled).
+    # Enabling these improves query performance and accuracy.
+    # facility: "log.syslog.facility.name"    # Filters to mail-only logs (recommended)
+    # service: "log.syslog.appname"           # Service name in parsed output
+    # queueid: "postfix.queueid.keyword"      # Fast queue ID lookup (vs message parsing)
+    # queued_as: "postfix.queued_as.keyword"   # Fast queued-as lookup
+    # message_id: "postfix.message-id.keyword" # Fast Message-ID lookup (vs text search)
+    # mail_id: null                            # Structured mail ID field
+    # relay_host: null                         # Relay hostname field
+    # relay_ip: null                           # Relay IP field
+    # relay_port: null                         # Relay port field
+    # smtp_code: null                          # SMTP return code field
 # Clusters define groups of mail servers to trace logs from
 # Use "mx:" prefix for auto-discovery via DNS MX lookups
 clusters:
