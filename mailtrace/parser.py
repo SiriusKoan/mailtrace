@@ -319,7 +319,7 @@ class OpensearchParser(LogParser):
         return LogEntry(
             datetime=_get_nested_value(log, self.mapping.timestamp),
             hostname=_get_nested_value(log, self.mapping.hostname),
-            service=_get_nested_value(log, self.mapping.service),
+            service=self._get_mapped_value("service", log),
             mail_id=mail_id,
             message=message,
             message_id=self._get_mapped_value("message_id", log),

@@ -27,12 +27,7 @@ def default_mapping():
         service="log.syslog.appname",
         queueid="log.syslog.structured_data.queueid",
         queued_as="log.syslog.structured_data.queued_as",
-        mail_id="",
         message_id="postfix.message_id",
-        relay_host="",
-        relay_ip="",
-        relay_port="",
-        smtp_code="",
     )
 
 
@@ -152,7 +147,7 @@ class TestOpensearchParser:
             message="message",
             timestamp="@timestamp",
             service="appname",
-            queueid="",
+            queueid=None,
         )
         parser = OpensearchParser(mapping=mapping)
         log = {
@@ -172,7 +167,7 @@ class TestOpensearchParser:
             message="message",
             timestamp="@timestamp",
             service="appname",
-            queueid="",
+            queueid=None,
         )
         parser = OpensearchParser(mapping=mapping)
         log = {
@@ -274,7 +269,7 @@ class TestOpensearchParser:
             timestamp="@timestamp",
             service="appname",
             queueid="queueid",
-            message_id="",
+            message_id=None,
         )
         parser = OpensearchParser(mapping=mapping)
         log = {
@@ -419,7 +414,7 @@ class TestOpenSearchAggregator:
         self, mock_search_class, mock_client_class, config, mock_search
     ):
         """Aggregator uses wildcard query when queueid field not configured."""
-        config.opensearch_config.mapping.queueid = ""
+        config.opensearch_config.mapping.queueid = None
         mock_search_class.return_value = mock_search
         aggregator = OpenSearch(host="mx1", config=config)
 
@@ -452,7 +447,7 @@ class TestOpenSearchAggregator:
         self, mock_search_class, mock_client_class, config, mock_search
     ):
         """Aggregator uses match_phrase when message_id field not configured."""
-        config.opensearch_config.mapping.message_id = ""
+        config.opensearch_config.mapping.message_id = None
         mock_search_class.return_value = mock_search
         aggregator = OpenSearch(host="mx1", config=config)
 
@@ -664,10 +659,13 @@ class TestOpenSearchConfiguration:
         """OpenSearchMappingConfig has correct defaults."""
         mapping = OpenSearchMappingConfig()
 
-        assert mapping.facility == "log.syslog.facility.name"
+        # Required fields have sensible defaults
         assert mapping.hostname == "host.name"
         assert mapping.message == "message"
         assert mapping.timestamp == "@timestamp"
+        # Optional fields default to None
+        assert mapping.facility is None
+        assert mapping.queueid is None
 
     def test_opensearch_config_converts_dict_mapping(self):
         """OpenSearchConfig converts dict mapping to config object."""

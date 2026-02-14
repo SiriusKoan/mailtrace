@@ -580,15 +580,50 @@ opensearch_config:
 
 #### Field Mapping
 
-The `mapping` section allows you to specify how application fields map to OpenSearch fields:
+The `mapping` section maps mailtrace's internal field names to your OpenSearch index field paths. **All optional fields default to `null` (disabled)** — you must explicitly configure the ones your index supports.
 
-- `facility`: OpenSearch field for log facility (default: `"log.syslog.facility.name"`).
-- `hostname`: OpenSearch field for hostname (default: `"host.name"`).
-- `message`: OpenSearch field for log message (default: `"message"`).
-- `timestamp`: OpenSearch field for log timestamp (default: `"@timestamp"`).
-- `service`: OpenSearch field for service name (default: `"log.syslog.appname"`).
+**1. Required fields** — must be set to valid OpenSearch field paths, or config loading fails:
 
-This allows mailtrace to work with different OpenSearch index schemas. Customize these mappings based on your actual field names in OpenSearch.
+| Field | Default | Description |
+|---|---|---|
+| `hostname` | `"host.name"` | Hostname of the log source. Used for host-based filtering. |
+| `message` | `"message"` | Raw log message text. Used for keyword search and fallback parsing. |
+| `timestamp` | `"@timestamp"` | Log timestamp. Used for time-range filtering. |
+
+**2. Optional fields** — all default to `null`. Configure them to match your index for better performance. When `null`, mailtrace falls back to parsing the `message` field (slower, less accurate).
+
+| Field | Performance impact when null | Fallback behavior |
+|---|---|---|
+| `facility` | **High** — without this, queries match ALL log facilities. On indices with mixed facilities (mail, auth, cron, etc.), the 1000-result limit fills with non-mail logs and you may get no results. | No facility filtering applied |
+| `queueid` | **Medium** — queue ID lookups use wildcard text search instead of exact term match. | Parsed from message prefix (e.g., `ABC123: ...`) |
+| `message_id` | **Medium** — Message-ID lookups use text search instead of exact term match. Cross-host tracing is slower. | Searched via `match_phrase` for `message-id=<value>` |
+| `service` | **Low** — service name missing from parsed output only. | Not available in output |
+| `queued_as` | **Low** — queued-as lookups use message text parsing. | Extracted from `queued as XYZ` in message |
+| `mail_id` | **Low** — rarely needed as a separate field. | Extracted from message text |
+| `relay_host` | **None** — always extracted from message text via enrichment. | Parsed from `relay=host[ip]:port` |
+| `relay_ip` | **None** — always extracted from message text via enrichment. | Parsed from `relay=host[ip]:port` |
+| `relay_port` | **None** — always extracted from message text via enrichment. | Parsed from `relay=host[ip]:port` |
+| `smtp_code` | **None** — always extracted from message text via enrichment. | Parsed from SMTP response in message |
+
+**Example configuration:**
+
+```yaml
+opensearch_config:
+  # ...
+  mapping:
+    # Required (must match your index)
+    hostname: "host.name"
+    message: "message"
+    timestamp: "@timestamp"
+    # Recommended for performance (uncomment and set to your field paths):
+    # facility: "log.syslog.facility.name"
+    # queueid: "postfix.queueid.keyword"
+    # message_id: "postfix.message-id.keyword"
+    # service: "log.syslog.appname"
+    # queued_as: "postfix.queued_as.keyword"
+```
+
+Run `mailtrace doctor -c config.yaml` to validate your mapping and see which fields are configured vs missing.
 
 ### Clusters Configuration
 

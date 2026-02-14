@@ -149,7 +149,10 @@ def handle_passwords(
         login_pass, "Password", "--ask-login-pass", "MAILTRACE_SSH_PASSWORD"
     )
     _warn_cli_password(
-        sudo_pass, "Sudo password", "--ask-sudo-pass", "MAILTRACE_SUDO_PASSWORD"
+        sudo_pass,
+        "Sudo password",
+        "--ask-sudo-pass",
+        "MAILTRACE_SUDO_PASSWORD",
     )
     _warn_cli_password(
         opensearch_pass,
