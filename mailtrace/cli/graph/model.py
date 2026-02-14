@@ -1,3 +1,5 @@
+"""Mail flow graph data structure using NetworkX."""
+
 import sys
 
 import networkx as nx

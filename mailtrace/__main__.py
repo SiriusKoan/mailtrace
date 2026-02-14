@@ -1,14 +1,17 @@
-import getpass
 import logging
 
 import click
 
-from mailtrace.aggregator import do_trace, select_aggregator
-from mailtrace.aggregator.base import LogAggregator
-from mailtrace.config import Config, Method, load_config
-from mailtrace.parser import LogEntry
-from mailtrace.trace import query_logs_by_keywords, trace_mail_flow_to_file
-from mailtrace.utils import print_blue, time_validation
+from mailtrace.aggregator import select_aggregator
+from mailtrace.cli import (
+    handle_passwords,
+    print_logs_by_id,
+    query_logs_by_keywords,
+    trace_mail_flow_to_file,
+    trace_mail_loop,
+)
+from mailtrace.config import Config, load_config
+from mailtrace.utils import time_validation
 
 logger = logging.getLogger("mailtrace")
 
@@ -94,149 +97,6 @@ def add_common_options(func):
 @click.group()
 def cli():
     pass
-
-
-def _prompt_password(
-    prompt: str, ask: bool, provided: str | None
-) -> str | None:
-    """Prompt for password if asked, otherwise return provided value."""
-    if ask:
-        return getpass.getpass(prompt=prompt)
-    return provided
-
-
-def handle_passwords(
-    config: Config,
-    ask_login_pass: bool,
-    login_pass: str | None,
-    ask_sudo_pass: bool,
-    sudo_pass: str | None,
-    ask_opensearch_pass: bool,
-    opensearch_pass: str | None,
-) -> None:
-    """
-    Handles password input and assignment for SSH, sudo, and OpenSearch connections.
-
-    Prompts the user for passwords if requested, assigns them to the config, and logs warnings for empty passwords.
-
-    Args:
-        config: The configuration object containing connection settings.
-        ask_login_pass: Boolean, whether to prompt for login password.
-        login_pass: The login password (may be None).
-        ask_sudo_pass: Boolean, whether to prompt for sudo password.
-        sudo_pass: The sudo password (may be None).
-        ask_opensearch_pass: Boolean, whether to prompt for OpenSearch password.
-        opensearch_pass: The OpenSearch password (may be None).
-    """
-    if config.method == Method.SSH:
-        login_pass = _prompt_password(
-            "Enter login password: ", ask_login_pass, login_pass
-        )
-        config.ssh_config.password = login_pass or config.ssh_config.password
-        if not config.ssh_config.password:
-            logger.warning(
-                "Empty login password - no password will be used for login"
-            )
-
-        sudo_pass = _prompt_password(
-            "Enter sudo password: ", ask_sudo_pass, sudo_pass
-        )
-        config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
-        if not config.ssh_config.sudo_pass:
-            logger.warning(
-                "Empty sudo password - no password will be used for sudo"
-            )
-
-    elif config.method == Method.OPENSEARCH:
-        opensearch_pass = _prompt_password(
-            "Enter opensearch password: ", ask_opensearch_pass, opensearch_pass
-        )
-        config.opensearch_config.password = (
-            opensearch_pass or config.opensearch_config.password
-        )
-        if not config.opensearch_config.password:
-            logger.warning(
-                "Empty opensearch password - no password will be used for opensearch"
-            )
-    else:
-        logger.warning(
-            f"Unknown method: {config.method}. No password handling."
-        )
-
-
-def print_logs_by_id(
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]],
-) -> None:
-    """
-    Prints logs grouped by mail ID.
-
-    Args:
-        logs_by_id: Dictionary mapping mail IDs to (host, list of LogEntry) tuples.
-    """
-    for mail_id, (_, logs) in logs_by_id.items():
-        print_blue(f"== Mail ID: {mail_id} ==")
-        for log in logs:
-            print(str(log))
-        print_blue("==============\n")
-
-
-def trace_mail_loop(
-    trace_id: str,
-    logs_by_id: dict[str, tuple[str, list[LogEntry]]],
-    aggregator_class: type[LogAggregator],
-    config: Config,
-    host: str,
-) -> None:
-    """
-    Interactively traces mail hops starting from the given trace ID.
-
-    Args:
-        trace_id: The initial mail ID to trace.
-        logs_by_id: Dictionary mapping mail IDs to lists of LogEntry objects.
-        aggregator_class: The aggregator class to instantiate for each hop.
-        config: The configuration object for aggregator instantiation.
-        host: The current host.
-    """
-    if trace_id not in logs_by_id:
-        logger.info(f"Trace ID {trace_id} not found in logs")
-        return
-
-    aggregator = aggregator_class(host, config)
-
-    while True:
-        result = do_trace(trace_id, aggregator)
-        if result is None:
-            logger.info("No more hops")
-            break
-
-        print_blue(
-            f"Relayed to {result.relay_host} ({result.relay_ip}:{result.relay_port}) "
-            f"with new ID {result.mail_id} (SMTP {result.smtp_code})"
-        )
-
-        # If auto_continue is enabled, automatically continue to the next hop
-        if config.auto_continue:
-            logger.info(
-                f"Auto-continue enabled. Continuing to {result.relay_host}"
-            )
-            trace_next_hop_ans = "y"
-        else:
-            trace_next_hop_ans: str = input(
-                f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): "
-            ).lower()
-
-        if trace_next_hop_ans in ["", "y"]:
-            trace_id = result.mail_id
-            aggregator = aggregator_class(result.relay_host, config)
-        elif trace_next_hop_ans == "n":
-            logger.info("Trace stopped")
-            break
-        elif trace_next_hop_ans == "local":
-            trace_id = result.mail_id
-            aggregator = aggregator_class(host, config)
-        else:
-            trace_id = result.mail_id
-            aggregator = aggregator_class(trace_next_hop_ans, config)
 
 
 @cli.command()
