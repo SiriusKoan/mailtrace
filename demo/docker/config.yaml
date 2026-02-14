@@ -44,8 +44,8 @@ opensearch_config:
   time_zone: "+08:00"
   timeout: 10
   mapping:
-    facility: "log.syslog.facility.name"
-    hostname: "host"
+    facility: "facility"
+    hostname: "hostname"
     message: "message"
     timestamp: "timestamp"
     service: "appname"

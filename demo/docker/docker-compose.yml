@@ -42,26 +42,26 @@ services:
         ipv4_address: 192.168.200.5
 
   opensearch-dashboards:
-      image: opensearchproject/opensearch-dashboards:latest
-      container_name: opensearch-dashboards.example.com
-      ports:
-        - 5601:5601
-      expose:
-        - "5601"
-      environment:
-        OPENSEARCH_HOSTS: '["https://opensearch.example.com:9200"]'
-      networks:
-        mailtrace_net:
-          ipv4_address: 192.168.200.6
-      post_start:
-        - command: |
-            sleep 10 && \
-            curl -X POST http://localhost:5601/api/saved_objects/index-pattern/my-index-pattern \
-                 -H 'osd-xsrf: true' \
-                 -H 'Content-Type: application/json' \
-                 -d '{"attributes":{"title": "mailtrace*", "timeFieldName": "timestamp"}}' \
-                 --user admin:wg328GY@3HUY76
-          user: root
+    image: opensearchproject/opensearch-dashboards:latest
+    container_name: opensearch-dashboards.example.com
+    ports:
+      - 5601:5601
+    expose:
+      - "5601"
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch.example.com:9200"]'
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.6
+    post_start:
+      - command: |
+          sleep 10 && \
+          curl -X POST http://localhost:5601/api/saved_objects/index-pattern/my-index-pattern \
+                -H 'osd-xsrf: true' \
+                -H 'Content-Type: application/json' \
+                -d '{"attributes":{"title": "mailtrace*", "timeFieldName": "timestamp"}}' \
+                --user "admin:wg328GY@3HUY76"
+        user: root
 
   mx:
     hostname: mx.example.com
@@ -128,6 +128,23 @@ services:
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.40
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    hostname: jaeger.example.com
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+      - "14268:14268"  # Jaeger collector HTTP
+      - "6831:6831/udp" # Jaeger compact thrift
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.60
 
 networks:
   mailtrace_net:

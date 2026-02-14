@@ -14,13 +14,8 @@ transforms:
     inputs:
       - file
     source: |
-      .log.syslog.facility.name = "mail"
-      .appname = parse_regex(.message, r'postfix/(?P<app>[^\[]+)') ?? {}
-      if is_string(.appname.app) {
-        .appname = "postfix/" + .appname.app ?? ""
-      }
-      # datetime, hostname, appname should be removed from message
-      .message = join!(slice!(split!(.message, " "), 3), " ")
+      . = parse_syslog!(.message)
+      .facility = "mail"
 
 sinks:
   to_opensearch:
