@@ -58,16 +58,24 @@ COMMON_OPTIONS = [
         help="The keyword, can be email address, domain, etc.",
         multiple=True,
     ),
-    click.option("--login-pass", type=str, required=False, help="The login password"),
-    click.option("--sudo-pass", type=str, required=False, help="The sudo password"),
+    click.option(
+        "--login-pass", type=str, required=False, help="The login password"
+    ),
+    click.option(
+        "--sudo-pass", type=str, required=False, help="The sudo password"
+    ),
     click.option(
         "--opensearch-pass",
         type=str,
         required=False,
         help="The opensearch password",
     ),
-    click.option("--ask-login-pass", is_flag=True, help="Ask for login password"),
-    click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password"),
+    click.option(
+        "--ask-login-pass", is_flag=True, help="Ask for login password"
+    ),
+    click.option(
+        "--ask-sudo-pass", is_flag=True, help="Ask for sudo password"
+    ),
     click.option(
         "--ask-opensearch-pass",
         is_flag=True,
@@ -95,14 +103,18 @@ def cli():
     pass
 
 
-def _prompt_password(prompt: str, ask: bool, provided: str | None) -> str | None:
+def _prompt_password(
+    prompt: str, ask: bool, provided: str | None
+) -> str | None:
     """Prompt for password if asked, otherwise return provided value."""
     if ask:
         return getpass.getpass(prompt=prompt)
     return provided
 
 
-def _warn_cli_password(password: str | None, name: str, ask_flag: str, env_var: str) -> None:
+def _warn_cli_password(
+    password: str | None, name: str, ask_flag: str, env_var: str
+) -> None:
     """Log security warning if password was provided via CLI argument."""
     if password:
         logger.warning(
@@ -140,10 +152,20 @@ def handle_passwords(
         environment variables for better security.
     """
     # SECURITY WARNING: CLI password arguments are visible in shell history and ps output
-    _warn_cli_password(login_pass, "Password", "--ask-login-pass", "MAILTRACE_SSH_PASSWORD")
-    _warn_cli_password(sudo_pass, "Sudo password", "--ask-sudo-pass", "MAILTRACE_SUDO_PASSWORD")
     _warn_cli_password(
-        opensearch_pass, "OpenSearch password", "--ask-opensearch-pass", "MAILTRACE_OPENSEARCH_PASSWORD"
+        login_pass, "Password", "--ask-login-pass", "MAILTRACE_SSH_PASSWORD"
+    )
+    _warn_cli_password(
+        sudo_pass,
+        "Sudo password",
+        "--ask-sudo-pass",
+        "MAILTRACE_SUDO_PASSWORD",
+    )
+    _warn_cli_password(
+        opensearch_pass,
+        "OpenSearch password",
+        "--ask-opensearch-pass",
+        "MAILTRACE_OPENSEARCH_PASSWORD",
     )
 
     if config.method == Method.SSH:
@@ -152,12 +174,18 @@ def handle_passwords(
         )
         config.ssh_config.password = login_pass or config.ssh_config.password
         if not config.ssh_config.password:
-            logger.warning("Empty login password - no password will be used for login")
+            logger.warning(
+                "Empty login password - no password will be used for login"
+            )
 
-        sudo_pass = _prompt_password("Enter sudo password: ", ask_sudo_pass, sudo_pass)
+        sudo_pass = _prompt_password(
+            "Enter sudo password: ", ask_sudo_pass, sudo_pass
+        )
         config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
         if not config.ssh_config.sudo_pass:
-            logger.warning("Empty sudo password - no password will be used for sudo")
+            logger.warning(
+                "Empty sudo password - no password will be used for sudo"
+            )
 
     elif config.method == Method.OPENSEARCH:
         opensearch_pass = _prompt_password(
@@ -171,7 +199,9 @@ def handle_passwords(
                 "Empty opensearch password - no password will be used for opensearch"
             )
     else:
-        logger.warning(f"Unknown method: {config.method}. No password handling.")
+        logger.warning(
+            f"Unknown method: {config.method}. No password handling."
+        )
 
 
 def query_and_print_logs(
@@ -217,20 +247,16 @@ def query_and_print_logs(
     for mid in message_ids:
         logger.info("Querying by message_id: %s", mid)
         mid_logs = aggregator.query_by(LogQuery(message_id=mid))
-        all_queue_ids.update(
-            log.mail_id for log in mid_logs if log.mail_id
-        )
+        all_queue_ids.update(log.mail_id for log in mid_logs if log.mail_id)
 
     # Step 3: batch fetch ALL queue-IDs at once (no time restriction)
     logs_by_id: dict[str, tuple[str, list[LogEntry]]] = {}
-    batch_logs = aggregator.query_by(
-        LogQuery(mail_ids=list(all_queue_ids))
-    )
+    batch_logs = aggregator.query_by(LogQuery(mail_ids=list(all_queue_ids)))
     for entry in batch_logs:
         if entry.mail_id and entry.mail_id in all_queue_ids:
-            logs_by_id.setdefault(
-                entry.mail_id, (entry.hostname, [])
-            )[1].append(entry)
+            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[
+                1
+            ].append(entry)
 
     # Step 4: fallback for any initial IDs not covered
     for mail_id in initial_mail_ids:
@@ -297,12 +323,15 @@ def trace_mail_loop(
 
         # If auto_continue is enabled, automatically continue to the next hop
         if config.auto_continue:
-            logger.info(f"Auto-continue enabled. Continuing to {result.relay_host}")
+            logger.info(
+                f"Auto-continue enabled. Continuing to {result.relay_host}"
+            )
             trace_next_hop_ans = "y"
         else:
             print(
                 f"Trace next hop: {result.relay_host}? (Y/n/local/<next hop>): ",
-                end="", flush=True,
+                end="",
+                flush=True,
             )
             trace_next_hop_ans: str = input().lower()
 
@@ -380,7 +409,9 @@ def run(
         return
 
     host_for_trace = logs_by_id[trace_id][0]
-    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, host_for_trace)
+    trace_mail_loop(
+        trace_id, logs_by_id, aggregator_class, config, host_for_trace
+    )
 
 
 @cli.command()

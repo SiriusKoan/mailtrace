@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -13,6 +14,8 @@ from mailtrace.utils import get_hosts
 
 if TYPE_CHECKING:
     from mailtrace.mx_discovery import MXDiscovery
+
+_logger = logging.getLogger("mailtrace")
 
 # Valid log levels for configuration
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -94,7 +97,8 @@ class SSHConfig:
         return HostConfig(
             log_files=host_config.log_files or self.host_config.log_files,
             log_parser=host_config.log_parser or self.host_config.log_parser,
-            time_format=host_config.time_format or self.host_config.time_format,
+            time_format=host_config.time_format
+            or self.host_config.time_format,
         )
 
 
@@ -102,35 +106,68 @@ class SSHConfig:
 class OpenSearchMappingConfig:
     """Mapping of application field names to OpenSearch field names.
 
+    Fields are classified as:
+    - Required: must be configured (timestamp, message, hostname)
+    - Optional with fallback: falls back to message-text parsing if None
+    - Optional enrichment: skipped in queries if None
+
     Attributes:
-        facility: OpenSearch field for log facility
-        hostname: OpenSearch field for host name
-        message: OpenSearch field for log message
-        timestamp: OpenSearch field for log timestamp
-        service: OpenSearch field for service name
-        queueid: OpenSearch field for queue ID
-        queued_as: OpenSearch field for queued as
-        mail_id: OpenSearch field for mail ID
-        message_id: OpenSearch field for RFC 2822 Message-ID header
-        relay_host: OpenSearch field for relay hostname
-        relay_ip: OpenSearch field for relay IP address
-        relay_port: OpenSearch field for relay port number
-        smtp_code: OpenSearch field for SMTP return code
+        facility: OpenSearch field for log facility (optional enrichment)
+        hostname: OpenSearch field for host name (required)
+        message: OpenSearch field for log message (required)
+        timestamp: OpenSearch field for log timestamp (required)
+        service: OpenSearch field for service name (optional enrichment)
+        queueid: OpenSearch field for queue ID (optional with fallback)
+        queued_as: OpenSearch field for queued as (optional with fallback)
+        mail_id: OpenSearch field for mail ID (optional with fallback)
+        message_id: OpenSearch field for RFC 2822 Message-ID header (optional with fallback)
+        relay_host: OpenSearch field for relay hostname (optional enrichment)
+        relay_ip: OpenSearch field for relay IP address (optional enrichment)
+        relay_port: OpenSearch field for relay port number (optional enrichment)
+        smtp_code: OpenSearch field for SMTP return code (optional enrichment)
     """
 
-    facility: str = "log.syslog.facility.name"
+    # Required fields
     hostname: str = "host.name"
     message: str = "message"
     timestamp: str = "@timestamp"
-    service: str = "log.syslog.appname"
-    queueid: str = "log.syslog.structured_data.queueid"
-    queued_as: str = "log.syslog.structured_data.queued_as"
-    mail_id: str = ""
-    message_id: str = ""
-    relay_host: str = ""
-    relay_ip: str = ""
-    relay_port: str = ""
-    smtp_code: str = ""
+
+    # Optional with fallback (falls back to message-text parsing)
+    queueid: str | None = None
+    queued_as: str | None = None
+    mail_id: str | None = None
+    message_id: str | None = None
+
+    # Optional enrichment (skipped if None)
+    facility: str | None = None
+    service: str | None = None
+    relay_host: str | None = None
+    relay_ip: str | None = None
+    relay_port: str | None = None
+    smtp_code: str | None = None
+
+    def __post_init__(self) -> None:
+        # Validate required fields
+        for field_name in ("timestamp", "message", "hostname"):
+            if not getattr(self, field_name):
+                raise ValueError(
+                    f"Required mapping field '{field_name}' must be configured"
+                )
+
+        # Warn about missing nice-to-have fields
+        _nice_to_have = {
+            "facility": "facility filtering won't be applied",
+            "service": "service name won't appear in parsed output",
+            "queueid": "queue ID lookups will fall back to message text search",
+            "message_id": "Message-ID lookups will fall back to message text search",
+        }
+        for field_name, consequence in _nice_to_have.items():
+            if not getattr(self, field_name):
+                _logger.warning(
+                    "Mapping field '%s' is not configured: %s",
+                    field_name,
+                    consequence,
+                )
 
 
 @dataclass
@@ -175,7 +212,9 @@ class OpenSearchConfig:
     index: str = ""
     time_zone: str = "+00:00"
     timeout: int = 10
-    mapping: OpenSearchMappingConfig = field(default_factory=OpenSearchMappingConfig)
+    mapping: OpenSearchMappingConfig = field(
+        default_factory=OpenSearchMappingConfig
+    )
 
     def __post_init__(self) -> None:
         # Convert dict mapping to OpenSearchMappingConfig if needed
@@ -205,7 +244,9 @@ class Config:
     domain: str = ""
     auto_continue: bool = False
     mx_discovery: MXDiscoveryConfig = field(default_factory=MXDiscoveryConfig)
-    _mx_resolver: MXDiscovery | None = field(default=None, init=False, repr=False)
+    _mx_resolver: MXDiscovery | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -254,7 +295,9 @@ def _load_env_passwords(config_data: dict) -> None:
     if "opensearch_config" in config_data:
         os_config = config_data["opensearch_config"]
         if not os_config.get("password"):
-            os_config["password"] = os.getenv("MAILTRACE_OPENSEARCH_PASSWORD", "")
+            os_config["password"] = os.getenv(
+                "MAILTRACE_OPENSEARCH_PASSWORD", ""
+            )
 
     # SSH passwords
     if "ssh_config" in config_data:
