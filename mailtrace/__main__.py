@@ -11,6 +11,7 @@ from mailtrace.aggregator import (
 )
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.doctor import check_config
 from mailtrace.flow_check import check_cluster_flow
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -58,16 +59,24 @@ COMMON_OPTIONS = [
         help="The keyword, can be email address, domain, etc.",
         multiple=True,
     ),
-    click.option("--login-pass", type=str, required=False, help="The login password"),
-    click.option("--sudo-pass", type=str, required=False, help="The sudo password"),
+    click.option(
+        "--login-pass", type=str, required=False, help="The login password"
+    ),
+    click.option(
+        "--sudo-pass", type=str, required=False, help="The sudo password"
+    ),
     click.option(
         "--opensearch-pass",
         type=str,
         required=False,
         help="The opensearch password",
     ),
-    click.option("--ask-login-pass", is_flag=True, help="Ask for login password"),
-    click.option("--ask-sudo-pass", is_flag=True, help="Ask for sudo password"),
+    click.option(
+        "--ask-login-pass", is_flag=True, help="Ask for login password"
+    ),
+    click.option(
+        "--ask-sudo-pass", is_flag=True, help="Ask for sudo password"
+    ),
     click.option(
         "--ask-opensearch-pass",
         is_flag=True,
@@ -95,7 +104,9 @@ def cli():
     pass
 
 
-def _prompt_password(prompt: str, ask: bool, provided: str | None) -> str | None:
+def _prompt_password(
+    prompt: str, ask: bool, provided: str | None
+) -> str | None:
     """Prompt for password if asked, otherwise return provided value."""
     if ask:
         return getpass.getpass(prompt=prompt)
@@ -167,12 +178,18 @@ def handle_passwords(
         )
         config.ssh_config.password = login_pass or config.ssh_config.password
         if not config.ssh_config.password:
-            logger.warning("Empty login password - no password will be used for login")
+            logger.warning(
+                "Empty login password - no password will be used for login"
+            )
 
-        sudo_pass = _prompt_password("Enter sudo password: ", ask_sudo_pass, sudo_pass)
+        sudo_pass = _prompt_password(
+            "Enter sudo password: ", ask_sudo_pass, sudo_pass
+        )
         config.ssh_config.sudo_pass = sudo_pass or config.ssh_config.sudo_pass
         if not config.ssh_config.sudo_pass:
-            logger.warning("Empty sudo password - no password will be used for sudo")
+            logger.warning(
+                "Empty sudo password - no password will be used for sudo"
+            )
 
     elif config.method == Method.OPENSEARCH:
         opensearch_pass = _prompt_password(
@@ -186,7 +203,9 @@ def handle_passwords(
                 "Empty opensearch password - no password will be used for opensearch"
             )
     else:
-        logger.warning(f"Unknown method: {config.method}. No password handling.")
+        logger.warning(
+            f"Unknown method: {config.method}. No password handling."
+        )
 
 
 def query_and_print_logs(
@@ -239,7 +258,9 @@ def query_and_print_logs(
     batch_logs = aggregator.query_by(LogQuery(mail_ids=list(all_queue_ids)))
     for entry in batch_logs:
         if entry.mail_id and entry.mail_id in all_queue_ids:
-            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[1].append(entry)
+            logs_by_id.setdefault(entry.mail_id, (entry.hostname, []))[
+                1
+            ].append(entry)
 
     # Step 4: fallback for any initial IDs not covered
     for mail_id in initial_mail_ids:
@@ -306,7 +327,9 @@ def trace_mail_loop(
 
         # If auto_continue is enabled, automatically continue to the next hop
         if config.auto_continue:
-            logger.info(f"Auto-continue enabled. Continuing to {result.relay_host}")
+            logger.info(
+                f"Auto-continue enabled. Continuing to {result.relay_host}"
+            )
             trace_next_hop_ans = "y"
         else:
             print(
@@ -390,7 +413,9 @@ def run(
         return
 
     host_for_trace = logs_by_id[trace_id][0]
-    trace_mail_loop(trace_id, logs_by_id, aggregator_class, config, host_for_trace)
+    trace_mail_loop(
+        trace_id, logs_by_id, aggregator_class, config, host_for_trace
+    )
 
 
 @cli.command()
@@ -595,6 +620,62 @@ def flow_check(
             f.write(result_json)
     else:
         print(result_json)
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(),
+    required=False,
+    help="Path to configuration file",
+)
+def doctor(config_path: str | None) -> None:
+    """Validate configuration and report potential issues."""
+    config = load_config(config_path)
+    configure_logging(config)
+    result = check_config(config)
+
+    # Print method
+    click.echo(f"Method: {result['method']}")
+    click.echo()
+
+    # Print errors
+    if result["errors"]:
+        click.secho("Errors:", fg="red", bold=True)
+        for err in result["errors"]:
+            click.secho(
+                f"  x {err['field']}: {err['message']}",
+                fg="red",
+            )
+        click.echo()
+
+    # Print warnings
+    if result["warnings"]:
+        click.secho("Warnings:", fg="yellow", bold=True)
+        for warn in result["warnings"]:
+            click.secho(
+                f"  ! {warn['field']}: {warn['message']}",
+                fg="yellow",
+            )
+        click.echo()
+
+    # Print configured fields
+    click.secho("Configured mapping fields:", bold=True)
+    for field_name in result["configured_fields"]:
+        click.secho(f"  + {field_name}", fg="green")
+
+    # Print unconfigured fields
+    if result["unconfigured_fields"]:
+        click.echo()
+        click.secho("Unconfigured mapping fields:", bold=True)
+        for field_name in result["unconfigured_fields"]:
+            click.echo(f"  - {field_name}")
+
+    # Exit with error code if critical errors found
+    if result["errors"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
