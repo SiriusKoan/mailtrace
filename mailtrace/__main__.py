@@ -10,7 +10,7 @@ from mailtrace.cli import (
     trace_mail_flow_to_file,
     trace_mail_loop,
 )
-from mailtrace.config import Config, load_config
+from mailtrace.config import Config, Method, load_config
 from mailtrace.utils import time_validation
 
 logger = logging.getLogger("mailtrace")
@@ -202,6 +202,91 @@ def graph(
         time=time,
         time_range=time_range,
         output_file=output,
+    )
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(exists=True),
+    required=False,
+    help="Path to configuration file",
+)
+@click.option(
+    "--otel-endpoint",
+    type=str,
+    default="http://localhost:4317",
+    help="OpenTelemetry OTLP endpoint for sending traces (default: http://localhost:4317)",
+)
+@click.option(
+    "--interval",
+    type=int,
+    default=60,
+    help="Interval in seconds between log queries (default: 60)",
+)
+@click.option(
+    "--opensearch-pass",
+    type=str,
+    required=False,
+    help="The opensearch password",
+)
+@click.option(
+    "--ask-opensearch-pass",
+    is_flag=True,
+    help="Ask for opensearch password",
+)
+def tracing(
+    config_path: str | None,
+    otel_endpoint: str,
+    interval: int,
+    opensearch_pass: str | None,
+    ask_opensearch_pass: bool,
+) -> None:
+    """Continuously generate traces from OpenSearch logs and send to OTLP endpoint.
+
+    This command queries logs from all hosts in the clusters configuration,
+    groups them by message ID to maintain email chains across fetches,
+    and generates distributed traces sent to the configured OTLP endpoint.
+
+    Uses OpenSearch configuration from the config file.
+    """
+    config = load_config(config_path)
+    configure_logging(config)
+
+    # Warn if method is not OpenSearch, but allow usage with OpenSearch config
+    if config.method != Method.OPENSEARCH:
+        logger.warning(
+            f"Config method is {config.method.value}, but tracing will use "
+            "OpenSearch configuration. Make sure opensearch_config is properly "
+            "configured in your config file."
+        )
+
+    # Handle OpenSearch password
+    from mailtrace.cli.utils import prompt_password
+
+    opensearch_pass = config.opensearch_config.password or prompt_password(
+        "Enter OpenSearch password: ",
+        ask_opensearch_pass,
+        opensearch_pass,
+    )
+    if opensearch_pass:
+        config.opensearch_config.password = opensearch_pass
+
+    if not config.opensearch_config.password:
+        raise ValueError(
+            "OpenSearch password is required. Use --opensearch-pass or --ask-opensearch-pass"
+        )
+
+    logger.info("Starting continuous tracing from OpenSearch...")
+
+    from mailtrace.cli.tracing import run_continuous_tracing
+
+    run_continuous_tracing(
+        config=config,
+        otel_endpoint=otel_endpoint,
+        interval_seconds=interval,
     )
 
 

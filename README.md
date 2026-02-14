@@ -56,6 +56,89 @@ Password-related options are also available:
 
 To help prevent password leakage, you can use the following flags to enter passwords interactively at the prompt: `--ask-login-pass`, `--ask-sudo-pass`, `--ask-opensearch-pass`.
 
+### Continuous Tracing with OpenTelemetry
+
+The `tracing` command continuously queries logs from OpenSearch and generates distributed traces sent to an OpenTelemetry endpoint:
+
+```bash
+mailtrace tracing \
+    -c ~/.config/mailtrace.yaml \
+    --otel-endpoint http://localhost:4317 \
+    --interval 60 \
+    --ask-opensearch-pass
+```
+
+#### Features
+
+- **Continuous monitoring**: Automatically queries logs at regular intervals
+- **Message ID tracking**: Uses message ID as trace ID to maintain email chains across multiple query cycles
+  - The message ID is hashed to generate a consistent 128-bit trace ID
+  - This ensures that logs from the same email, even if fetched at different times, belong to the same trace
+  - For example, if an email has 3 hops and logs from hops 1-2 are fetched in one cycle, and hop 3 in the next cycle, they will still be part of the same trace
+- **Queue ID tracking**: Uses queue ID as span ID for consistent span identification
+  - Each queue ID is hashed to generate a consistent 64-bit span ID
+  - This allows spans to be properly correlated across different fetch cycles
+- **Multi-host support**: Queries all hosts defined in the clusters configuration
+- **Automatic trace generation**: Groups logs by message ID and generates OpenTelemetry traces
+
+#### Parameters
+
+- `-c, --config-path`: Path to configuration file
+- `--otel-endpoint`: OpenTelemetry OTLP endpoint (default: `http://localhost:4317`)
+- `--interval`: Interval in seconds between log queries (default: `60`)
+- `--opensearch-pass`: OpenSearch password
+- `--ask-opensearch-pass`: Prompt for OpenSearch password interactively
+
+#### Requirements
+
+- Requires OpenSearch configuration in the config file
+  - If `method` is not set to `opensearch`, a warning will be logged but the command will still use the OpenSearch configuration
+  - Make sure `opensearch_config` section is properly configured with host, credentials, index, and field mappings
+- Requires hosts to be configured in the `clusters` section
+- Install tracing dependencies: `uv sync --group tracing`
+
+#### Example Workflow
+
+1. Set up your configuration with OpenSearch and clusters:
+
+```yaml
+method: opensearch
+clusters:
+  mail-cluster:
+    - smtp-relay-1.example.com
+    - smtp-relay-2.example.com
+    - mail-delivery.example.com
+opensearch_config:
+  host: localhost
+  port: 9200
+  username: admin
+  index: mail-logs-*
+  # ... other opensearch settings
+```
+
+2. Start a Jaeger instance to receive traces:
+
+```bash
+docker run -d --name jaeger \
+  -p 4317:4317 \
+  -p 16686:16686 \
+  jaegertracing/all-in-one:latest
+```
+
+3. Run continuous tracing:
+
+```bash
+mailtrace tracing \
+    -c ~/.config/mailtrace.yaml \
+    --otel-endpoint http://localhost:4317 \
+    --interval 60 \
+    --ask-opensearch-pass
+```
+
+4. View traces in Jaeger UI at `http://localhost:16686`
+
+The tracer will continuously fetch logs every 60 seconds, group them by message ID to maintain complete email chains even if logs are split across multiple fetches, and send the generated traces to Jaeger.
+
 ### Automatic Tracing with Graph Generation
 
 The `trace` command automatically traces the complete mail flow and generates a Graphviz graph showing the routing path.
@@ -72,7 +155,7 @@ The generated graph uses a clean, topology-focused format:
 Generate a `.dot` file:
 
 ```bash
-mailtrace trace \
+mailtrace graph \
     -c ~/.config/mailtrace.yaml \
     -h mail.example.com \
     -k user@example.com \
@@ -92,7 +175,7 @@ dot -Tpng mail_trace.dot -o mail_trace.png
 Omit the `-o` option to output the graph directly to stdout:
 
 ```bash
-mailtrace trace \
+mailtrace graph \
     -c ~/.config/mailtrace.yaml \
     -h mail.example.com \
     -k user@example.com \
@@ -103,7 +186,7 @@ mailtrace trace \
 Or explicitly use `-o -` for stdout:
 
 ```bash
-mailtrace trace \
+mailtrace graph \
     -c ~/.config/mailtrace.yaml \
     -h mail.example.com \
     -k user@example.com \
@@ -117,7 +200,7 @@ mailtrace trace \
 You can pipe the output directly to Graphviz for instant visualization:
 
 ```bash
-mailtrace trace \
+mailtrace graph \
     -c ~/.config/mailtrace.yaml \
     -h mail.example.com \
     -k user@example.com \
@@ -128,7 +211,7 @@ mailtrace trace \
 Or to SVG for scalable graphics:
 
 ```bash
-mailtrace trace \
+mailtrace graph \
     -c ~/.config/mailtrace.yaml \
     -h mail.example.com \
     -k user@example.com \
@@ -421,6 +504,49 @@ clusters:
 ```
 
 Then you can trace across a cluster by specifying the cluster name instead of individual hostnames.
+
+## Installation
+
+### Standard Installation
+
+```bash
+pip install mailtrace
+```
+
+### With Tracing Support
+
+To use the continuous tracing feature, install with the tracing dependency group:
+
+```bash
+# Using uv
+uv sync --group tracing
+
+# Using pip (after cloning the repository)
+pip install -e ".[tracing]"
+```
+
+The tracing dependencies include:
+- `opentelemetry-api`: OpenTelemetry API
+- `opentelemetry-sdk`: OpenTelemetry SDK
+- `opentelemetry-exporter-otlp-proto-grpc`: OTLP gRPC exporter for sending traces
+
+### Module Structure
+
+The tracing command is organized into separate modules for maintainability:
+
+- **`models.py`**: Data models for email traces (`EmailTrace` class)
+- **`otel.py`**: OpenTelemetry setup and trace generation functions
+  - OTLP exporter setup
+  - Tracer creation for hosts
+  - Trace ID and span ID generation from message/queue IDs
+  - Distributed trace span creation
+- **`query.py`**: Log querying and grouping logic
+  - Query logs from all hosts in clusters
+  - Group logs by message ID to maintain email chains
+- **`continuous.py`**: Main continuous monitoring loop
+  - Periodic log querying at configured intervals
+  - Trace generation and sending to OTLP endpoint
+- **`__init__.py`**: Module re-exports for public API
 
 ## Environment Variables
 

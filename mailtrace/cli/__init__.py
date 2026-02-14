@@ -24,3 +24,7 @@ __all__ = [
     "print_blue",
     "print_red",
 ]
+
+# Tracing module is imported dynamically to avoid requiring OpenTelemetry dependencies
+# for users who don't need the tracing feature. Import it with:
+# from mailtrace.cli.tracing import run_continuous_tracing

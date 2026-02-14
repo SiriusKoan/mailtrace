@@ -46,7 +46,12 @@ opensearch_config:
     service: "log.syslog.appname"
     queueid: "postfix.queueid.keyword"
     queued_as: "postfix.queued_as.keyword"
+    mail_id: "postfix.mail_id.keyword"
 clusters:
   mx-cluster:
-    - mx-cluster.mydomain.com
-    - mx-cluster.mydomain.com
+    - mx1.mydomain.com
+    - mx2.mydomain.com
+  mail-cluster:
+    - smtp-relay-1.example.com
+    - smtp-relay-2.example.com
+    - mail-delivery.example.com
