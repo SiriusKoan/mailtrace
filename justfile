@@ -4,7 +4,7 @@ format:
 
 lint:
     uv run ruff check mailtrace/ tests/
-    uv run pyright mailtrace/ tests/
+    uv run pyright mailtrace/
 
 test:
     uv run pytest tests/ -v

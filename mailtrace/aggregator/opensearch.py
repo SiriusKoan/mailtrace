@@ -168,10 +168,11 @@ class OpenSearch(LogAggregator):
                     minimum_should_match=1,
                 )
 
-        logger.debug(f"Query: {search.to_dict()}")
+        logger.debug("Query: %s", search.to_dict())
         hits = list(search.scan())
         logger.debug(
-            f"Opensearch Response:\n{[hit.to_dict() for hit in hits]}"
+            "Opensearch Response:\n%s",
+            [hit.to_dict() for hit in hits],
         )
 
         parser = OpensearchParser(mapping=self.config.mapping)

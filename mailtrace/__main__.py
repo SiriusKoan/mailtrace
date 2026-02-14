@@ -204,7 +204,7 @@ def handle_passwords(
             )
     else:
         logger.warning(
-            f"Unknown method: {config.method}. No password handling."
+            "Unknown method: %s. No password handling.", config.method
         )
 
 
@@ -299,7 +299,7 @@ def trace_mail_loop(
         host: The current host.
     """
     if trace_id not in logs_by_id:
-        logger.info(f"Trace ID {trace_id} not found in logs")
+        logger.info("Trace ID %s not found in logs", trace_id)
         return
 
     while True:
@@ -328,7 +328,8 @@ def trace_mail_loop(
         # If auto_continue is enabled, automatically continue to the next hop
         if config.auto_continue:
             logger.info(
-                f"Auto-continue enabled. Continuing to {result.relay_host}"
+                "Auto-continue enabled. Continuing to %s",
+                result.relay_host,
             )
             trace_next_hop_ans = "y"
         else:
@@ -392,7 +393,7 @@ def run(
         logs_by_id = query_and_print_logs(aggregator, key, time, time_range)
     elif config.method == Method.SSH:
         hosts: list[str] = config.cluster_to_hosts(start_host) or [start_host]
-        logger.info(f"Using hosts: {hosts}")
+        logger.info("Using hosts: %s", hosts)
         for host in hosts:
             print_blue(f"== Querying host: {host} ==")
             aggregator = aggregator_class(host, config)
@@ -409,7 +410,7 @@ def run(
     trace_id = input()
     logger.info("User selected trace ID: %s", trace_id)
     if trace_id not in logs_by_id:
-        logger.info(f"Trace ID {trace_id} not found in logs")
+        logger.info("Trace ID %s not found in logs", trace_id)
         return
 
     host_for_trace = logs_by_id[trace_id][0]
@@ -511,7 +512,7 @@ def mcp(config_path: str | None, transport: str, port: int) -> None:
     config = load_config(config_path)
     configure_logging(config)
 
-    logger.info(f"Starting MCP server with {transport} transport...")
+    logger.info("Starting MCP server with %s transport...", transport)
     run_server(config, transport=transport, port=port)
 
 

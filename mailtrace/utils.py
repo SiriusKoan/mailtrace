@@ -108,7 +108,7 @@ def get_hosts(hostnames: list[str], domain: str) -> list[str]:
                 hosts.append(f"{hostname}.{domain}")
 
     result = list(set(hosts))
-    logger.debug(f"Generated hosts: {result}")
+    logger.debug("Generated hosts: %s", result)
     return result
 
 

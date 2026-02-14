@@ -82,12 +82,12 @@ class SSHHost(LogAggregator):
             try:
                 with open(config_path) as f:
                     ssh_config.parse(f)
-                logger.debug(f"SSH config file loaded: {config_path}")
+                logger.debug("SSH config file loaded: %s", config_path)
             except FileNotFoundError:
-                logger.warning(f"SSH config file not found: {config_path}")
+                logger.warning("SSH config file not found: %s", config_path)
 
             if ssh_host_config := ssh_config.lookup(self.host):
-                logger.debug(f"SSH config file found for {self.host}")
+                logger.debug("SSH config file found for %s", self.host)
                 # Merge SSH config settings with our parameters
                 # SSH config values take precedence for connection settings
                 # ssh_host_config = ssh_config.lookup(self.host)
@@ -104,7 +104,8 @@ class SSHHost(LogAggregator):
                     ]
             else:
                 logger.debug(
-                    f"SSH config file not found for {self.host}, using Mailtrace config settings."
+                    "SSH config file not found for %s, using Mailtrace config settings.",
+                    self.host,
                 )
 
         self.client.connect(**connect_params)
@@ -126,7 +127,7 @@ class SSHHost(LogAggregator):
         run_with_sudo = sudo or self.ssh_config.sudo
         if run_with_sudo:
             command = f"sudo -S -p '' {command}"
-        logger.debug(f"Executing command: {command}")
+        logger.debug("Executing command: %s", command)
         stdin, stdout, stderr = self.client.exec_command(command)
         if run_with_sudo:
             stdin.write(self.ssh_config.sudo_pass + "\n")

@@ -63,4 +63,3 @@ reportMissingImports = "error"
 [tool.setuptools.packages.find]
 include = ["mailtrace*"]
 exclude = ["demo*", "dev*"]
-
