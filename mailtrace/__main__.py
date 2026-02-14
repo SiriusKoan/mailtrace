@@ -11,6 +11,7 @@ from mailtrace.aggregator import (
 )
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config, Method, load_config
+from mailtrace.doctor import check_config
 from mailtrace.flow_check import check_cluster_flow
 from mailtrace.models import LogQuery
 from mailtrace.parser import LogEntry
@@ -616,6 +617,62 @@ def flow_check(
             f.write(result_json)
     else:
         print(result_json)
+
+
+@cli.command()
+@click.option(
+    "-c",
+    "--config-path",
+    "config_path",
+    type=click.Path(),
+    required=False,
+    help="Path to configuration file",
+)
+def doctor(config_path: str | None) -> None:
+    """Validate configuration and report potential issues."""
+    config = load_config(config_path)
+    configure_logging(config)
+    result = check_config(config)
+
+    # Print method
+    click.echo(f"Method: {result['method']}")
+    click.echo()
+
+    # Print errors
+    if result["errors"]:
+        click.secho("Errors:", fg="red", bold=True)
+        for err in result["errors"]:
+            click.secho(
+                f"  x {err['field']}: {err['message']}",
+                fg="red",
+            )
+        click.echo()
+
+    # Print warnings
+    if result["warnings"]:
+        click.secho("Warnings:", fg="yellow", bold=True)
+        for warn in result["warnings"]:
+            click.secho(
+                f"  ! {warn['field']}: {warn['message']}",
+                fg="yellow",
+            )
+        click.echo()
+
+    # Print configured fields
+    click.secho("Configured mapping fields:", bold=True)
+    for field_name in result["configured_fields"]:
+        click.secho(f"  + {field_name}", fg="green")
+
+    # Print unconfigured fields
+    if result["unconfigured_fields"]:
+        click.echo()
+        click.secho("Unconfigured mapping fields:", bold=True)
+        for field_name in result["unconfigured_fields"]:
+            click.echo(f"  - {field_name}")
+
+    # Exit with error code if critical errors found
+    if result["errors"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
