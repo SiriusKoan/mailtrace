@@ -131,7 +131,7 @@ class LogParser(ABC):
     @staticmethod
     def _enrich_from_message(entry: LogEntry) -> LogEntry:
         """
-        Extract relay info from message if not already present.
+        Extract relay info and delay info from message if not already present.
 
         Args:
             entry: The LogEntry to enrich
@@ -146,6 +146,7 @@ class LogParser(ABC):
                 entry.relay_port,
                 entry.smtp_code,
                 entry.queued_as,
+                entry.delays,
             ]
         ):
             return entry  # Already complete
@@ -162,6 +163,7 @@ class LogParser(ABC):
                 entry.relay_port = result.relay_port
             if entry.smtp_code is None:
                 entry.smtp_code = result.smtp_code
+
         return entry
 
 

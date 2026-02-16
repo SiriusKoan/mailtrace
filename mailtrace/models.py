@@ -16,11 +16,9 @@ class LogEntry:
         relay_ip: IP address of the relay, if available
         relay_port: Port number of the relay connection, if available
         smtp_code: SMTP response code if relay information was extracted, if available
-        delay: Total message delay in seconds, if available
-        delay_before_qmgr: Delay before queue manager in seconds, if available
-        delay_in_qmgr: Delay in queue manager in seconds, if available
-        delay_conn_setup: Delay in connection setup in seconds, if available
-        delay_transmission: Delay in transmission in seconds, if available
+        delays: Dictionary of delay information, where keys are delay names and values are delay lengths in seconds.
+                For postfix: contains 'before_qmgr', 'in_qmgr', 'conn_setup', 'transmission'
+                For exim: contains 'receive_time', 'deliver_time', 'queue_time'
     """
 
     # todo: datetime field should be converted to datetime object
@@ -34,11 +32,7 @@ class LogEntry:
     relay_ip: str | None = None
     relay_port: int | None = None
     smtp_code: int | None = None
-    delay: float | None = None
-    delay_before_qmgr: float | None = None
-    delay_in_qmgr: float | None = None
-    delay_conn_setup: float | None = None
-    delay_transmission: float | None = None
+    delays: dict[str, float | None] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"

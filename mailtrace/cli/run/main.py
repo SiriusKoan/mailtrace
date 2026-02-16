@@ -1,6 +1,7 @@
 """Interactive mail tracing functionality for the 'run' command."""
 
 import logging
+import sys
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.config import Config
@@ -25,6 +26,7 @@ def print_logs_by_id(
         for log in logs:
             print(str(log))
         print_blue("==============\n")
+    sys.stdout.flush()
 
 
 def trace_mail_loop(

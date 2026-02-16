@@ -97,7 +97,9 @@ class OpenSearch(LogAggregator):
             for keyword in query.keywords:
                 search = search.query(
                     "wildcard",
-                    **{self.config.mapping.message: f"*{keyword.lower()}*"},
+                    **{
+                        f"{self.config.mapping.message}.keyword": f"*{keyword}*"
+                    },
                 )
 
         if query.mail_id:
@@ -109,7 +111,7 @@ class OpenSearch(LogAggregator):
                 search = search.query(
                     "wildcard",
                     **{
-                        self.config.mapping.message: f"{query.mail_id.lower()}*"
+                        f"{self.config.mapping.message}.keyword": f"*{query.mail_id}*"
                     },
                 )
 
