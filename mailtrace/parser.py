@@ -4,10 +4,22 @@ from typing import Any
 
 from mailtrace.config import OpenSearchMappingConfig
 from mailtrace.models import LogEntry
-from mailtrace.utils import analyze_log_from_message
+from mailtrace.utils import RelayResult, analyze_log_from_message
 
-# Mail ID validation pattern (alphanumeric only)
-_MAIL_ID_RE = re.compile(r"^[0-9A-Z]+$")
+# Mail ID validation pattern (alphanumeric and hyphens, supports both Postfix and Exim formats)
+_MAIL_ID_RE = re.compile(r"^[0-9A-Za-z\-]+$")
+
+# Regex patterns for parsing Postfix log messages
+_SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
+_QUEUED_AS_RE = re.compile(r"(?:queued as|id=)(?P<id>[0-9A-Za-z\-]+)")
+_RELAY_RE = re.compile(
+    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
+)
+
+# Regex patterns for parsing Exim log messages
+_EXIM_RELAY_RE = re.compile(
+    r"=>\s+\S+@\S+.*H=(?P<host>[^\s\[]+)\s+\[(?P<ip>[^\]]+)\].*C=\"[^\"]*queued as (?P<id>[0-9A-Za-z\-]+)"
+)
 
 
 def _get_nested_value(data: Any, key: str) -> Any:
@@ -31,6 +43,61 @@ def check_mail_id_valid(mail_id: str) -> bool:
         bool: True if the mail ID contains only alphanumeric characters (0-9, A-Z), False otherwise
     """
     return bool(_MAIL_ID_RE.match(mail_id))
+
+
+def extract_next_mail_id(log_entry: "LogEntry") -> str | None:
+    """Extract the next mail ID from a log entry (structured field or message)."""
+    if log_entry.queued_as:
+        return log_entry.queued_as
+
+    queued_match = _QUEUED_AS_RE.search(log_entry.message)
+    return queued_match.group("id") if queued_match else None
+
+
+def parse_postfix_relay_info(log_entry: "LogEntry") -> RelayResult | None:
+    """Parse relay information from a successful SMTP log entry."""
+    smtp_match = _SMTP_CODE_RE.search(log_entry.message)
+    if not smtp_match:
+        return None
+
+    smtp_code = int(smtp_match.group(1))
+    if smtp_code != 250:
+        return None
+
+    next_mail_id = extract_next_mail_id(log_entry)
+    if not next_mail_id:
+        return None
+
+    relay_match = _RELAY_RE.search(log_entry.message)
+    if not relay_match:
+        return None
+
+    return RelayResult(
+        mail_id=next_mail_id,
+        relay_host=relay_match.group("host"),
+        relay_ip=relay_match.group("ip"),
+        relay_port=int(relay_match.group("port")),
+        smtp_code=smtp_code,
+    )
+
+
+def parse_exim_relay_info(log_entry: "LogEntry") -> RelayResult | None:
+    """Parse relay information from an Exim delivery log entry."""
+    relay_match = _EXIM_RELAY_RE.search(log_entry.message)
+    if not relay_match:
+        return None
+
+    relay_host = relay_match.group("host")
+    relay_ip = relay_match.group("ip")
+    next_mail_id = relay_match.group("id")
+
+    return RelayResult(
+        mail_id=next_mail_id,
+        relay_host=relay_host,
+        relay_ip=relay_ip,
+        relay_port=25,  # Default SMTP port for Exim relay
+        smtp_code=250,  # Implied success from the "queued as" message
+    )
 
 
 class LogParser(ABC):
@@ -322,10 +389,202 @@ class OpensearchParser(LogParser):
         )
 
 
+class EximParser(LogParser):
+    """
+    Parser for Exim4 mail server logs.
+
+    Supports both native Exim format and syslog-wrapped format:
+
+    Native Exim format:
+    2026-02-15 20:46:12.921 [16] 1vrbVs-00000G-2q <= me@siriuskoan.one H=(mailpolicy) [192.168.200.30]:49808
+    2026-02-15 20:46:12.932 [17] 1vrbVs-00000G-2q ** user1@example.com F=<me@siriuskoan.one>: Unrouteable address
+    2026-02-15 20:46:12.961 [17] 1vrbVs-00000G-2q Completed QT=0.077s
+
+    Syslog-wrapped Exim format (RFC 5424):
+    When Exim logs through rsyslog, the format becomes:
+    2026-02-15T23:12:03.626227+08:00 mailer exim: 2026-02-15: 23:12:03 1vrdn1-00000F-1u <= me@siriuskoan.one H=...
+
+    The syslog-wrapped format has:
+    - RFC 5424 timestamp (ISO 8601)
+    - hostname
+    - service "exim:" (note the colon, this is syslog's appname field)
+    - Embedded message: "YYYY-MM-DD: HH:MM:SS mail_id rest_of_message"
+
+    Direction indicators:
+    - <= : Message received
+    - => : Message delivered/relayed
+    - ** : Message failed
+    - Completed : Message completed
+    """
+
+    def parse(self, log: str) -> LogEntry:
+        """
+        Parse an Exim log entry (native or syslog-wrapped format).
+
+        Args:
+            log: The exim log string to parse
+
+        Returns:
+            LogEntry: The parsed log entry
+
+        Raises:
+            ValueError: If log format is invalid or unrecognized
+        """
+        if not log or not log.strip():
+            raise ValueError("Empty log entry")
+
+        # Check if this is syslog-wrapped format (starts with RFC 5424 timestamp)
+        if log[0].isdigit() and "T" in log.split(" ", 1)[0]:
+            # RFC 5424 format: YYYY-MM-DDTHH:MM:SS...
+            # Parse as syslog-wrapped Exim: extract hostname and embedded message
+            return self._parse_syslog_wrapped(log)
+        else:
+            # Native Exim format
+            return self._parse_native_exim(log)
+
+    def _parse_syslog_wrapped(self, log: str) -> LogEntry:
+        """
+        Parse syslog-wrapped Exim format (RFC 5424).
+
+        Format: 2026-02-15T23:12:03.626227+08:00 mailer exim: 2026-02-15: 23:12:03 mail_id ...
+
+        Args:
+            log: The syslog-wrapped log string
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+        # Split: [rfc5424_timestamp, hostname, service:, embedded_message...]
+        parts = log.split(" ", 3)
+        if len(parts) < 4:
+            raise ValueError(f"Invalid syslog-wrapped Exim format: {log}")
+
+        datetime_str = parts[0]  # RFC 5424 timestamp (ISO 8601)
+        hostname = parts[1]
+        # parts[2] is "exim:" - we ignore it
+        embedded_message = parts[3] if len(parts) > 3 else ""
+
+        # Now parse the embedded message: "YYYY-MM-DD: HH:MM:SS mail_id rest_of_message"
+        mail_id, exim_message = self._parse_embedded_exim_message(
+            embedded_message
+        )
+
+        return LogEntry(
+            datetime=datetime_str,
+            hostname=hostname,
+            service="exim4",
+            mail_id=mail_id,
+            message=exim_message,
+        )
+
+    def _parse_native_exim(self, log: str) -> LogEntry:
+        """
+        Parse native Exim format (not syslog-wrapped).
+
+        Format 1: YYYY-MM-DD HH:MM:SS[.mmm] [pid] mail_id rest_of_message
+        Format 2: YYYY-MM-DD HH:MM:SS[.mmm] mail_id rest_of_message
+
+        Args:
+            log: The native Exim log string
+
+        Returns:
+            LogEntry: The parsed log entry
+        """
+        # Split the log line carefully to extract timestamp, mail_id, and message
+        parts = log.split(
+            None, 3
+        )  # Split on whitespace, max 4 parts initially
+        if len(parts) < 2:
+            raise ValueError(f"Invalid native Exim log format: {log}")
+
+        # Parse timestamp (first part: YYYY-MM-DD, second part: HH:MM:SS or HH:MM:SS.mmm)
+        datetime_str = f"{parts[0]} {parts[1]}"
+
+        mail_id = None
+        message = ""
+
+        # Check if parts[2] is a mail_id (format 2) or [pid] (format 1)
+        if len(parts) >= 3:
+            candidate = parts[2]
+
+            # Check if it looks like a mail ID (contains hyphens or is alphanumeric)
+            # Exim mail IDs are typically like: 1vrbVs-00000G-2q
+            if "-" in candidate or check_mail_id_valid(
+                candidate.replace("-", "")
+            ):
+                # Format 2: this is the mail_id
+                mail_id = candidate
+                message = parts[3] if len(parts) > 3 else ""
+            elif candidate.startswith("[") and candidate.endswith("]"):
+                # Format 1: this is [pid], mail_id should be in parts[3]
+                if len(parts) >= 4:
+                    # Need to re-split to get more parts
+                    parts = log.split(None, 4)
+                    candidate = parts[3] if len(parts) > 3 else None
+                    if candidate and (
+                        "-" in candidate
+                        or check_mail_id_valid(candidate.replace("-", ""))
+                    ):
+                        mail_id = candidate
+                        message = parts[4] if len(parts) > 4 else ""
+                    else:
+                        message = " ".join(parts[3:]) if len(parts) > 3 else ""
+            else:
+                # Neither mail_id nor [pid], treat entire rest as message
+                message = " ".join(parts[2:])
+
+        return LogEntry(
+            datetime=datetime_str,
+            hostname="",  # Will be enriched from context or message
+            service="exim4",
+            mail_id=mail_id,
+            message=message,
+        )
+
+    @staticmethod
+    def _parse_embedded_exim_message(message: str) -> tuple[str | None, str]:
+        """
+        Parse embedded Exim message from syslog-wrapped format.
+
+        Format: "YYYY-MM-DD: HH:MM:SS[.mmm] mail_id rest_of_message"
+
+        Example: "2026-02-15: 23:12:03 1vrdn1-00000F-1u <= me@siriuskoan.one ..."
+
+        Args:
+            message: The embedded message string
+
+        Returns:
+            Tuple of (mail_id, remaining_message)
+        """
+        if not message:
+            return None, ""
+
+        # Split on whitespace: parts[0]="YYYY-MM-DD:", parts[1]="HH:MM:SS[.mmm]", parts[2]=mail_id, ...
+        parts = message.split(None, 3)
+        if len(parts) < 3:
+            return None, message
+
+        # parts[0] is "YYYY-MM-DD:" (with colon)
+        # parts[1] is "HH:MM:SS[.mmm]"
+        # parts[2] should be the mail_id
+
+        candidate = parts[2]
+        if candidate and (
+            "-" in candidate or check_mail_id_valid(candidate.replace("-", ""))
+        ):
+            mail_id = candidate
+            # Get the rest of the message (everything after the mail_id)
+            remaining = parts[3] if len(parts) > 3 else ""
+            return mail_id, remaining
+
+        return None, message
+
+
 # Registry of available parsers by name
 PARSERS: dict[str, type[LogParser]] = {
     "SyslogParser": SyslogParser,  # Auto-detect format (default)
     "Rfc5424Parser": Rfc5424Parser,  # Force RFC 5424 (ISO 8601 timestamp)
     "Rfc3164Parser": Rfc3164Parser,  # Force RFC 3164 (BSD syslog)
+    "EximParser": EximParser,  # Exim4 mail server format
     "OpensearchParser": OpensearchParser,
 }

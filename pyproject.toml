@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mailtrace"
 version = "0.2.0"
@@ -13,6 +17,9 @@ dependencies = [
     "pydot>=4.0.1",
     "pyyaml>=6.0.2",
 ]
+
+[tool.setuptools]
+packages = ["mailtrace"]
 
 [project.scripts]
 mailtrace = "mailtrace.__main__:cli"

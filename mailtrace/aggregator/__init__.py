@@ -1,64 +1,25 @@
 import logging
-import re
 
 from mailtrace.aggregator.base import LogAggregator
 from mailtrace.aggregator.opensearch import OpenSearch
 from mailtrace.aggregator.ssh_host import SSHHost
 from mailtrace.config import Config, Method
 from mailtrace.models import LogQuery
-from mailtrace.parser import LogEntry
-from mailtrace.utils import RelayResult
+from mailtrace.parser import (
+    parse_exim_relay_info,
+    parse_postfix_relay_info,
+)
+from mailtrace.utils import RelayResult, print_blue
 
 logger = logging.getLogger("mailtrace")
-
-# Regex patterns for parsing Postfix log messages
-_SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
-_QUEUED_AS_RE = re.compile(r"250.*queued as (?P<id>[0-9A-Z]+)")
-_RELAY_RE = re.compile(
-    r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
-)
 
 # Services that perform mail relay (string constants)
 _RELAY_SERVICES = {
     "postfix/smtp",
     "postfix/lmtp",
+    "exim",
+    "exim4",
 }
-
-
-def _extract_next_mail_id(log_entry: LogEntry) -> str | None:
-    """Extract the next mail ID from a log entry (structured field or message)."""
-    if log_entry.queued_as:
-        return log_entry.queued_as
-
-    queued_match = _QUEUED_AS_RE.search(log_entry.message)
-    return queued_match.group("id") if queued_match else None
-
-
-def _parse_relay_info(log_entry: LogEntry) -> RelayResult | None:
-    """Parse relay information from a successful SMTP log entry."""
-    smtp_match = _SMTP_CODE_RE.search(log_entry.message)
-    if not smtp_match:
-        return None
-
-    smtp_code = int(smtp_match.group(1))
-    if smtp_code != 250:
-        return None
-
-    next_mail_id = _extract_next_mail_id(log_entry)
-    if not next_mail_id:
-        return None
-
-    relay_match = _RELAY_RE.search(log_entry.message)
-    if not relay_match:
-        return None
-
-    return RelayResult(
-        mail_id=next_mail_id,
-        relay_host=relay_match.group("host"),
-        relay_ip=relay_match.group("ip"),
-        relay_port=int(relay_match.group("port")),
-        smtp_code=smtp_code,
-    )
 
 
 def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
@@ -93,14 +54,22 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
     log_entries = aggregator.query_by(LogQuery(mail_id=mail_id))
 
     # Print all log entries
-    print("=== Log Entries ===")
+    print_blue("=== Log Entries ===")
     for log_entry in log_entries:
         print(log_entry)
-        logger.debug("LogEntry: %s", log_entry)
+    print_blue("===================")
+
+    # Analyze log entries to find relay information
+    for log_entry in log_entries:
         if log_entry.service not in _RELAY_SERVICES:
             continue
 
-        result = _parse_relay_info(log_entry)
+        # Try Postfix relay parsing first
+        if log_entry.service in ("exim", "exim4"):
+            result = parse_exim_relay_info(log_entry)
+        else:
+            result = parse_postfix_relay_info(log_entry)
+
         if result:
             logger.info(
                 "Found relay %s [%s]:%d, new ID %s",

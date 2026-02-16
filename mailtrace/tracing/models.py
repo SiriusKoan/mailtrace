@@ -156,12 +156,12 @@ class EmailTrace:
             # Create stages for this host in delay order
             for delay_type in DELAY_STAGES:
                 if delay_type in delays:
-                    delay_seconds = delays[delay_type]
+                    delay_seconds = max(1e-6, delays[delay_type])
                     stage_start = current_time
                     stage_end = current_time + timedelta(seconds=delay_seconds)
 
                     logger.debug(
-                        f"Message ID {self.message_id}: stage {hostname}.{delay_type} "
+                        f"Message ID {self.message_id}: stage {hostname}/{delay_type} "
                         f"from {stage_start} to {stage_end} (duration {delay_seconds}s) "
                         f"with {len(host_entries)} entries"
                     )

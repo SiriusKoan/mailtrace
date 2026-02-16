@@ -66,6 +66,9 @@ def run_continuous_tracing(
             logger.info(f"Found {len(traces)} unique email traces")
 
             # Generate traces
+            trace_generation_start = time.time()
+            trace_count = 0
+
             for message_id, email_trace in traces.items():
                 try:
                     # Create tracers dynamically for any new hosts in the email trace
@@ -83,6 +86,7 @@ def run_continuous_tracing(
                     generate_trace_from_email(
                         root_tracer, tracers_by_host, email_trace
                     )
+                    trace_count += 1
                     logger.debug(
                         f"Generated trace for message ID: {message_id}"
                     )
@@ -90,6 +94,15 @@ def run_continuous_tracing(
                     logger.error(
                         f"Error generating trace for {message_id}: {e}"
                     )
+
+            trace_generation_time = time.time() - trace_generation_start
+            logger.info(
+                f"Trace generation completed: {trace_count} traces generated "
+                f"in {trace_generation_time:.3f} seconds "
+                f"({trace_generation_time / trace_count:.3f}s per trace)"
+                if trace_count > 0
+                else f"Trace generation completed: 0 traces generated in {trace_generation_time:.3f} seconds"
+            )
 
             # Update last query time for next iteration
             last_query_time = current_time
@@ -99,7 +112,7 @@ def run_continuous_tracing(
             time.sleep(interval_seconds)
 
     except KeyboardInterrupt:
-        logger.info("Stopping continuous tracing...")
+        logger.info("Stopping tracing generation...")
     finally:
         # Shutdown providers to flush remaining spans
         root_provider.shutdown()
