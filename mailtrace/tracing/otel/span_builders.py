@@ -106,13 +106,15 @@ class RootSpanBuilder:
 class HostSpanBuilder:
     """Builder for creating host-level spans."""
 
-    def __init__(self, tracer: trace.Tracer):
+    def __init__(self, tracer: trace.Tracer, mta_type: str | None = None):
         """Initialize the builder.
 
         Args:
             tracer: The tracer to use for creating spans
+            mta_type: Optional MTA type ('postfix' or 'exim')
         """
         self.tracer = tracer
+        self.mta_type = mta_type
 
     def build(self, hostname: str, delays: list[Delay]) -> trace.Span:
         """Build a host span.
@@ -137,6 +139,10 @@ class HostSpanBuilder:
             start_time=start_time,
         )
         span.set_attribute("host.name", hostname)
+
+        # Add MTA type attribute if available
+        if self.mta_type:
+            span.set_attribute("mta", self.mta_type)
 
         return span
 
@@ -235,6 +241,8 @@ class DelaySpanBuilder:
         delay_info = parse_delay_info(entry.message)
         if delay_info.total_delay is not None:
             span.set_attribute("mail.delay", delay_info.total_delay)
+
+        # Postfix delay attributes
         if delay_info.before_qmgr is not None:
             span.set_attribute(
                 "mail.delay_before_qmgr", delay_info.before_qmgr
@@ -246,4 +254,16 @@ class DelaySpanBuilder:
         if delay_info.transmission is not None:
             span.set_attribute(
                 "mail.delay_transmission", delay_info.transmission
+            )
+
+        # Exim delay attributes
+        if delay_info.queue_time is not None:
+            span.set_attribute("mail.delay_queue_time", delay_info.queue_time)
+        if delay_info.receive_time is not None:
+            span.set_attribute(
+                "mail.delay_receive_time", delay_info.receive_time
+            )
+        if delay_info.deliver_time is not None:
+            span.set_attribute(
+                "mail.delay_deliver_time", delay_info.deliver_time
             )

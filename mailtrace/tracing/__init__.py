@@ -26,6 +26,13 @@ Public API:
 """
 
 from mailtrace.tracing.continuous import ContinuousTracer
+from mailtrace.tracing.delay_builder import DelayBuilder
+from mailtrace.tracing.delay_parser import (
+    EximDelayParser,
+    PostfixDelayParser,
+    detect_mta_from_entries,
+    get_parser_for_mta,
+)
 from mailtrace.tracing.models import Delay, EmailTrace
 from mailtrace.tracing.otel import (
     create_tracer_for_host,
@@ -45,6 +52,12 @@ __all__ = [
     # Models
     "EmailTrace",
     "Delay",
+    # Delay building and parsing
+    "DelayBuilder",
+    "PostfixDelayParser",
+    "EximDelayParser",
+    "detect_mta_from_entries",
+    "get_parser_for_mta",
     # Lower-level OpenTelemetry functions
     "setup_otel_exporter",
     "create_tracer_for_host",

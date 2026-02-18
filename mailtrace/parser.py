@@ -1,3 +1,4 @@
+import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Any
@@ -5,6 +6,8 @@ from typing import Any
 from mailtrace.config import OpenSearchMappingConfig
 from mailtrace.models import LogEntry
 from mailtrace.utils import RelayResult, analyze_log_from_message
+
+logger = logging.getLogger("mailtrace")
 
 # Mail ID validation pattern (alphanumeric and hyphens, supports both Postfix and Exim formats)
 _MAIL_ID_RE = re.compile(r"^[0-9A-Za-z\-]+$")
@@ -335,6 +338,33 @@ class OpensearchParser(LogParser):
         field_path = getattr(self.mapping, field, None)
         return _get_nested_value(log, field_path) if field_path else None
 
+    def _extract_queued_as_from_message(
+        self, message_content: str
+    ) -> str | None:
+        """Extract queued_as from message content as fallback.
+
+        Handles multiple formats:
+        - Postfix → Postfix: status=sent (250 2.0.0 Ok: queued as E7424C4B93C)
+        - Postfix → Exim: status=sent (250 OK id=1vs9hh-00005v-2k)
+        """
+        # Try Postfix format: queued as QUEUEID
+        queued_match = re.search(r"queued as ([A-F0-9]+)", message_content)
+        if queued_match:
+            queue_id = queued_match.group(1)
+            if check_mail_id_valid(queue_id):
+                return queue_id
+
+        # Try Exim format in status message: id=QUEUEID)
+        exim_match = re.search(
+            r"status=sent \([^)]*\bid=([A-Za-z0-9_-]+)\)", message_content
+        )
+        if exim_match:
+            queue_id = exim_match.group(1)
+            if check_mail_id_valid(queue_id):
+                return queue_id
+
+        return None
+
     def _extract_mail_id(self, log: dict, message_content: str) -> str | None:
         """Extract mail ID from structured field or message content."""
         # Try structured field first (queueid)
@@ -349,6 +379,17 @@ class OpensearchParser(LogParser):
                 return mail_id
 
         # Parse mail_id from message content
+        # Try Exim format first: "YYYY-MM-DD HH:MM:SS.sss QUEUEID <=" or "YYYY-MM-DD HH:MM:SS QUEUEID <="
+        exim_match = re.search(
+            r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+([A-Za-z0-9_-]+)\s+(?:<=|=>|\*\*|Completed)",
+            message_content,
+        )
+        if exim_match:
+            mail_id_candidate = exim_match.group(1)
+            if check_mail_id_valid(mail_id_candidate):
+                return mail_id_candidate
+
+        # Try Postfix format: QUEUEID: rest of message
         mail_id_candidate = message_content.split(":")[0]
         return (
             mail_id_candidate
@@ -376,6 +417,17 @@ class OpensearchParser(LogParser):
             else message_content
         )
 
+        # Extract queued_as: try structured field first, then message content
+        queued_as = self._get_validated_mail_id(log, "queued_as")
+        if not queued_as:
+            queued_as = self._extract_queued_as_from_message(message_content)
+            if queued_as:
+                logger.debug(
+                    f"Extracted queued_as from message content: {queued_as} "
+                    f"(hostname={_get_nested_value(log, self.mapping.hostname)}, "
+                    f"mail_id={mail_id})"
+                )
+
         return LogEntry(
             datetime=_get_nested_value(log, self.mapping.timestamp),
             hostname=_get_nested_value(log, self.mapping.hostname),
@@ -383,7 +435,7 @@ class OpensearchParser(LogParser):
             mail_id=mail_id,
             message=message,
             # Structured fields (may be None, will be enriched from message)
-            queued_as=self._get_validated_mail_id(log, "queued_as"),
+            queued_as=queued_as,
             relay_host=self._get_mapped_value("relay_host", log),
             relay_ip=self._get_mapped_value("relay_ip", log),
             relay_port=self._get_mapped_value("relay_port", log),

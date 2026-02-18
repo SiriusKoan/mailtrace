@@ -113,6 +113,13 @@ def query_logs_from_all_hosts(
         ]
 
         logger.info(f"Found {len(all_logs)} log entries from index")
+
+        # Debug: Log all entries to see what we're working with
+        for i, log in enumerate(all_logs):
+            logger.debug(
+                f"Log {i}: {log.hostname} | {log.service} | mail_id={log.mail_id} | queued_as={log.queued_as} | {log.message}"
+            )
+
         return all_logs
 
     except Exception as e:
@@ -124,10 +131,20 @@ def _extract_message_id_from_log(log: LogEntry) -> str | None:
     """Extract message-id from log entry message content.
 
     Postfix logs contain message-id in the format: message-id=<id@domain>
+    Exim logs contain message-id in the format: id=id@domain (without angle brackets)
     This is present in logs that include the message-id field.
     """
+    # Try Postfix format first: message-id=<id@domain>
     msg_id_match = re.search(r"message-id=<([^>]+)>", log.message)
-    return msg_id_match.group(1) if msg_id_match else None
+    if msg_id_match:
+        return msg_id_match.group(1)
+
+    # Try Exim format: id=id@domain (without angle brackets)
+    exim_id_match = re.search(r"\bid=([\w\d.@-]+@[\w\d.-]+)", log.message)
+    if exim_id_match:
+        return exim_id_match.group(1)
+
+    return None
 
 
 def _trace_message_id_through_hops(logs: list[LogEntry]) -> Dict[str, str]:
@@ -144,6 +161,10 @@ def _trace_message_id_through_hops(logs: list[LogEntry]) -> Dict[str, str]:
             msg_id = _extract_message_id_from_log(log)
             if msg_id and log.mail_id not in queue_id_to_msg_id:
                 queue_id_to_msg_id[log.mail_id] = msg_id
+                logger.debug(
+                    f"Found message ID {msg_id} for queue ID {log.mail_id} "
+                    f"(from {log.hostname}/{log.service})"
+                )
 
     # Second pass: trace through queued_as field to link queue_ids
     # If a log has queued_as, the next hop will use that as mail_id
@@ -155,10 +176,15 @@ def _trace_message_id_through_hops(logs: list[LogEntry]) -> Dict[str, str]:
         ):
             # Propagate the message_id to the new queue_id
             if log.mail_id in queue_id_to_msg_id:
-                queue_id_to_msg_id[log.queued_as] = queue_id_to_msg_id[
-                    log.mail_id
-                ]
+                msg_id = queue_id_to_msg_id[log.mail_id]
+                queue_id_to_msg_id[log.queued_as] = msg_id
+                logger.debug(
+                    f"Propagated message ID {msg_id}: "
+                    f"{log.mail_id} -> {log.queued_as} via queued_as "
+                    f"(from {log.hostname}/{log.service})"
+                )
 
+    logger.debug(f"Queue ID to Message ID map: {queue_id_to_msg_id}")
     return queue_id_to_msg_id
 
 

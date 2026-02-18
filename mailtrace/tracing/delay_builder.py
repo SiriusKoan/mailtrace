@@ -14,6 +14,8 @@ from mailtrace.parser import LogEntry
 from mailtrace.tracing.delay_parser import (
     DELAY_STAGES,
     DelayParser,
+    detect_mta_from_entries,
+    get_parser_for_mta,
     parse_delay_info,
 )
 from mailtrace.tracing.models import Delay
@@ -35,11 +37,21 @@ class HostDelayExtractor:
         Args:
             hostname: The hostname to extract delays for
             entries: Log entries for this host
-            parser: Optional delay parser to use
+            parser: Optional delay parser to use. If not provided, will auto-detect from entries.
         """
         self.hostname = hostname
         self.entries = entries
-        self.parser = parser
+
+        # Auto-detect parser from entries if not provided
+        if parser is None:
+            mta_type = detect_mta_from_entries(entries)
+            if mta_type:
+                self.parser = get_parser_for_mta(mta_type)
+                logger.debug(f"Host {hostname}: detected MTA type: {mta_type}")
+            else:
+                self.parser = None
+        else:
+            self.parser = parser
 
     def extract_delays(self) -> dict[str, float]:
         """Extract delay values for each delay type from log entries.
@@ -49,15 +61,39 @@ class HostDelayExtractor:
         """
         delays: dict[str, float] = {}
 
-        # Find delay values from log entries
-        for delay_name in DELAY_STAGES:
-            for entry in self.entries:
-                delay_info = parse_delay_info(entry.message, self.parser)
-                delay_value = delay_info.get_delay(delay_name)
+        # Aggregate all delay values from all entries
+        # For Exim, delays are spread across multiple entries (RT in receive, DT in delivery, QT in completion)
+        # We iterate through all entries and aggregate all non-None delay fields
+        for entry in self.entries:
+            delay_info = parse_delay_info(entry.message, self.parser)
 
-                if delay_value is not None:
-                    delays[delay_name] = delay_value
-                    break
+            # Aggregate all fields from DelayInfo, overriding None values with actual values
+            # This handles cases where different log lines have different delay fields
+            entry_delays = {
+                "total_delay": delay_info.total_delay,
+                "before_qmgr": delay_info.before_qmgr,
+                "in_qmgr": delay_info.in_qmgr,
+                "conn_setup": delay_info.conn_setup,
+                "transmission": delay_info.transmission,
+                "queue_time": delay_info.queue_time,
+                "receive_time": delay_info.receive_time,
+                "deliver_time": delay_info.deliver_time,
+            }
+
+            # Merge: only update delays dictionary with non-None values
+            for key, value in entry_delays.items():
+                if value is not None:
+                    delays[key] = value
+
+        # For Exim: recalculate queue_time = QT - RT - DT after aggregating all values
+        # The parser may have calculated it incorrectly if it only had QT
+        if self.parser and self.parser.get_mta_type() == "exim":
+            qt = delays.get("total_delay")
+            rt = delays.get("receive_time", 0.0)
+            dt = delays.get("deliver_time", 0.0)
+            if qt is not None:
+                # Recalculate: queue_time = total_delay - receive_time - deliver_time
+                delays["queue_time"] = max(0.0, qt - rt - dt)
 
         return delays
 
@@ -79,9 +115,11 @@ class DelayBuilder:
         """Initialize the builder.
 
         Args:
-            parser: Optional delay parser to use for all entries
+            parser: Optional delay parser to use for all entries.
+                   If not provided, will auto-detect per-host from entries.
         """
-        self.parser = parser
+        self.global_parser = parser
+        self.detected_mta_by_host = {}
 
     def build_delays(
         self,
@@ -189,12 +227,33 @@ class DelayBuilder:
         hostname_delays: dict[str, dict[str, float]] = {}
 
         for hostname in hostname_order:
+            # Debug: Log entries for this host
+            logger.debug(
+                f"Host {hostname} has {len(hostname_entries[hostname])} entries"
+            )
+            for i, entry in enumerate(hostname_entries[hostname]):
+                logger.debug(
+                    f"  Entry {i}: {entry.service} - {entry.message[:80]}"
+                )
+
+            # Each host gets its own parser (auto-detected or global)
             extractor = HostDelayExtractor(
                 hostname,
                 hostname_entries[hostname],
-                self.parser,
+                self.global_parser,
             )
             hostname_delays[hostname] = extractor.extract_delays()
+
+            # Debug: Log extracted delays
+            logger.debug(
+                f"Host {hostname} extracted delays: {hostname_delays[hostname]}"
+            )
+
+            # Track detected MTA type per host
+            if extractor.parser:
+                self.detected_mta_by_host[hostname] = (
+                    extractor.parser.get_mta_type()
+                )
 
         return hostname_delays
 
@@ -223,12 +282,21 @@ class DelayBuilder:
             entries = hostname_entries[hostname]
 
             # Each host starts at its first log entry's timestamp
-            extractor = HostDelayExtractor(hostname, entries, self.parser)
+            extractor = HostDelayExtractor(
+                hostname, entries, self.global_parser
+            )
             host_start_time = extractor.get_first_entry_time()
             current_time = host_start_time
 
+            # Get delay stages from this host's parser
+            delay_stages = (
+                extractor.parser.get_delay_stages()
+                if extractor.parser
+                else DELAY_STAGES
+            )
+
             # Create Delay objects for this host in delay order
-            for delay_name in DELAY_STAGES:
+            for delay_name in delay_stages:
                 if delay_name in host_delays:
                     delay_seconds = max(1e-6, host_delays[delay_name])
                     delay_start = current_time

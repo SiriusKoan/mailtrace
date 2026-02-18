@@ -140,12 +140,17 @@ class TraceGenerator:
         for hostname, host_delays in delays_by_host.items():
             host_tracer = self.tracers_by_host.get(hostname, self.root_tracer)
 
+            # Get MTA type for this specific host
+            host_mta_type = self.delay_builder.detected_mta_by_host.get(
+                hostname
+            )
+
             logger.debug(
                 f"Creating host span: {hostname} with {len(host_delays)} delays"
             )
 
             # Create host span (timing based on delays)
-            host_span_builder = HostSpanBuilder(host_tracer)
+            host_span_builder = HostSpanBuilder(host_tracer, host_mta_type)
             host_span = host_span_builder.build(hostname, host_delays)
 
             # Create delay spans under host span
