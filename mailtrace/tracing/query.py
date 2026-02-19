@@ -61,6 +61,15 @@ def query_logs_from_all_hosts(
 
         # Convert UTC time to configured timezone offset
         # e.g., if time is 13:00 UTC and timezone is +03:00, convert to 16:00
+        # NOTE: Be careful with timezone semantics here:
+        # - `start_time`/`end_time` are passed in as ISO strings without an explicit
+        #   timezone offset in the current CLI loop (naive timestamps).
+        # - We manually apply `time_zone` offset *and* also pass `time_zone` into
+        #   the OpenSearch range filter.
+        # Depending on how the OpenSearch field is mapped (typically @timestamp in UTC)
+        # and how `time_zone` is interpreted, this can cause unexpected shifts (double
+        # offset) or missed/duplicated windows. Consider using timezone-aware UTC times
+        # end-to-end to avoid ambiguity.
         tz_offset = config.opensearch_config.time_zone
         # Parse timezone offset (format: +HH:MM or -HH:MM)
         tz_sign = 1 if tz_offset[0] == "+" else -1
@@ -69,6 +78,9 @@ def query_logs_from_all_hosts(
         minutes_offset = int(tz_parts[1]) if len(tz_parts) > 1 else 0
 
         # Convert start and end times
+        # NOTE: `datetime.fromisoformat()` returns a naive datetime if the string
+        # has no timezone info. That makes later adjustments and comparisons more
+        # error-prone across different runtime environments.
         start_dt = datetime.fromisoformat(start_time)
         end_dt = datetime.fromisoformat(end_time)
 

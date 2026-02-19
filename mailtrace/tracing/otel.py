@@ -49,6 +49,10 @@ def get_root_span_tracer(exporter: OTLPSpanExporter):
 
 def message_id_to_trace_id(message_id: str) -> int:
     """Convert message ID to a valid trace ID (16 bytes / 128 bits)."""
+    # NOTE: Python's built-in `hash()` is not stable across processes by default
+    # (hash randomization). That means the same `message_id` can produce different
+    # trace IDs across runs/machines, which breaks cross-interval correlation.
+    # If you need truly stable IDs, use a deterministic hash (e.g., sha256) instead.
     # Use hash to generate consistent trace ID from message ID
     return abs(hash(message_id)) % (2**128)
 
