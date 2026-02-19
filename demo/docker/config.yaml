@@ -16,6 +16,9 @@ ssh_config:
       - /var/log/mail.log
     # log_parser: SyslogParser  # Optional - auto-detects format by default
     time_format: "%Y-%m-%dT%H:%M:%S"
+  hosts:
+    mailer.example.com:
+      log_parser: EximParser
   # Uncomment the following section before using loghost
   # hosts:
   #   mx.example.com:

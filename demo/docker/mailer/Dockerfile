@@ -7,7 +7,7 @@ WORKDIR /
 RUN apt update && \
     apt install -y \
         vim curl jq python3-pip iputils-ping iproute2 openssh-server \
-        postfix postfix-pcre rsyslog \
+        exim4 rsyslog \
     && apt-get clean autoclean \
     && apt-get autoremove --yes \
     && rm -rf /var/lib/apt/lists/*
@@ -22,7 +22,7 @@ RUN sed -i '/imklog/s/^/#/' /etc/rsyslog.conf && \
     echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-COPY ./mailer/postfix /etc/postfix
+COPY ./mailer/exim4.conf /etc/exim4/exim4.conf
 COPY ./vector/vector.yaml /etc/vector/vector.yaml
 COPY ./rsyslog/forward.conf /etc/rsyslog.d/50-forward.conf
 
