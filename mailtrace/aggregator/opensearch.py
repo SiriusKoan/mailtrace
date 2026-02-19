@@ -95,6 +95,11 @@ class OpenSearch(LogAggregator):
 
         if query.keywords:
             for keyword in query.keywords:
+                # NOTE: This wildcard query lowercases the keyword. This only makes
+                # sense if the indexed field is effectively case-insensitive (e.g., a
+                # normalized keyword field or analyzer that lowercases at index time).
+                # If `message` is a `text` field without a `.keyword` subfield, wildcard
+                # behavior and case-sensitivity depend on the OpenSearch mapping.
                 search = search.query(
                     "wildcard",
                     **{self.config.mapping.message: f"*{keyword.lower()}*"},

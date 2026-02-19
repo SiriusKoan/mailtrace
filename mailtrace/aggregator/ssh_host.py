@@ -167,6 +167,11 @@ class SSHHost(LogAggregator):
 
         if query.time and query.time_range:
             # get logs by time
+            # NOTE: This uses awk string comparison on the full log line ("$0") to
+            # filter by time range. This is only reliable if the log line begins with
+            # a lexicographically sortable timestamp (e.g., ISO 8601). For RFC3164
+            # syslog ("Feb  1 10:00:00"), or logs with prefixes, string ordering may
+            # not match chronological ordering and can lead to missing/extra lines.
             timestamp = datetime.datetime.strptime(
                 query.time, "%Y-%m-%d %H:%M:%S"
             )
@@ -195,6 +200,11 @@ class SSHHost(LogAggregator):
 
         if not keywords:
             return ""
+        # NOTE: Keywords are interpolated directly into a remote shell command.
+        # This is risky:
+        # - Unescaped characters/spaces can break grep syntax.
+        # - Using -E treats keywords as regular expressions (may change semantics).
+        # - Malicious input could lead to shell injection on the remote host.
         return "".join(f"| grep -iE {keyword}" for keyword in keywords)
 
     def query_by(self, query: LogQuery) -> list[LogEntry]:
