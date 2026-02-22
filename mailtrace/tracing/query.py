@@ -10,13 +10,12 @@ from opensearchpy.helpers.search import Search
 
 from mailtrace.config import Config
 from mailtrace.parser import LogEntry, OpensearchParser
-from mailtrace.tracing.models import EmailTrace
 
 logger = logging.getLogger("mailtrace")
 
 
-def query_logs_from_all_hosts(
-    config: Config, start_time: str, end_time: str
+def query_all_logs(
+    config: Config, start_time: datetime, end_time: datetime
 ) -> list[LogEntry]:
     """Query logs from OpenSearch index with time filtering.
 
@@ -25,8 +24,8 @@ def query_logs_from_all_hosts(
 
     Args:
         config: Configuration object
-        start_time: Start time as ISO string (e.g., from datetime.utcnow())
-        end_time: End time as ISO string (e.g., from datetime.utcnow())
+        start_time: Start time as datetime object
+        end_time: End time as datetime object
     """
     try:
         # Create OpenSearch client from config
@@ -68,9 +67,9 @@ def query_logs_from_all_hosts(
         hours_offset = int(tz_parts[0])
         minutes_offset = int(tz_parts[1]) if len(tz_parts) > 1 else 0
 
-        # Convert start and end times
-        start_dt = datetime.fromisoformat(start_time)
-        end_dt = datetime.fromisoformat(end_time)
+        # Use provided datetime objects directly
+        start_dt = start_time
+        end_dt = end_time
 
         tz_delta = timedelta(
             hours=tz_sign * hours_offset, minutes=tz_sign * minutes_offset
@@ -147,87 +146,58 @@ def _extract_message_id_from_log(log: LogEntry) -> str | None:
     return None
 
 
-def _trace_message_id_through_hops(logs: list[LogEntry]) -> Dict[str, str]:
-    """Build a map from queue_id to message_id to track emails across hops.
-
-    Returns:
-        Dictionary mapping queue_id -> message_id
-    """
-    queue_id_to_msg_id: Dict[str, str] = {}
-
-    # First pass: extract message_ids from logs that have them
-    for log in logs:
-        if log.mail_id:
-            msg_id = _extract_message_id_from_log(log)
-            if msg_id and log.mail_id not in queue_id_to_msg_id:
-                queue_id_to_msg_id[log.mail_id] = msg_id
-                logger.debug(
-                    f"Found message ID {msg_id} for queue ID {log.mail_id} "
-                    f"(from {log.hostname}/{log.service})"
-                )
-
-    # Second pass: trace through queued_as field to link queue_ids
-    # If a log has queued_as, the next hop will use that as mail_id
-    for log in logs:
-        if (
-            log.mail_id
-            and log.queued_as
-            and log.queued_as not in queue_id_to_msg_id
-        ):
-            # Propagate the message_id to the new queue_id
-            if log.mail_id in queue_id_to_msg_id:
-                msg_id = queue_id_to_msg_id[log.mail_id]
-                queue_id_to_msg_id[log.queued_as] = msg_id
-                logger.debug(
-                    f"Propagated message ID {msg_id}: "
-                    f"{log.mail_id} -> {log.queued_as} via queued_as "
-                    f"(from {log.hostname}/{log.service})"
-                )
-
-    logger.debug(f"Queue ID to Message ID map: {queue_id_to_msg_id}")
-    return queue_id_to_msg_id
-
-
-def group_logs_by_message_id(logs: list[LogEntry]) -> Dict[str, EmailTrace]:
+def group_logs_by_message_id(
+    logs: list[LogEntry],
+) -> Dict[str, list[LogEntry]]:
     """Group log entries by message ID across all hops.
 
     One email maintains the same message-id throughout its delivery across
     multiple hosts, even though the queue_id changes at each hop.
 
-    Returns a dictionary mapping message_id -> EmailTrace containing all
+    Returns a dictionary mapping message_id -> list of LogEntry containing all
     logs for that email across all hops.
     """
-    traces: Dict[str, EmailTrace] = {}
-
-    # Build mapping of queue_id -> message_id to trace emails across hops
-    queue_id_to_msg_id = _trace_message_id_through_hops(logs)
-
-    logs_without_identity = 0
+    grouped_logs: Dict[str, list[LogEntry]] = {}
+    queue_id_to_msg_id_map: dict[tuple[str, str], str] = (
+        {}
+    )  # (hostname, queue ID) -> message ID
 
     for log in logs:
-        # Try to get message_id from the mapping
-        message_id = None
-
-        if log.mail_id and log.mail_id in queue_id_to_msg_id:
-            message_id = queue_id_to_msg_id[log.mail_id]
-        else:
-            # If no mapping found, try to extract directly
-            message_id = _extract_message_id_from_log(log)
-
-        if not message_id:
-            logs_without_identity += 1
-            logger.debug(
-                f"Log entry has no message-id: {log.hostname} {log.service} - {log.message[:100]}"
-            )
+        message_id = _extract_message_id_from_log(log)
+        if not message_id and not log.mail_id:
             continue
+        if message_id:
+            # If we have a message ID, use it directly
+            if message_id not in grouped_logs:
+                grouped_logs[message_id] = []
+            grouped_logs[message_id].append(log)
 
-        if message_id not in traces:
-            traces[message_id] = EmailTrace(message_id)
-            logger.debug(f"Created new trace for message ID: {message_id}")
+            # If we also have a queue ID, map it to the message ID for future logs
+            if log.mail_id:
+                queue_id_to_msg_id_map[(log.hostname, log.mail_id)] = (
+                    message_id
+                )
+        elif log.mail_id:
+            # If we don't have a message ID but have a queue ID, try to find the message ID from previous logs
+            key = (log.hostname, log.mail_id)
+            if key in queue_id_to_msg_id_map:
+                message_id = queue_id_to_msg_id_map[key]
+                if message_id not in grouped_logs:
+                    grouped_logs[message_id] = []
+                grouped_logs[message_id].append(log)
 
-        traces[message_id].add_entry(log)
+    return grouped_logs
 
-    logger.info(
-        f"Grouped {len(logs)} logs into {len(traces)} traces ({logs_without_identity} logs without message-id)"
-    )
-    return traces
+
+def group_logs_by_hosts(logs: list[LogEntry]) -> Dict[str, list[LogEntry]]:
+    """Group log entries by hostname and service.
+
+    Returns a dictionary mapping "hostname" -> list of LogEntry containing all
+    logs for that host and service.
+    """
+    grouped_logs: Dict[str, list[LogEntry]] = {}
+    for log in logs:
+        if log.hostname not in grouped_logs:
+            grouped_logs[log.hostname] = []
+        grouped_logs[log.hostname].append(log)
+    return grouped_logs

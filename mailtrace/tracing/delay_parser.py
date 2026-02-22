@@ -26,16 +26,12 @@ EXIM_DELAY_STAGES = [
     "deliver_time",
 ]
 
-# Default delay stages (for backward compatibility)
-DELAY_STAGES = POSTFIX_DELAY_STAGES
-
 
 @dataclass
 class DelayInfo:
     """Parsed delay information from a log message.
 
     Attributes:
-        total_delay: Total message delay in seconds
         before_qmgr: Delay before queue manager (Postfix)
         in_qmgr: Delay in queue manager (Postfix)
         conn_setup: Delay in connection setup (Postfix)
@@ -45,7 +41,6 @@ class DelayInfo:
         deliver_time: Delivery time (Exim)
     """
 
-    total_delay: Optional[float] = None
     # Postfix delays
     before_qmgr: Optional[float] = None
     in_qmgr: Optional[float] = None
@@ -56,30 +51,80 @@ class DelayInfo:
     receive_time: Optional[float] = None
     deliver_time: Optional[float] = None
 
-    def get_delay(self, stage_name: str) -> Optional[float]:
-        """Get delay value for a specific stage name.
+    def __or__(self, value):
+        if isinstance(value, DelayInfo):
+            return DelayInfo(
+                before_qmgr=(
+                    self.before_qmgr
+                    if self.before_qmgr is not None
+                    else value.before_qmgr
+                ),
+                in_qmgr=(
+                    self.in_qmgr if self.in_qmgr is not None else value.in_qmgr
+                ),
+                conn_setup=(
+                    self.conn_setup
+                    if self.conn_setup is not None
+                    else value.conn_setup
+                ),
+                transmission=(
+                    self.transmission
+                    if self.transmission is not None
+                    else value.transmission
+                ),
+                queue_time=(
+                    self.queue_time
+                    if self.queue_time is not None
+                    else value.queue_time
+                ),
+                receive_time=(
+                    self.receive_time
+                    if self.receive_time is not None
+                    else value.receive_time
+                ),
+                deliver_time=(
+                    self.deliver_time
+                    if self.deliver_time is not None
+                    else value.deliver_time
+                ),
+            )
+        return self
 
-        Args:
-            stage_name: The stage name (e.g., 'before_qmgr', 'queue_time')
+    @property
+    def total_delay(self) -> float:
+        """Calculate total delay based on available stage delays.
+
+        For Postfix, total_delay is the sum of all stages.
+        For Exim, total_delay is the queue_time + receive_time + deliver_time.
 
         Returns:
-            The delay value in seconds, or None if not available
+            Total delay in seconds, or None if not enough information
         """
-        return getattr(self, stage_name, None)
+        if all(
+            getattr(self, stage) is not None for stage in POSTFIX_DELAY_STAGES
+        ):
+            return sum(getattr(self, stage) for stage in POSTFIX_DELAY_STAGES)
+        elif all(
+            getattr(self, stage) is not None for stage in EXIM_DELAY_STAGES
+        ):
+            return sum(getattr(self, stage) for stage in EXIM_DELAY_STAGES)
+        else:
+            return 0
 
-    def has_breakdown(self) -> bool:
-        """Check if this delay info has a breakdown of delays."""
-        return any(
-            [
-                self.before_qmgr is not None,
-                self.in_qmgr is not None,
-                self.conn_setup is not None,
-                self.transmission is not None,
-                self.queue_time is not None,
-                self.receive_time is not None,
-                self.deliver_time is not None,
-            ]
-        )
+    def get_delay_values(self) -> dict[str, float]:
+        """Get a dictionary of all delay stage values.
+
+        Returns:
+            Dictionary mapping stage names to their delay values
+        """
+        if all(getattr(self, s, 0) is not None for s in POSTFIX_DELAY_STAGES):
+            stage_names = POSTFIX_DELAY_STAGES
+        elif all(getattr(self, s, 0) is not None for s in EXIM_DELAY_STAGES):
+            stage_names = EXIM_DELAY_STAGES
+        else:
+            return {}
+
+        return {s: float(getattr(self, s, 0)) for s in stage_names}
 
 
 class DelayParser(ABC):
@@ -135,11 +180,6 @@ class PostfixDelayParser(DelayParser):
         """
         delay_info = DelayInfo()
 
-        # Parse total delay: delay=X.XX
-        total_match = re.search(r"delay=([\d.]+)", message)
-        if total_match:
-            delay_info.total_delay = float(total_match.group(1))
-
         # Parse delays breakdown: delays=A/B/C/D
         breakdown_match = re.search(
             r"delays=([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)", message
@@ -185,9 +225,9 @@ class EximDelayParser(DelayParser):
 
         # Parse QT (Queue Time): QT=X.XXs
         qt_match = re.search(r"QT=([\d.]+)s?", message)
+        qt = 0
         if qt_match:
             qt = float(qt_match.group(1))
-            delay_info.total_delay = qt
 
         # Parse RT (Receive Time): RT=X.XXs
         rt_match = re.search(r"RT=([\d.]+)s?", message)
@@ -203,10 +243,10 @@ class EximDelayParser(DelayParser):
         if delay_info.total_delay is not None:
             rt = delay_info.receive_time or 0.0
             dt = delay_info.deliver_time or 0.0
-            delay_info.queue_time = max(0.0, delay_info.total_delay - rt - dt)
+            delay_info.queue_time = max(0.0, qt - rt - dt)
 
         print(
-            f"Parsed Exim delay info: total_delay={delay_info.total_delay}, receive_time={delay_info.receive_time}, deliver_time={delay_info.deliver_time}, queue_time={delay_info.queue_time}"
+            f"Parsed Exim delay info: total_delay={qt}, receive_time={delay_info.receive_time}, deliver_time={delay_info.deliver_time}, queue_time={delay_info.queue_time}"
         )
 
         return delay_info
@@ -218,27 +258,6 @@ class EximDelayParser(DelayParser):
     def get_delay_stages(self) -> list[str]:
         """Get the delay stages for this parser."""
         return EXIM_DELAY_STAGES
-
-
-# Default parser instance
-_default_parser = PostfixDelayParser()
-
-
-def parse_delay_info(
-    message: str, parser: Optional[DelayParser] = None
-) -> DelayInfo:
-    """Parse delay information from a log message using the specified parser.
-
-    Args:
-        message: The log message to parse
-        parser: Optional custom parser. If not provided, uses PostfixDelayParser
-
-    Returns:
-        DelayInfo object with parsed delay information
-    """
-    if parser is None:
-        parser = _default_parser
-    return parser.parse(message)
 
 
 def detect_mta_from_entries(entries: list) -> Optional[str]:

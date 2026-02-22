@@ -3,7 +3,7 @@
 import logging
 
 from mailtrace.config import Config
-from mailtrace.tracing import ContinuousTracer
+from mailtrace.tracing import EmailTracesGenerator
 
 logger = logging.getLogger("mailtrace")
 
@@ -21,7 +21,7 @@ def run_continuous_tracing(
         interval_seconds: Interval in seconds between log queries
     """
     # Create tracer instance with all tracing logic encapsulated
-    tracer = ContinuousTracer(
+    tracer = EmailTracesGenerator(
         config=config,
         otel_endpoint=otel_endpoint,
     )
