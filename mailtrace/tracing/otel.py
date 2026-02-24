@@ -160,7 +160,11 @@ def create_delay_spans(
             start_time=dt_to_ns(current),
             attributes={"delay.duration_seconds": duration},
         )
+
+        # Avoid zero-duration spans which may be ignored by the back-end.
+        duration = max(duration, 2e-6)
         span.end(end_time=dt_to_ns(current + timedelta(seconds=duration)))
+
         logger.debug(
             f"Created span for stage {name} (start={current}, end={current + timedelta(seconds=duration)})"
         )

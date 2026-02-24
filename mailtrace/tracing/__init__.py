@@ -1,12 +1,11 @@
 import logging
 from datetime import datetime, timedelta
-from time import sleep
+from time import sleep, time
 from typing import Dict
 
 from opentelemetry import trace
 
 from mailtrace.config import Config
-from mailtrace.models import LogEntry
 from mailtrace.tracing.delay_parser import (
     DelayInfo,
     detect_mta_from_entries,
@@ -29,30 +28,112 @@ from mailtrace.tracing.query import (
 logger = logging.getLogger("mailtrace")
 
 
+class TimingMetrics:
+    """Tracks timing information for trace generation."""
+
+    def __init__(self):
+        self.metrics: Dict[str, float] = {}
+        self.start_time: float = 0
+        self.trace_count: int = 0
+
+    def start(self) -> None:
+        """Start the overall timing."""
+        self.start_time = time()
+        self.metrics.clear()
+        self.trace_count = 0
+
+    def mark(self, step_name: str) -> None:
+        """Mark the end time of a step."""
+        if self.start_time == 0:
+            logger.warning("Timing not started, ignoring mark")
+            return
+        elapsed = time() - self.start_time
+        self.metrics[step_name] = elapsed
+
+    def set_trace_count(self, count: int) -> None:
+        """Set the number of traces generated."""
+        self.trace_count = count
+
+    def get_step_duration(
+        self, step_name: str, previous_step: str | None = None
+    ) -> float:
+        """Get the duration of a specific step.
+
+        Args:
+            step_name: Name of the current step
+            previous_step: Name of the previous step (if any)
+
+        Returns:
+            Duration in seconds
+        """
+        if step_name not in self.metrics:
+            return 0.0
+
+        current = self.metrics[step_name]
+        if previous_step and previous_step in self.metrics:
+            return current - self.metrics[previous_step]
+        return current
+
+    def print_summary(self) -> None:
+        """Print timing summary with total and per-step durations."""
+        if not self.metrics:
+            logger.info("No timing metrics recorded")
+            return
+
+        total_time = self.get_step_duration(list(self.metrics.keys())[-1])
+
+        logger.info("=" * 70)
+        logger.info("TRACE GENERATION TIMING SUMMARY")
+        logger.info("=" * 70)
+
+        steps = list(self.metrics.keys())
+        previous_step = None
+
+        for step in steps:
+            step_duration = self.get_step_duration(step, previous_step)
+            percentage = (
+                (step_duration / total_time * 100) if total_time > 0 else 0
+            )
+            logger.info(
+                f"  {step:<40} {step_duration:>8.4f}s ({percentage:>5.1f}%)"
+            )
+            previous_step = step
+
+        logger.info("-" * 70)
+        logger.info(f"  {'TOTAL':<40} {total_time:>8.4f}s (100.0%)")
+        if self.trace_count > 0:
+            avg_time = total_time / self.trace_count
+            logger.info(f"  {'Traces generated':<40} {self.trace_count:>8d}")
+            logger.info(f"  {'Avg time per trace':<40} {avg_time:>8.4f}s")
+        logger.info("=" * 70)
+
+
 class EmailTracesGenerator:
     def __init__(self, config: Config, otel_endpoint: str) -> None:
         self.config = config
         self.otel_endpoint = otel_endpoint
         self.last_query_time = datetime.utcnow()
+        self.timing = TimingMetrics()
         init_exporter(otel_endpoint)
 
     def run(self, interval_seconds: int) -> None:
         try:
             while True:
+                self.timing.start()
+
                 # Group logs by message_id and then by host_id
                 query_end = datetime.utcnow()
                 logs = query_all_logs(
                     self.config, self.last_query_time, query_end
                 )
-                logs_by_message_id = group_logs_by_message_id(logs)
-                logs_by_host_id: Dict[str, Dict[str, list[LogEntry]]] = {}
-                for message_id, message_id_logs in logs_by_message_id.items():
-                    logs_by_host_id[message_id] = group_logs_by_hosts(
-                        message_id_logs
-                    )
+                self.timing.mark("query_logs")
 
-                # Iterate over all emails
-                for message_id, hosts_logs in logs_by_host_id.items():
+                trace_count = 0
+
+                # Iterate over all emails (grouping by message_id, then by host)
+                logs_by_message_id = group_logs_by_message_id(logs)
+                for message_id, message_id_logs in logs_by_message_id.items():
+                    hosts_logs = group_logs_by_hosts(message_id_logs)
                     hosts = list(hosts_logs.keys())
                     logger.debug(
                         f"Processing email with message_id {message_id} and hosts {hosts}"
@@ -93,6 +174,8 @@ class EmailTracesGenerator:
                         )
                         continue
 
+                    trace_count += 1
+
                     # Root span covers the full delivery window across all hosts
                     root_start = min(info[1] for info in host_info.values())
                     root_end = max(info[2] for info in host_info.values())
@@ -124,8 +207,16 @@ class EmailTracesGenerator:
                     # End the root span last
                     root_span.end(end_time=int(root_end.timestamp() * 1e9))
 
+                self.timing.mark("create_spans")
+
                 # Emit the traces to the OpenTelemetry collector
                 flush_traces()
+                self.timing.mark("flush_traces")
+
+                # Print timing summary if we processed any traces
+                if trace_count > 0:
+                    self.timing.set_trace_count(trace_count)
+                    self.timing.print_summary()
 
                 # Update the last query time to the end of the current query
                 self.last_query_time = query_end
