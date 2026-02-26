@@ -11,15 +11,21 @@ logger = logging.getLogger("mailtrace")
 def run_continuous_tracing(
     config: Config,
     otel_endpoint: str,
-    interval_seconds: int,
 ) -> None:
     """Run continuous tracing by querying logs and generating traces.
 
+    Sleep duration and hold rounds are read from ``config.tracing`` so that
+    they can be tuned centrally in the config file.
+
     Args:
-        config: Configuration object with OpenSearch settings
+        config: Configuration object with OpenSearch settings and tracing tuning
         otel_endpoint: OpenTelemetry OTLP endpoint for sending traces
-        interval_seconds: Interval in seconds between log queries
     """
+    logger.info(
+        f"Tracing config: sleep_seconds={config.tracing.sleep_seconds}, "
+        f"hold_rounds={config.tracing.hold_rounds}"
+    )
+
     # Create tracer instance with all tracing logic encapsulated
     tracer = EmailTracesGenerator(
         config=config,
@@ -27,4 +33,4 @@ def run_continuous_tracing(
     )
 
     # Run continuous tracing - this handles everything internally
-    tracer.run(interval_seconds=interval_seconds)
+    tracer.run()

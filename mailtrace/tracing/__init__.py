@@ -6,6 +6,7 @@ from typing import Dict
 from opentelemetry import trace
 
 from mailtrace.config import Config
+from mailtrace.parser import LogEntry
 from mailtrace.tracing.delay_parser import (
     DelayInfo,
     detect_mta_from_entries,
@@ -116,111 +117,199 @@ class EmailTracesGenerator:
         self.timing = TimingMetrics()
         init_exporter(otel_endpoint)
 
-    def run(self, interval_seconds: int) -> None:
+        # Buffer: message_id -> (accumulated logs, round number of last seen log)
+        self._pending: dict[str, tuple[list[LogEntry], int]] = {}
+        self._current_round: int = 0
+
+    @staticmethod
+    def _log_key(log: LogEntry) -> tuple:
+        """Return a hashable identity key for a log entry.
+
+        The combination of timestamp + hostname + service + message uniquely
+        identifies a log line, which is what we use to detect duplicates that
+        arise from the go_back_seconds query overlap.
+        """
+        return (log.datetime, log.hostname, log.service, log.message)
+
+    def _accumulate_logs(
+        self, logs_by_message_id: Dict[str, list[LogEntry]]
+    ) -> None:
+        """Merge freshly queried logs into the pending buffer.
+
+        For each message ID in the new batch, append only logs that are not
+        already buffered (dedup by identity key) and refresh the "last seen"
+        round counter so that the hold-round window restarts from the current
+        iteration.  Duplicates arise naturally from the go_back_seconds overlap
+        where the same log is returned by two consecutive queries.
+        """
+        for message_id, new_logs in logs_by_message_id.items():
+            if message_id in self._pending:
+                existing_logs, _ = self._pending[message_id]
+                seen_keys = {self._log_key(log) for log in existing_logs}
+                deduped = [
+                    log
+                    for log in new_logs
+                    if self._log_key(log) not in seen_keys
+                ]
+                added = len(deduped)
+                skipped = len(new_logs) - added
+                if skipped:
+                    logger.debug(
+                        f"Deduped {skipped} duplicate log(s) for message_id {message_id}"
+                    )
+                self._pending[message_id] = (
+                    existing_logs + deduped,
+                    self._current_round,
+                )
+            else:
+                self._pending[message_id] = (new_logs, self._current_round)
+
+    def _collect_ready(self) -> Dict[str, list[LogEntry]]:
+        """Return message IDs whose logs are ready to be exported.
+
+        A message ID is considered ready when no new logs for it have been seen
+        for at least ``hold_rounds`` consecutive rounds, meaning the last-seen
+        round is at least ``hold_rounds`` behind the current round.
+
+        Ready entries are removed from the pending buffer.
+        """
+        hold_rounds = self.config.tracing.hold_rounds
+        ready: Dict[str, list[LogEntry]] = {}
+        stale_ids = [
+            mid
+            for mid, (_, last_seen) in self._pending.items()
+            if self._current_round - last_seen >= hold_rounds
+        ]
+        for mid in stale_ids:
+            ready[mid] = self._pending.pop(mid)[0]
+        return ready
+
+    def _export_traces(
+        self, logs_by_message_id: Dict[str, list[LogEntry]]
+    ) -> int:
+        """Parse logs and export OTel traces for the given message-ID groups.
+
+        Returns the number of traces successfully exported.
+        """
+        trace_count = 0
+
+        for message_id, message_id_logs in logs_by_message_id.items():
+            hosts_logs = group_logs_by_hosts(message_id_logs)
+            hosts = list(hosts_logs.keys())
+            logger.debug(
+                f"Processing email with message_id {message_id} and hosts {hosts}"
+            )
+
+            host_info: dict[str, tuple[DelayInfo, datetime, datetime]] = {}
+
+            # For each host, detect the MTA, parse the logs to extract delay info,
+            # and determine the start and end times for the host span
+            for host, host_logs in hosts_logs.items():
+                mta = detect_mta_from_entries(host_logs)
+                parser = get_parser_for_mta(mta)
+                delay_info = DelayInfo()
+                for log in host_logs:
+                    delay_info |= parser.parse(log.message)
+                logger.debug(f"Host {host} has delay info: {delay_info}")
+
+                # Start time: first log entry datetime
+                host_start = min(
+                    datetime.fromisoformat(log.datetime.replace("Z", "+00:00"))
+                    for log in host_logs
+                )
+                # host_end = ref_time + total_delay
+                host_end = host_start + timedelta(
+                    seconds=delay_info.total_delay
+                )
+                host_info[host] = (delay_info, host_start, host_end)
+
+            if not host_info:
+                logger.debug(
+                    f"No delay info found for message_id {message_id}, skipping"
+                )
+                continue
+
+            trace_count += 1
+
+            # Root span covers the full delivery window across all hosts
+            root_start = min(info[1] for info in host_info.values())
+            root_end = max(info[2] for info in host_info.values())
+
+            # Create root span
+            root_span = create_root_span(message_id, root_start)
+            root_ctx = trace.set_span_in_context(root_span)
+
+            # Create host spans and their child delay spans
+            for host, (delays, host_start, host_end) in host_info.items():
+                host_span = create_host_span(host, host_start, root_ctx)
+                host_ctx = trace.set_span_in_context(host_span)
+
+                # Create delay stage spans (siblings under the host span)
+                create_delay_spans(delays, host, host_start, host_ctx)
+
+                logger.debug(
+                    f"Close host span: {host} at {host_end.isoformat()}"
+                )
+                host_span.end(end_time=dt_to_ns(host_end))
+
+            # End the root span last
+            root_span.end(end_time=int(root_end.timestamp() * 1e9))
+
+        return trace_count
+
+    def run(self) -> None:
+        sleep_seconds = self.config.tracing.sleep_seconds
+        hold_rounds = self.config.tracing.hold_rounds
         try:
             while True:
                 self.timing.start()
+                self._current_round += 1
 
-                # Group logs by message_id and then by host_id
+                # Query new logs for this iteration window.
+                # Start slightly before last_query_time so that logs whose
+                # syslog timestamp predates the OpenSearch ingest time are not
+                # missed.  Duplicates introduced by the overlap are dropped in
+                # _accumulate_logs.
                 query_end = datetime.utcnow()
-                logs = query_all_logs(
-                    self.config, self.last_query_time, query_end
+                go_back = timedelta(
+                    seconds=self.config.tracing.go_back_seconds
                 )
+                query_start = self.last_query_time - go_back
+                logs = query_all_logs(self.config, query_start, query_end)
                 self.timing.mark("query_logs")
 
+                # Accumulate new logs into the per-message-ID buffer, refreshing
+                # the last-seen round for any ID that appeared in this batch
+                new_logs_by_message_id = group_logs_by_message_id(logs)
+                self._accumulate_logs(new_logs_by_message_id)
+
+                logger.debug(
+                    f"Round {self._current_round}: {len(new_logs_by_message_id)} message IDs in new batch, "
+                    f"{len(self._pending)} total buffered (hold_rounds={hold_rounds})"
+                )
+
+                # Only export traces for IDs that have been quiet for hold_rounds
+                ready_logs = self._collect_ready()
                 trace_count = 0
-
-                # Iterate over all emails (grouping by message_id, then by host)
-                logs_by_message_id = group_logs_by_message_id(logs)
-                for message_id, message_id_logs in logs_by_message_id.items():
-                    hosts_logs = group_logs_by_hosts(message_id_logs)
-                    hosts = list(hosts_logs.keys())
+                if ready_logs:
                     logger.debug(
-                        f"Processing email with message_id {message_id} and hosts {hosts}"
+                        f"Exporting {len(ready_logs)} ready message ID(s): {list(ready_logs.keys())}"
                     )
-
-                    host_info: dict[
-                        str, tuple[DelayInfo, datetime, datetime]
-                    ] = {}
-
-                    # For each host, detect the MTA, parse the logs to extract delay info,
-                    # and determine the start and end times for the host span
-                    for host, host_logs in hosts_logs.items():
-                        mta = detect_mta_from_entries(host_logs)
-                        parser = get_parser_for_mta(mta)
-                        delay_info = DelayInfo()
-                        for log in host_logs:
-                            delay_info |= parser.parse(log.message)
-                        logger.debug(
-                            f"Host {host} has delay info: {delay_info}"
-                        )
-
-                        # Start time: first log entry datetime
-                        host_start = min(
-                            datetime.fromisoformat(
-                                log.datetime.replace("Z", "+00:00")
-                            )
-                            for log in host_logs
-                        )
-                        # host_end = ref_time + total_delay
-                        host_end = host_start + timedelta(
-                            seconds=delay_info.total_delay
-                        )
-                        host_info[host] = (delay_info, host_start, host_end)
-
-                    if not host_info:
-                        logger.debug(
-                            f"No delay info found for message_id {message_id}, skipping"
-                        )
-                        continue
-
-                    trace_count += 1
-
-                    # Root span covers the full delivery window across all hosts
-                    root_start = min(info[1] for info in host_info.values())
-                    root_end = max(info[2] for info in host_info.values())
-
-                    # Create spans
-                    # Create root span
-                    root_span = create_root_span(message_id, root_start)
-                    root_ctx = trace.set_span_in_context(root_span)
-
-                    # Create host spans and their child delay spans
-                    for host, (
-                        delays,
-                        host_start,
-                        host_end,
-                    ) in host_info.items():
-                        host_span = create_host_span(
-                            host, host_start, root_ctx
-                        )
-                        host_ctx = trace.set_span_in_context(host_span)
-
-                        # Create delay stage spans (siblings under the host span)
-                        create_delay_spans(delays, host, host_start, host_ctx)
-
-                        logger.debug(
-                            f"Close host span: {host} at {host_end.isoformat()}"
-                        )
-                        host_span.end(end_time=dt_to_ns(host_end))
-
-                    # End the root span last
-                    root_span.end(end_time=int(root_end.timestamp() * 1e9))
-
+                    trace_count = self._export_traces(ready_logs)
                 self.timing.mark("create_spans")
 
                 # Emit the traces to the OpenTelemetry collector
                 flush_traces()
                 self.timing.mark("flush_traces")
 
-                # Print timing summary if we processed any traces
+                # Print timing summary if we exported any traces
                 if trace_count > 0:
                     self.timing.set_trace_count(trace_count)
                     self.timing.print_summary()
 
                 # Update the last query time to the end of the current query
                 self.last_query_time = query_end
-                sleep(interval_seconds)
+                sleep(sleep_seconds)
         except KeyboardInterrupt:
             print("EmailTracesGenerator stopped.")
 

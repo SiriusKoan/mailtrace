@@ -221,12 +221,6 @@ def graph(
     help="OpenTelemetry OTLP endpoint for sending traces (default: http://localhost:4317)",
 )
 @click.option(
-    "--interval",
-    type=int,
-    default=60,
-    help="Interval in seconds between log queries (default: 60)",
-)
-@click.option(
     "--opensearch-pass",
     type=str,
     required=False,
@@ -240,7 +234,6 @@ def graph(
 def tracing(
     config_path: str | None,
     otel_endpoint: str,
-    interval: int,
     opensearch_pass: str | None,
     ask_opensearch_pass: bool,
 ) -> None:
@@ -250,7 +243,8 @@ def tracing(
     groups them by message ID to maintain email chains across fetches,
     and generates distributed traces sent to the configured OTLP endpoint.
 
-    Uses OpenSearch configuration from the config file.
+    Uses OpenSearch configuration from the config file. Sleep interval and
+    hold rounds are configured via the ``tracing`` section of the config file.
     """
     config = load_config(config_path)
     configure_logging(config)
@@ -286,7 +280,6 @@ def tracing(
     run_continuous_tracing(
         config=config,
         otel_endpoint=otel_endpoint,
-        interval_seconds=interval,
     )
 
 

@@ -52,3 +52,7 @@ opensearch_config:
     message: "message"
     timestamp: "timestamp"
     service: "appname"
+tracing:
+  sleep_seconds: 10
+  hold_rounds: 2
+  go_back_seconds: 5

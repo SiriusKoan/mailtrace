@@ -55,3 +55,18 @@ clusters:
     - smtp-relay-1.example.com
     - smtp-relay-2.example.com
     - mail-delivery.example.com
+tracing:
+  # How long to sleep between log-query iterations (seconds).
+  sleep_seconds: 60
+  # Number of consecutive rounds in which a message ID must be absent from new
+  # query results before its buffered logs are exported as a trace.
+  # Increase this if email delivery across your infrastructure can span more
+  # than sleep_seconds * hold_rounds seconds.
+  # Set to 0 to disable buffering (may produce truncated traces).
+  hold_rounds: 2
+  # How far back from the previous query boundary to extend each new query
+  # window (seconds). This compensates for logs whose syslog timestamp
+  # predates their OpenSearch ingest time. Duplicate entries introduced by the
+  # overlap are automatically discarded.
+  # Set to 0 to disable the overlap.
+  go_back_seconds: 10

@@ -155,6 +155,31 @@ class OpenSearchConfig:
 
 
 @dataclass
+class TracingConfig:
+    """Configuration for continuous trace generation behaviour.
+
+    Attributes:
+        sleep_seconds: How long to sleep between log-query iterations.
+        hold_rounds: Number of iterations to wait after the last log for a
+            message ID is seen before the trace is parsed and exported.
+            This prevents truncated traces when an email's logs arrive across
+            multiple query windows.
+    """
+
+    sleep_seconds: int = 60
+    hold_rounds: int = 2
+    go_back_seconds: int = 10
+
+    def __post_init__(self) -> None:
+        if self.sleep_seconds <= 0:
+            raise ValueError("sleep_seconds must be a positive integer")
+        if self.hold_rounds < 0:
+            raise ValueError("hold_rounds must be a non-negative integer")
+        if self.go_back_seconds < 0:
+            raise ValueError("go_back_seconds must be a non-negative integer")
+
+
+@dataclass
 class Config:
     """Main configuration class for the mail tracing application.
 
@@ -166,6 +191,7 @@ class Config:
         clusters: Dictionary mapping cluster names to lists of host names for HA
         domain: Domain name for hostname resolution
         auto_continue: Whether to automatically continue tracing to next hop without user input
+        tracing: Configuration for continuous trace generation
     """
 
     method: Method
@@ -175,6 +201,7 @@ class Config:
     clusters: dict[str, list[str]] = field(default_factory=dict)
     domain: str = ""
     auto_continue: bool = False
+    tracing: TracingConfig = field(default_factory=TracingConfig)
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -193,6 +220,8 @@ class Config:
             self.ssh_config = SSHConfig(**self.ssh_config)
         if isinstance(self.opensearch_config, dict):
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
+        if isinstance(self.tracing, dict):
+            self.tracing = TracingConfig(**self.tracing)
 
     def cluster_to_hosts(self, name: str) -> list[str] | None:
         """Get list of hosts for a given cluster name."""

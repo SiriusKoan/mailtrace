@@ -64,13 +64,12 @@ The `tracing` command continuously queries logs from OpenSearch and generates di
 mailtrace tracing \
     -c ~/.config/mailtrace.yaml \
     --otel-endpoint http://localhost:4317 \
-    --interval 60 \
     --ask-opensearch-pass
 ```
 
 #### Features
 
-- **Continuous monitoring**: Automatically queries logs at regular intervals
+- **Continuous monitoring**: Automatically queries logs at regular intervals, controlled by `tracing.sleep_seconds` in the config file
 - **Message ID tracking**: Uses message ID as trace ID to maintain email chains across multiple query cycles
   - The message ID is hashed to generate a consistent 128-bit trace ID
   - This ensures that logs from the same email, even if fetched at different times, belong to the same trace
@@ -80,14 +79,17 @@ mailtrace tracing \
   - This allows spans to be properly correlated across different fetch cycles
 - **Multi-host support**: Queries all hosts defined in the clusters configuration
 - **Automatic trace generation**: Groups logs by message ID and generates OpenTelemetry traces
+- **Log buffering with hold rounds**: Logs for each message ID are held in a buffer for a configurable number of rounds (`tracing.hold_rounds`) after the last log is seen before being exported. This prevents truncated traces when an email's logs arrive across multiple query windows
+- **Late-arrival compensation**: Each query window extends slightly into the past (`tracing.go_back_seconds`) to catch logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate log entries introduced by this overlap are automatically deduplicated
 
 #### Parameters
 
 - `-c, --config-path`: Path to configuration file
 - `--otel-endpoint`: OpenTelemetry OTLP endpoint (default: `http://localhost:4317`)
-- `--interval`: Interval in seconds between log queries (default: `60`)
 - `--opensearch-pass`: OpenSearch password
 - `--ask-opensearch-pass`: Prompt for OpenSearch password interactively
+
+Timing and buffering behaviour is controlled entirely through the `tracing` section of the config file — see [Tracing Configuration](#tracing-configuration) below.
 
 #### Requirements
 
@@ -99,7 +101,7 @@ mailtrace tracing \
 
 #### Example Workflow
 
-1. Set up your configuration with OpenSearch and clusters:
+1. Set up your configuration with OpenSearch, clusters, and tracing settings:
 
 ```yaml
 method: opensearch
@@ -114,6 +116,10 @@ opensearch_config:
   username: admin
   index: mail-logs-*
   # ... other opensearch settings
+tracing:
+  sleep_seconds: 60
+  hold_rounds: 2
+  go_back_seconds: 10
 ```
 
 2. Start a Jaeger instance to receive traces:
@@ -131,13 +137,12 @@ docker run -d --name jaeger \
 mailtrace tracing \
     -c ~/.config/mailtrace.yaml \
     --otel-endpoint http://localhost:4317 \
-    --interval 60 \
     --ask-opensearch-pass
 ```
 
 4. View traces in Jaeger UI at `http://localhost:16686`
 
-The tracer will continuously fetch logs every 60 seconds, group them by message ID to maintain complete email chains even if logs are split across multiple fetches, and send the generated traces to Jaeger.
+The tracer will continuously fetch logs every `sleep_seconds` seconds. Logs for each message ID are buffered until no new logs for that ID have been seen for `hold_rounds` consecutive rounds, ensuring complete traces even when an email's logs arrive across multiple query windows. Each query also reaches `go_back_seconds` into the past to catch logs that arrived in OpenSearch later than their syslog timestamp.
 
 ### Automatic Tracing with Graph Generation
 
@@ -487,6 +492,23 @@ The `mapping` section allows you to specify how application fields map to OpenSe
 - `service`: OpenSearch field for service name (default: `"log.syslog.appname"`).
 
 This allows mailtrace to work with different OpenSearch index schemas. Customize these mappings based on your actual field names in OpenSearch.
+
+### Tracing Configuration
+
+The optional `tracing` section controls the behaviour of the `mailtrace tracing` command. All fields have defaults so the section can be omitted entirely.
+
+```yaml
+tracing:
+  sleep_seconds: 60
+  hold_rounds: 2
+  go_back_seconds: 10
+```
+
+#### Tracing Parameters
+
+- `sleep_seconds`: How long to sleep between log-query iterations (default: `60`). Replaces the former `--interval` CLI flag.
+- `hold_rounds`: Number of consecutive rounds in which a message ID must be absent from new query results before its buffered logs are exported as a trace (default: `2`). Increase this if email delivery across your infrastructure can span more than `sleep_seconds * hold_rounds` seconds. Setting it to `0` disables buffering and exports logs immediately, which may produce truncated traces.
+- `go_back_seconds`: How far back from the previous query boundary to extend the start of each new query window (default: `10`). This compensates for logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate entries captured by the overlap are automatically discarded. Set to `0` to disable the overlap.
 
 ### Clusters Configuration
 
