@@ -245,10 +245,6 @@ class EximDelayParser(DelayParser):
             dt = delay_info.deliver_time or 0.0
             delay_info.queue_time = max(0.0, qt - rt - dt)
 
-        print(
-            f"Parsed Exim delay info: total_delay={qt}, receive_time={delay_info.receive_time}, deliver_time={delay_info.deliver_time}, queue_time={delay_info.queue_time}"
-        )
-
         return delay_info
 
     def get_mta_type(self) -> str:
