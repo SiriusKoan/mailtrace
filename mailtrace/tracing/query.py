@@ -164,27 +164,31 @@ def group_logs_by_message_id(
 
     for log in logs:
         message_id = _extract_message_id_from_log(log)
-        if not message_id and not log.mail_id:
-            continue
-        if message_id:
-            # If we have a message ID, use it directly
-            if message_id not in grouped_logs:
-                grouped_logs[message_id] = []
-            grouped_logs[message_id].append(log)
 
-            # If we also have a queue ID, map it to the message ID for future logs
-            if log.mail_id:
-                queue_id_to_msg_id_map[(log.hostname, log.mail_id)] = (
-                    message_id
-                )
-        elif log.mail_id:
-            # If we don't have a message ID but have a queue ID, try to find the message ID from previous logs
-            key = (log.hostname, log.mail_id)
-            if key in queue_id_to_msg_id_map:
-                message_id = queue_id_to_msg_id_map[key]
-                if message_id not in grouped_logs:
-                    grouped_logs[message_id] = []
-                grouped_logs[message_id].append(log)
+        # If no message ID found in log, try to resolve from queue ID mapping
+        if not message_id and log.mail_id:
+            message_id = queue_id_to_msg_id_map.get(
+                (log.hostname, log.mail_id)
+            )
+
+        # Skip logs that we cannot associate with a message ID
+        if not message_id:
+            continue
+
+        # Add log to grouped_logs under its message ID
+        if message_id not in grouped_logs:
+            grouped_logs[message_id] = []
+        grouped_logs[message_id].append(log)
+
+        # Register current (hostname, mail_id) mapping for future logs
+        if log.mail_id:
+            queue_id_to_msg_id_map[(log.hostname, log.mail_id)] = message_id
+
+        # Register relay mapping for when this message is forwarded to another host
+        if log.relay_host and log.queued_as:
+            queue_id_to_msg_id_map[(log.relay_host, log.queued_as)] = (
+                message_id
+            )
 
     return grouped_logs
 

@@ -1,7 +1,8 @@
 import logging
+import re
 from datetime import datetime, timedelta
 from time import sleep, time
-from typing import Dict
+from typing import Dict, Optional
 
 from opentelemetry import trace
 
@@ -120,6 +121,7 @@ class EmailTracesGenerator:
         # Buffer: message_id -> (accumulated logs, round number of last seen log)
         self._pending: dict[str, tuple[list[LogEntry], int]] = {}
         self._current_round: int = 0
+        self._total_traces: int = 0
 
     @staticmethod
     def _log_key(log: LogEntry) -> tuple:
@@ -184,6 +186,37 @@ class EmailTracesGenerator:
             ready[mid] = self._pending.pop(mid)[0]
         return ready
 
+    def _extract_sender_recipient(
+        self, logs: list[LogEntry]
+    ) -> tuple[Optional[str], Optional[list[str]]]:
+        """Extract sender and recipients from email logs.
+
+        Args:
+            logs: List of log entries for an email trace.
+
+        Returns:
+            Tuple of (sender, recipients), sender may be None, recipients is a list (possibly empty).
+        """
+        sender: Optional[str] = None
+        recipients: list[str] = []
+        seen_recipients = set()
+
+        for log in logs:
+            if not sender:
+                from_match = re.search(r"from=<([^>]*)>", log.message)
+                if from_match:
+                    sender = from_match.group(1)
+
+            # Extract all recipients from this log
+            to_match = re.search(r"to=<([^>]*)>", log.message)
+            if to_match:
+                recipient = to_match.group(1)
+                if recipient not in seen_recipients:
+                    recipients.append(recipient)
+                    seen_recipients.add(recipient)
+
+        return sender, recipients if recipients else None
+
     def _export_traces(
         self, logs_by_message_id: Dict[str, list[LogEntry]]
     ) -> int:
@@ -195,9 +228,8 @@ class EmailTracesGenerator:
 
         for message_id, message_id_logs in logs_by_message_id.items():
             hosts_logs = group_logs_by_hosts(message_id_logs)
-            hosts = list(hosts_logs.keys())
             logger.debug(
-                f"Processing email with message_id {message_id} and hosts {hosts}"
+                f"Processing email with message_id {message_id} and hosts {list(hosts_logs.keys())}"
             )
 
             host_info: dict[str, tuple[DelayInfo, datetime, datetime]] = {}
@@ -235,13 +267,37 @@ class EmailTracesGenerator:
             root_start = min(info[1] for info in host_info.values())
             root_end = max(info[2] for info in host_info.values())
 
-            # Create root span
-            root_span = create_root_span(message_id, root_start)
+            # Extract sender and recipients from logs
+            sender, recipients = self._extract_sender_recipient(
+                message_id_logs
+            )
+
+            # Create root span with sender and recipients attributes
+            root_span = create_root_span(
+                message_id, root_start, sender=sender, recipients=recipients
+            )
             root_ctx = trace.set_span_in_context(root_span)
 
             # Create host spans and their child delay spans
             for host, (delays, host_start, host_end) in host_info.items():
-                host_span = create_host_span(host, host_start, root_ctx)
+                # Extract sender and recipients specific to this host
+                host_sender, host_recipients = self._extract_sender_recipient(
+                    hosts_logs[host]
+                )
+                # Extract the first queue ID for this host from the logs
+                host_queue_id = next(
+                    (log.mail_id for log in hosts_logs[host] if log.mail_id),
+                    None,
+                )
+                host_span = create_host_span(
+                    host,
+                    host_start,
+                    root_ctx,
+                    message_id=message_id,
+                    sender=host_sender,
+                    recipients=host_recipients,
+                    queue_id=host_queue_id,
+                )
                 host_ctx = trace.set_span_in_context(host_span)
 
                 # Create delay stage spans (siblings under the host span)
@@ -306,12 +362,14 @@ class EmailTracesGenerator:
                 if trace_count > 0:
                     self.timing.set_trace_count(trace_count)
                     self.timing.print_summary()
+                    self._total_traces += trace_count
 
                 # Update the last query time to the end of the current query
                 self.last_query_time = query_end
                 sleep(sleep_seconds)
         except KeyboardInterrupt:
             print("EmailTracesGenerator stopped.")
+            print(f"Total traces generated: {self._total_traces}")
 
 
 __all__ = ["EmailTracesGenerator"]

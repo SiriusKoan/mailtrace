@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -67,7 +68,12 @@ def dt_to_ns(dt: datetime) -> int:
     return int(dt.timestamp() * 1e9)
 
 
-def create_root_span(message_id: str, start_time: datetime) -> trace.Span:
+def create_root_span(
+    message_id: str,
+    start_time: datetime,
+    sender: Optional[str] = None,
+    recipients: Optional[list[str]] = None,
+) -> trace.Span:
     """Create and start the root span for one email delivery trace.
 
     The span is started but **not** ended — the caller must call
@@ -76,15 +82,22 @@ def create_root_span(message_id: str, start_time: datetime) -> trace.Span:
     Args:
         message_id: The RFC 2822 ``Message-ID`` header value.
         start_time: Absolute start time for the span.
+        sender: The email sender address (optional).
+        recipients: List of email recipient addresses (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
     """
     tracer = _get_tracer("mailtrace")
+    attributes = {"message.id": message_id}
+    if sender is not None:
+        attributes["email.sender"] = sender
+    if recipients is not None:
+        attributes["email.recipients"] = json.dumps(recipients)
     return tracer.start_span(
         name="email.delivery",
         start_time=dt_to_ns(start_time),
-        attributes={"message.id": message_id},
+        attributes=attributes,
     )
 
 
@@ -92,6 +105,10 @@ def create_host_span(
     hostname: str,
     start_time: datetime,
     parent_context: Any,
+    message_id: Optional[str] = None,
+    sender: Optional[str] = None,
+    recipients: Optional[list[str]] = None,
+    queue_id: Optional[str] = None,
 ) -> trace.Span:
     """Create and start a host span as a child of *parent_context*.
 
@@ -108,16 +125,29 @@ def create_host_span(
         parent_context: OTEL :class:`~opentelemetry.context.Context` that
             carries the parent span (typically obtained via
             ``trace.set_span_in_context(parent_span)``).
+        message_id: The RFC 2822 ``Message-ID`` header value (optional).
+        sender: The email sender address (optional).
+        recipients: List of email recipient addresses (optional).
+        queue_id: Queue ID for this host (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
     """
     tracer = _get_tracer(hostname)
+    attributes = {"server.address": hostname}
+    if message_id is not None:
+        attributes["message.id"] = message_id
+    if sender is not None:
+        attributes["email.sender"] = sender
+    if recipients is not None:
+        attributes["email.recipients"] = json.dumps(recipients)
+    if queue_id is not None:
+        attributes["email.queue_id"] = queue_id
     return tracer.start_span(
         name=hostname,
         context=parent_context,
         start_time=dt_to_ns(start_time),
-        attributes={"server.address": hostname},
+        attributes=attributes,
     )
 
 
