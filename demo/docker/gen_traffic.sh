@@ -28,7 +28,7 @@ EXAMPLE:
 
 This will:
     - Sleep randomly between 0.1 and 0.5 seconds
-    - Send a random number of emails between 1 and 5
+    - Send a random number of emails between 1 and 5 per batch (async)
     - Repeat for 10 seconds total
 EOF
     exit 1
@@ -116,6 +116,7 @@ echo "Starting traffic generation..."
 echo "  Duration: $DURATION seconds"
 echo "  Sleep range: $SLEEP_MIN - $SLEEP_MAX seconds"
 echo "  Emails per batch: $EMAILS_MIN - $EMAILS_MAX"
+echo "  Mode: async"
 echo ""
 
 START_TIME=$(date +%s.%N)
@@ -127,12 +128,6 @@ while true; do
 
     # Check if we've exceeded the duration
     if (( $(echo "$ELAPSED >= $DURATION" | bc -l) )); then
-        echo ""
-        echo "================================"
-        echo "Traffic generation complete!"
-        echo "  Total batches sent: $BATCH_COUNT"
-        echo "  Total elapsed time: $(printf "%.2f" $ELAPSED) seconds"
-        echo "================================"
         break
     fi
 
@@ -156,22 +151,31 @@ while true; do
     CURRENT_TIME=$(date +%s.%N)
     ELAPSED=$(echo "$CURRENT_TIME - $START_TIME" | bc)
     if (( $(echo "$ELAPSED >= $DURATION" | bc -l) )); then
-        echo ""
-        echo "================================"
-        echo "Traffic generation complete!"
-        echo "  Total batches sent: $BATCH_COUNT"
-        echo "  Total elapsed time: $(printf "%.2f" $ELAPSED) seconds"
-        echo "================================"
         break
     fi
 
-    # Send emails
+    # Send emails asynchronously in the background so the loop can continue
+    # immediately without waiting for the batch to complete
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$TIMESTAMP] Sending $RANDOM_EMAILS emails..."
-    "$SCRIPT_DIR/send_bulk_emails.sh" "$RANDOM_EMAILS"
+    echo "[$TIMESTAMP] Dispatching batch of $RANDOM_EMAILS emails (async)..."
+    "$SCRIPT_DIR/send_bulk_emails.sh" --async "$RANDOM_EMAILS" &
     ((BATCH_COUNT++))
 
     echo ""
 done
+
+# Wait for all background batches to finish before exiting
+echo "Waiting for all in-flight batches to complete..."
+wait
+
+CURRENT_TIME=$(date +%s.%N)
+ELAPSED=$(echo "$CURRENT_TIME - $START_TIME" | bc)
+
+echo ""
+echo "================================"
+echo "Traffic generation complete!"
+echo "  Total batches dispatched: $BATCH_COUNT"
+echo "  Total elapsed time: $(printf "%.2f" $ELAPSED) seconds"
+echo "================================"
 
 exit 0

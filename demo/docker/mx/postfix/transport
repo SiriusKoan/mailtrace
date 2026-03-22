@@ -1,1 +1,2 @@
 /.*@example\.com$/   smtp:[mailbox.example.com]
+/.*@example2\.com$/   smtp:[mailbox2.example.com]

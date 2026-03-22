@@ -63,7 +63,7 @@ for ((i=1; i<=NUM_EMAILS; i++)); do
         # Method 2: Send to user1@example.com via mailpolicy
         printf "[$i/$NUM_EMAILS] Sending via mailpolicy:20025 (me->user1)... "
         if swaks \
-            --to user1@example.com \
+            --to user1@example.com,user1@example2.com \
             --from me@siriuskoan.one \
             --helo siriuskoan.one \
             --server 127.0.0.1 \

@@ -31,7 +31,7 @@ mynetworks = 192.168.200.0/24 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128
 
 # List of domains (maptype:mapname allowed) that this machine considers
 # itself the final destination for.
-mydestination = $myhostname
+mydestination = $myhostname example2.com
 
 # Maximum size of a user mailbox
 mailbox_size_limit = 0
@@ -40,7 +40,8 @@ mailbox_size_limit = 0
 # you must set up an alias to forward root mail to a real user.
 #mailbox_command = /usr/bin/procmail
 #mailbox_command = /usr/bin/procmail -a "$EXTENSION"
-mailbox_command =
+#mailbox_command =
+mailbox_transport = lmtp:[127.0.0.1]:24
 
 # List of alias maps to use to lookup local addresses.
 # Per Debian Policy it should be /etc/aliases.
@@ -48,9 +49,6 @@ mailbox_command =
 
 # List of alias maps to make indexes on, when running newaliases.
 #alias_database = hash:/etc/aliases
-
-# Transport maps for routing mail to different destinations
-transport_maps = pcre:/etc/postfix/transport
 
 # Notify (or not) local biff service when new mail arrives.
 # Rarely used these days.
@@ -86,10 +84,9 @@ smtp_tls_security_level = may
 # SMTP Client TLS session cache
 smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
-myhostname = mailpolicy.example.com
+myhostname = mailbox2.example.com
 inet_interfaces = all
-relay_domains = example.com, example2.com
 
 smtpd_sasl_auth_enable = yes
 smtpd_sasl_type = dovecot
-smtpd_sasl_path = inet:mailbox.example.com:12345
+smtpd_sasl_path = inet:127.0.0.1:12345

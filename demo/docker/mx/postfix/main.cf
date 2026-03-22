@@ -88,4 +88,4 @@ smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated reject_unauth_destination
 myhostname = mx.example.com
 inet_interfaces = all
-relay_domains = example.com
+relay_domains = example.com, example2.com

@@ -23,7 +23,8 @@ sinks:
     inputs:
       - parse_logs
     endpoints:
-      - https://opensearch.example.com:9200
+      #- https://opensearch.example.com:9200
+      - https://100.64.0.7:9200
     bulk:
       index: mailtrace-logs
     tls:

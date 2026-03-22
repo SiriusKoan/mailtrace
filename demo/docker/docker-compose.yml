@@ -129,6 +129,22 @@ services:
       mailtrace_net:
         ipv4_address: 192.168.200.40
 
+  mailbox2:
+    hostname: mailbox2.example.com
+    build:
+      context: .
+      dockerfile: ./mailbox2/Dockerfile
+    ports:
+      - "22227:22"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - opensearch
+      - loghost
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.41
+
   jaeger:
     image: jaegertracing/all-in-one:latest
     hostname: jaeger.example.com
