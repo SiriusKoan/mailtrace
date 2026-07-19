@@ -88,7 +88,7 @@ smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
 myhostname = mailpolicy.example.com
 inet_interfaces = all
-relay_domains = example.com, example2.com
+relay_domains = example.com, example1.com, example2.com
 
 smtpd_sasl_auth_enable = yes
 smtpd_sasl_type = dovecot
