@@ -29,6 +29,10 @@ from mailtrace.tracing.query import (
 
 logger = logging.getLogger("mailtrace")
 
+_EXIM_DELIVERY_RECIPIENT_RE = re.compile(
+    r"\s(?:=>|->|\*\*)\s+([^\s<>:]+@[^\s<>:]+)"
+)
+
 
 class TimingMetrics:
     """Tracks timing information for trace generation."""
@@ -215,6 +219,15 @@ class EmailTracesGenerator:
                     recipients.append(recipient)
                     seen_recipients.add(recipient)
 
+            exim_delivery_match = _EXIM_DELIVERY_RECIPIENT_RE.search(
+                log.message
+            )
+            if exim_delivery_match:
+                recipient = exim_delivery_match.group(1)
+                if recipient not in seen_recipients:
+                    recipients.append(recipient)
+                    seen_recipients.add(recipient)
+
         return sender, recipients if recipients else None
 
     def _export_traces(
@@ -289,6 +302,14 @@ class EmailTracesGenerator:
                     (log.mail_id for log in hosts_logs[host] if log.mail_id),
                     None,
                 )
+                host_next_host = next(
+                    (
+                        log.relay_host
+                        for log in hosts_logs[host]
+                        if log.relay_host
+                    ),
+                    None,
+                )
                 host_span = create_host_span(
                     host,
                     host_start,
@@ -297,6 +318,7 @@ class EmailTracesGenerator:
                     sender=host_sender,
                     recipients=host_recipients,
                     queue_id=host_queue_id,
+                    next_host=host_next_host,
                 )
                 host_ctx = trace.set_span_in_context(host_span)
 

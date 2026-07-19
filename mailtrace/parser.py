@@ -21,7 +21,7 @@ _RELAY_RE = re.compile(
 
 # Regex patterns for parsing Exim log messages
 _EXIM_RELAY_RE = re.compile(
-    r"=>\s+\S+@\S+.*H=(?P<host>[^\s\[]+)\s+\[(?P<ip>[^\]]+)\].*C=\"[^\"]*queued as (?P<id>[0-9A-Za-z\-]+)"
+    r"(?:=>|->)\s+\S+@\S+.*H=(?P<host>[^\s\[]+)\s+\[(?P<ip>[^\]]+)\].*C=\"[^\"]*queued as (?P<id>[0-9A-Za-z\-]+)"
 )
 
 
@@ -381,7 +381,7 @@ class OpensearchParser(LogParser):
         # Parse mail_id from message content
         # Try Exim format first: "YYYY-MM-DD HH:MM:SS.sss QUEUEID <=" or "YYYY-MM-DD HH:MM:SS QUEUEID <="
         exim_match = re.search(
-            r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+([A-Za-z0-9_-]+)\s+(?:<=|=>|\*\*|Completed)",
+            r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+([A-Za-z0-9_-]+)\s+(?:<=|=>|->|\*\*|Completed)",
             message_content,
         )
         if exim_match:

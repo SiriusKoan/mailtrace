@@ -109,6 +109,7 @@ def create_host_span(
     sender: Optional[str] = None,
     recipients: Optional[list[str]] = None,
     queue_id: Optional[str] = None,
+    next_host: Optional[str] = None,
 ) -> trace.Span:
     """Create and start a host span as a child of *parent_context*.
 
@@ -129,6 +130,7 @@ def create_host_span(
         sender: The email sender address (optional).
         recipients: List of email recipient addresses (optional).
         queue_id: Queue ID for this host (optional).
+        next_host: Next host this host relays the message to (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
@@ -143,6 +145,8 @@ def create_host_span(
         attributes["email.recipients"] = json.dumps(recipients)
     if queue_id is not None:
         attributes["email.queue_id"] = queue_id
+    if next_host is not None:
+        attributes["email.next_host"] = next_host
     return tracer.start_span(
         name=hostname,
         context=parent_context,
