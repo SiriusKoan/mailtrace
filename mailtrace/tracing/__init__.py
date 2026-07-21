@@ -253,19 +253,31 @@ class EmailTracesGenerator:
                 mta = detect_mta_from_entries(host_logs)
                 parser = get_parser_for_mta(mta)
                 delay_info = DelayInfo()
+                delay_end: datetime | None = None
                 for log in host_logs:
-                    delay_info |= parser.parse(log.message)
+                    parsed_delay = parser.parse(log.message)
+                    if delay_end is None and parsed_delay.get_delay_values():
+                        delay_end = datetime.fromisoformat(
+                            log.datetime.replace("Z", "+00:00")
+                        )
+                    delay_info |= parsed_delay
                 logger.debug(f"Host {host} has delay info: {delay_info}")
 
-                # Start time: first log entry datetime
-                host_start = min(
-                    datetime.fromisoformat(log.datetime.replace("Z", "+00:00"))
-                    for log in host_logs
-                )
-                # host_end = ref_time + total_delay
-                host_end = host_start + timedelta(
-                    seconds=delay_info.total_delay
-                )
+                if delay_end is not None:
+                    host_end = delay_end
+                    host_start = host_end - timedelta(
+                        seconds=delay_info.total_delay
+                    )
+                else:
+                    host_start = min(
+                        datetime.fromisoformat(
+                            log.datetime.replace("Z", "+00:00")
+                        )
+                        for log in host_logs
+                    )
+                    host_end = host_start + timedelta(
+                        seconds=delay_info.total_delay
+                    )
                 host_info[host] = (delay_info, host_start, host_end)
 
             if not host_info:

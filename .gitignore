@@ -3,3 +3,4 @@ config.yaml
 !demo/*/config.yaml
 *egg-info
 .direnv
+results
