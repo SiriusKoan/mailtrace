@@ -1,0 +1,57 @@
+services:
+  tempo:
+    image: grafana/tempo:latest
+    hostname: tempo.example.com
+    command:
+      - -config.file=/etc/tempo.yaml
+    environment:
+      - TZ=Asia/Taipei
+    ports:
+      - "3200:3200"    # Tempo HTTP API
+      - "14317:4317"    # OTLP gRPC receiver
+      - "14318:4318"    # OTLP HTTP receiver
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  grafana:
+    image: grafana/grafana:latest
+    hostname: grafana.example.com
+    environment:
+      - TZ=Asia/Taipei
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/mailtrace-traces.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning/datasources/tempo.yaml:/etc/grafana/provisioning/datasources/tempo.yaml:ro
+      - ./grafana/provisioning/dashboards/mailtrace.yaml:/etc/grafana/provisioning/dashboards/mailtrace.yaml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - tempo
+
+  mailtrace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mailtrace:latest
+    environment:
+      - TZ=Asia/Taipei
+      - MAILTRACE_CONFIG=/app/config.yaml
+      - OTEL_SERVICE_NAME=mailtrace
+    command:
+      - python3
+      - -m
+      - mailtrace
+      - tracing
+      - --otel-endpoint
+      - http://tempo:4317
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      - tempo
+
+volumes:
+  tempo-data:

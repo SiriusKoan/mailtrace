@@ -41,22 +41,22 @@ hosts:
   mx.example.com:
     log_files:
       - /var/log/mx/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    log_parser: SyslogParser
     time_format: "%Y-%m-%dT%H:%M:%S"
   mailer.example.com:
     log_files:
       - /var/log/mailer/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    log_parser: SyslogParser
     time_format: "%Y-%m-%dT%H:%M:%S"
   mailpolicy.example.com:
     log_files:
       - /var/log/mailpolicy/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    log_parser: SyslogParser
     time_format: "%Y-%m-%dT%H:%M:%S"
   mailbox.example.com:
     log_files:
       - /var/log/mailbox/mail.log
-    log_parser: NoSpaceInDatetimeParser
+    log_parser: SyslogParser
     time_format: "%Y-%m-%dT%H:%M:%S"
 ```
 

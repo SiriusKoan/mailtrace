@@ -145,22 +145,39 @@ services:
       mailtrace_net:
         ipv4_address: 192.168.200.41
 
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    hostname: jaeger.example.com
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
+  tempo:
+    image: grafana/tempo:latest
+    hostname: tempo.example.com
+    command:
+      - -config.file=/etc/tempo.yaml
     ports:
-      - "16686:16686"  # Jaeger UI
+      - "3200:3200"    # Tempo HTTP API
       - "14317:4317"    # OTLP gRPC receiver
       - "14318:4318"    # OTLP HTTP receiver
-      - "14268:14268"  # Jaeger collector HTTP
-      - "6831:6831/udp" # Jaeger compact thrift
     volumes:
       - /etc/localtime:/etc/localtime:ro
+      - ../../tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
     networks:
       mailtrace_net:
         ipv4_address: 192.168.200.60
+
+  grafana:
+    image: grafana/grafana:latest
+    hostname: grafana.example.com
+    environment:
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/mailtrace-traces.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../../grafana/provisioning/datasources/tempo.yaml:/etc/grafana/provisioning/datasources/tempo.yaml:ro
+      - ../../grafana/provisioning/dashboards/mailtrace.yaml:/etc/grafana/provisioning/dashboards/mailtrace.yaml:ro
+      - ../../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - tempo
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.200.61
 
 networks:
   mailtrace_net:
@@ -168,3 +185,6 @@ networks:
     ipam:
       config:
         - subnet: 192.168.200.0/24
+
+volumes:
+  tempo-data:

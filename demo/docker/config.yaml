@@ -1,5 +1,5 @@
 ---
-method: ssh
+method: opensearch
 log_level: INFO
 auto_continue: true
 ssh_config:
@@ -53,6 +53,8 @@ opensearch_config:
     timestamp: "timestamp"
     service: "appname"
 tracing:
-  sleep_seconds: 10
-  hold_rounds: 2
+  sleep_seconds: 2
+  hold_rounds: 1
   go_back_seconds: 5
+  max_trace_age_seconds: 1800
+  scroll_batch_size: 1000

@@ -79,7 +79,7 @@ mailtrace tracing \
   - This allows spans to be properly correlated across different fetch cycles
 - **Multi-host support**: Queries all hosts defined in the clusters configuration
 - **Automatic trace generation**: Groups logs by message ID and generates OpenTelemetry traces
-- **Log buffering with hold rounds**: Logs for each message ID are held in a buffer for a configurable number of rounds (`tracing.hold_rounds`) after the last log is seen before being exported. This prevents truncated traces when an email's logs arrive across multiple query windows
+- **Terminal-aware log buffering**: Logs for each message ID remain buffered until a terminal delivery outcome has been observed and the configured quiet period (`tracing.hold_rounds`) has elapsed. `tracing.max_trace_age_seconds` bounds non-terminal messages
 - **Late-arrival compensation**: Each query window extends slightly into the past (`tracing.go_back_seconds`) to catch logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate log entries introduced by this overlap are automatically deduplicated
 
 #### Parameters
@@ -120,15 +120,14 @@ tracing:
   sleep_seconds: 60
   hold_rounds: 2
   go_back_seconds: 10
+  max_trace_age_seconds: 1800
+  scroll_batch_size: 1000
 ```
 
-2. Start a Jaeger instance to receive traces:
+2. Start Tempo and Grafana to receive and inspect traces:
 
 ```bash
-docker run -d --name jaeger \
-  -p 4317:4317 \
-  -p 16686:16686 \
-  jaegertracing/all-in-one:latest
+docker compose up -d tempo grafana
 ```
 
 3. Run continuous tracing:
@@ -140,9 +139,9 @@ mailtrace tracing \
     --ask-opensearch-pass
 ```
 
-4. View traces in Jaeger UI at `http://localhost:16686`
+4. View traces from the Tempo data source in Grafana Explore at `http://localhost:3000`
 
-The tracer will continuously fetch logs every `sleep_seconds` seconds. Logs for each message ID are buffered until no new logs for that ID have been seen for `hold_rounds` consecutive rounds, ensuring complete traces even when an email's logs arrive across multiple query windows. Each query also reaches `go_back_seconds` into the past to catch logs that arrived in OpenSearch later than their syslog timestamp.
+The tracer will continuously fetch logs every `sleep_seconds` seconds. Logs for each message ID are buffered until a terminal outcome is observed and no new logs arrive for `hold_rounds` consecutive rounds. Messages without a terminal outcome are exported after `max_trace_age_seconds`. Each query also reaches `go_back_seconds` into the past to catch logs that arrived in OpenSearch later than their syslog timestamp.
 
 ### Automatic Tracing with Graph Generation
 
@@ -502,13 +501,17 @@ tracing:
   sleep_seconds: 60
   hold_rounds: 2
   go_back_seconds: 10
+  max_trace_age_seconds: 1800
+  scroll_batch_size: 1000
 ```
 
 #### Tracing Parameters
 
 - `sleep_seconds`: How long to sleep between log-query iterations (default: `60`). Replaces the former `--interval` CLI flag.
-- `hold_rounds`: Number of consecutive rounds in which a message ID must be absent from new query results before its buffered logs are exported as a trace (default: `2`). Increase this if email delivery across your infrastructure can span more than `sleep_seconds * hold_rounds` seconds. Setting it to `0` disables buffering and exports logs immediately, which may produce truncated traces.
+- `hold_rounds`: Number of quiet rounds required after a terminal outcome before buffered logs are exported (default: `2`). Non-terminal messages continue buffering until `max_trace_age_seconds`.
 - `go_back_seconds`: How far back from the previous query boundary to extend the start of each new query window (default: `10`). This compensates for logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate entries captured by the overlap are automatically discarded. Set to `0` to disable the overlap.
+- `max_trace_age_seconds`: Maximum time to retain a message ID without a terminal outcome before exporting its buffered logs (default: `1800`).
+- `scroll_batch_size`: Number of OpenSearch hits requested per scroll page (default: `1000`). Increase this to reduce scroll requests for high-volume windows, at the cost of larger responses and higher memory use.
 
 ### Clusters Configuration
 

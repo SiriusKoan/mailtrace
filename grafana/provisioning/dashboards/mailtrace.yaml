@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Mailtrace
+    orgId: 1
+    folder: Mailtrace
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
