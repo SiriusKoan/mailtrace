@@ -164,11 +164,16 @@ class TracingConfig:
             message ID is seen before the trace is parsed and exported.
             This prevents truncated traces when an email's logs arrive across
             multiple query windows.
+        max_trace_age_seconds: Maximum time to retain a trace before exporting
+            it even when no terminal outcome has been observed.
+        scroll_batch_size: Number of OpenSearch hits requested per scroll page.
     """
 
     sleep_seconds: int = 60
     hold_rounds: int = 2
     go_back_seconds: int = 10
+    max_trace_age_seconds: int = 1800
+    scroll_batch_size: int = 1000
 
     def __post_init__(self) -> None:
         if self.sleep_seconds <= 0:
@@ -177,6 +182,12 @@ class TracingConfig:
             raise ValueError("hold_rounds must be a non-negative integer")
         if self.go_back_seconds < 0:
             raise ValueError("go_back_seconds must be a non-negative integer")
+        if self.max_trace_age_seconds <= 0:
+            raise ValueError(
+                "max_trace_age_seconds must be a positive integer"
+            )
+        if self.scroll_batch_size <= 0:
+            raise ValueError("scroll_batch_size must be a positive integer")
 
 
 @dataclass

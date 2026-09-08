@@ -3,15 +3,25 @@
 import logging
 import re
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, MutableMapping
 
 from opensearchpy import OpenSearch as OSClient
+from opensearchpy.helpers.response import Hit
 from opensearchpy.helpers.search import Search
 
 from mailtrace.config import Config
-from mailtrace.parser import LogEntry, OpensearchParser
+from mailtrace.parser import LogEntry, OpensearchParser, extract_next_mail_id
 
 logger = logging.getLogger("mailtrace")
+
+HopKey = tuple[str, str]
+QueueMessageMapping = MutableMapping[tuple[str, str], str]
+SCROLL_KEEPALIVE = "2m"
+
+
+def _normalize_hostname(hostname: str) -> str:
+    """Return the short, case-insensitive hostname used for hop matching."""
+    return hostname.rstrip(".").split(".", 1)[0].lower()
 
 
 def query_all_logs(
@@ -51,7 +61,7 @@ def query_all_logs(
 
         # Build single query targeting the configured index
         search = Search(using=client, index=config.opensearch_config.index)
-        search = search.extra(size=10000)
+        search = search.extra(size=config.tracing.scroll_batch_size)
 
         # Filter by facility (mail) if configured
         facility_field = config.opensearch_config.mapping.facility
@@ -103,13 +113,42 @@ def query_all_logs(
         )
         logger.debug(f"Query: {search.to_dict()}")
 
-        response = search.execute()
-
-        # Parse and chain all logs directly
         parser = OpensearchParser(mapping=config.opensearch_config.mapping)
-        all_logs = [
-            parser.parse_with_enrichment(hit.to_dict()) for hit in response
-        ]
+        all_logs: list[LogEntry] = []
+        scroll_id: str | None = None
+
+        try:
+            response = client.search(
+                index=config.opensearch_config.index,
+                body=search.to_dict(),
+                params={"scroll": SCROLL_KEEPALIVE},
+            )
+
+            while True:
+                scroll_id = response.get("_scroll_id", scroll_id)
+                hits = response.get("hits", {}).get("hits", [])
+                if not hits:
+                    break
+
+                all_logs.extend(
+                    parser.parse_with_enrichment(Hit(hit).to_dict()) for hit in hits
+                )
+
+                if not scroll_id:
+                    logger.warning("OpenSearch returned hits without a scroll ID")
+                    break
+
+                response = client.scroll(
+                    body={"scroll": SCROLL_KEEPALIVE, "scroll_id": scroll_id}
+                )
+        finally:
+            if scroll_id:
+                try:
+                    client.clear_scroll(
+                        body={"scroll_id": [scroll_id]},
+                    )
+                except Exception as clear_error:
+                    logger.debug("Failed to clear OpenSearch scroll context: %s", clear_error)
 
         logger.info(f"Found {len(all_logs)} log entries from index")
 
@@ -148,6 +187,7 @@ def _extract_message_id_from_log(log: LogEntry) -> str | None:
 
 def group_logs_by_message_id(
     logs: list[LogEntry],
+    queue_id_to_msg_id_map: QueueMessageMapping | None = None,
 ) -> Dict[str, list[LogEntry]]:
     """Group log entries by message ID across all hops.
 
@@ -156,39 +196,58 @@ def group_logs_by_message_id(
 
     Returns a dictionary mapping message_id -> list of LogEntry containing all
     logs for that email across all hops.
+
+    Args:
+        logs: Log entries from one query batch.
+        queue_id_to_msg_id_map: Optional mapping retained by the continuous
+            tracer so queue-only entries can be resolved across query rounds.
     """
     grouped_logs: Dict[str, list[LogEntry]] = {}
-    queue_id_to_msg_id_map: dict[tuple[str, str], str] = (
-        {}
-    )  # (hostname, queue ID) -> message ID
+    queue_mapping = (
+        queue_id_to_msg_id_map
+        if queue_id_to_msg_id_map is not None
+        else {}
+    )
 
-    for log in logs:
-        message_id = _extract_message_id_from_log(log)
-
-        # If no message ID found in log, try to resolve from queue ID mapping
-        if not message_id and log.mail_id:
-            message_id = queue_id_to_msg_id_map.get(
-                (log.hostname, log.mail_id)
-            )
-
-        # Skip logs that we cannot associate with a message ID
-        if not message_id:
-            continue
-
-        # Add log to grouped_logs under its message ID
-        if message_id not in grouped_logs:
-            grouped_logs[message_id] = []
-        grouped_logs[message_id].append(log)
-
-        # Register current (hostname, mail_id) mapping for future logs
+    def register_queue_mappings(log: LogEntry, message_id: str) -> None:
         if log.mail_id:
-            queue_id_to_msg_id_map[(log.hostname, log.mail_id)] = message_id
+            queue_mapping[
+                (_normalize_hostname(log.hostname), log.mail_id)
+            ] = message_id
 
-        # Register relay mapping for when this message is forwarded to another host
         if log.relay_host and log.queued_as:
-            queue_id_to_msg_id_map[(log.relay_host, log.queued_as)] = (
-                message_id
+            queue_mapping[
+                (_normalize_hostname(log.relay_host), log.queued_as)
+            ] = message_id
+
+    resolved_message_ids: dict[int, str] = {}
+
+    # Seed mappings from every explicit message-id before resolving queue-only logs.
+    for index, log in enumerate(logs):
+        message_id = _extract_message_id_from_log(log)
+        if message_id:
+            resolved_message_ids[index] = message_id
+            register_queue_mappings(log, message_id)
+
+    # Propagate mappings until no queue-only log can add another relay mapping.
+    changed = True
+    while changed:
+        changed = False
+        for index, log in enumerate(logs):
+            if index in resolved_message_ids or not log.mail_id:
+                continue
+            message_id = queue_mapping.get(
+                (_normalize_hostname(log.hostname), log.mail_id)
             )
+            if message_id:
+                resolved_message_ids[index] = message_id
+                register_queue_mappings(log, message_id)
+                changed = True
+
+    for index, log in enumerate(logs):
+        message_id = resolved_message_ids.get(index)
+        if message_id:
+            grouped_logs.setdefault(message_id, []).append(log)
 
     return grouped_logs
 
@@ -205,3 +264,51 @@ def group_logs_by_hosts(logs: list[LogEntry]) -> Dict[str, list[LogEntry]]:
             grouped_logs[log.hostname] = []
         grouped_logs[log.hostname].append(log)
     return grouped_logs
+
+
+def group_logs_by_hops(logs: list[LogEntry]) -> dict[HopKey, list[LogEntry]]:
+    """Group logs by host and queue ID so each queue lifetime is one hop."""
+    grouped_logs: dict[HopKey, list[LogEntry]] = {}
+    for log in logs:
+        if not log.mail_id:
+            continue
+        key = (log.hostname, log.mail_id)
+        grouped_logs.setdefault(key, []).append(log)
+    return grouped_logs
+
+
+def build_hop_links(
+    hops: dict[HopKey, list[LogEntry]],
+) -> dict[HopKey, tuple[HopKey, LogEntry]]:
+    """Map each downstream hop to its upstream hop and handoff log."""
+    hop_index = {
+        (_normalize_hostname(hostname), queue_id): hop
+        for hop in hops
+        for hostname, queue_id in [hop]
+    }
+    links: dict[HopKey, tuple[HopKey, LogEntry]] = {}
+
+    for source_hop, logs in hops.items():
+        source_host, _ = source_hop
+        for log in logs:
+            next_queue_id = extract_next_mail_id(log)
+            if not next_queue_id:
+                continue
+            next_host = log.relay_host or source_host
+            target_hop = hop_index.get(
+                (_normalize_hostname(next_host), next_queue_id)
+            )
+            if target_hop and target_hop != source_hop:
+                links.setdefault(target_hop, (source_hop, log))
+
+    return links
+
+
+def build_hop_parents(
+    hops: dict[HopKey, list[LogEntry]],
+) -> dict[HopKey, HopKey]:
+    """Map each observed downstream queue hop to its upstream queue hop."""
+    return {
+        child_hop: parent_hop
+        for child_hop, (parent_hop, _) in build_hop_links(hops).items()
+    }

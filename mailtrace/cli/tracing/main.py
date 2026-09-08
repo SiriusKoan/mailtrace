@@ -14,8 +14,7 @@ def run_continuous_tracing(
 ) -> None:
     """Run continuous tracing by querying logs and generating traces.
 
-    Sleep duration and hold rounds are read from ``config.tracing`` so that
-    they can be tuned centrally in the config file.
+    Tracing timing and buffering settings are read from ``config.tracing``.
 
     Args:
         config: Configuration object with OpenSearch settings and tracing tuning
@@ -23,7 +22,9 @@ def run_continuous_tracing(
     """
     logger.info(
         f"Tracing config: sleep_seconds={config.tracing.sleep_seconds}, "
-        f"hold_rounds={config.tracing.hold_rounds}"
+        f"hold_rounds={config.tracing.hold_rounds}, "
+        f"max_trace_age_seconds={config.tracing.max_trace_age_seconds}, "
+        f"scroll_batch_size={config.tracing.scroll_batch_size}"
     )
 
     # Create tracer instance with all tracing logic encapsulated

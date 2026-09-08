@@ -58,11 +58,8 @@ clusters:
 tracing:
   # How long to sleep between log-query iterations (seconds).
   sleep_seconds: 60
-  # Number of consecutive rounds in which a message ID must be absent from new
-  # query results before its buffered logs are exported as a trace.
-  # Increase this if email delivery across your infrastructure can span more
-  # than sleep_seconds * hold_rounds seconds.
-  # Set to 0 to disable buffering (may produce truncated traces).
+  # Number of quiet rounds required after a terminal outcome before buffered
+  # logs are exported as a trace.
   hold_rounds: 2
   # How far back from the previous query boundary to extend each new query
   # window (seconds). This compensates for logs whose syslog timestamp
@@ -70,3 +67,7 @@ tracing:
   # overlap are automatically discarded.
   # Set to 0 to disable the overlap.
   go_back_seconds: 10
+  # Maximum time to retain a trace before exporting it without a terminal outcome.
+  max_trace_age_seconds: 1800
+  # Number of OpenSearch hits requested per scroll page.
+  scroll_batch_size: 1000
