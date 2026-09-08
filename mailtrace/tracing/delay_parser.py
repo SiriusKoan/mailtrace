@@ -266,7 +266,10 @@ def detect_mta_from_entries(entries: list) -> Optional[str]:
         MTA type string ('postfix' or 'exim') or None if cannot be determined
     """
     for entry in entries:
-        service = getattr(entry, "service", "").lower()
+        service = getattr(entry, "service", None)
+        if not isinstance(service, str):
+            continue
+        service = service.lower()
         if "postfix" in service:
             return "postfix"
         elif "exim" in service:

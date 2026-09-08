@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -17,6 +16,7 @@ from mailtrace.tracing.delay_parser import DelayInfo
 
 _exporter: Optional[OTLPSpanExporter] = None
 _providers: dict[str, TracerProvider] = {}
+MIN_SPAN_DURATION_SECONDS = 2e-6
 
 logger = logging.getLogger("mailtrace")
 
@@ -47,15 +47,18 @@ def flush_traces() -> None:
         provider.force_flush()
 
 
-def _get_tracer(service_name: str) -> trace.Tracer:
-    """Return (and lazily create) a tracer for *service_name*."""
+def _get_tracer(
+    service_name: str, host_name: Optional[str] = None
+) -> trace.Tracer:
+    """Return or create a tracer with service and optional host identity."""
     if service_name not in _providers:
-        resource = Resource(
-            attributes={
-                "service.name": service_name,
-                "service.version": "1.0.0",
-            }
-        )
+        attributes = {
+            "service.name": service_name,
+            "service.version": "1.0.0",
+        }
+        if host_name is not None:
+            attributes["host.name"] = host_name
+        resource = Resource(attributes=attributes)
         provider = TracerProvider(resource=resource)
         if _exporter is not None:
             provider.add_span_processor(BatchSpanProcessor(_exporter))
@@ -66,6 +69,18 @@ def _get_tracer(service_name: str) -> trace.Tracer:
 def dt_to_ns(dt: datetime) -> int:
     """Convert a :class:`~datetime.datetime` to an integer nanosecond timestamp."""
     return int(dt.timestamp() * 1e9)
+
+
+def _get_effective_delay_duration(duration: float) -> float:
+    return max(duration, MIN_SPAN_DURATION_SECONDS)
+
+
+def get_effective_total_delay(delays: DelayInfo) -> float:
+    """Return the total delay after applying the minimum span duration."""
+    return sum(
+        _get_effective_delay_duration(duration)
+        for duration in delays.get_delay_values().values()
+    )
 
 
 def create_root_span(
@@ -93,7 +108,7 @@ def create_root_span(
     if sender is not None:
         attributes["email.sender"] = sender
     if recipients is not None:
-        attributes["email.recipients"] = json.dumps(recipients)
+        attributes["email.recipients"] = ",".join(recipients)
     return tracer.start_span(
         name="email.delivery",
         start_time=dt_to_ns(start_time),
@@ -110,6 +125,13 @@ def create_host_span(
     recipients: Optional[list[str]] = None,
     queue_id: Optional[str] = None,
     next_host: Optional[str] = None,
+    linked_span: Optional[trace.Span] = None,
+    transport: Optional[str] = None,
+    next_queue_id: Optional[str] = None,
+    relay_host: Optional[str] = None,
+    relay_ip: Optional[str] = None,
+    relay_port: Optional[int] = None,
+    smtp_response_code: Optional[int] = None,
 ) -> trace.Span:
     """Create and start a host span as a child of *parent_context*.
 
@@ -131,24 +153,91 @@ def create_host_span(
         recipients: List of email recipient addresses (optional).
         queue_id: Queue ID for this host (optional).
         next_host: Next host this host relays the message to (optional).
+        linked_span: Previous host span linked by the queue handoff (optional).
+        transport: Delivery transport used by this host (optional).
+        next_queue_id: Queue ID created by the next hop (optional).
+        relay_host: Relay hostname (optional).
+        relay_ip: Relay IP address (optional).
+        relay_port: Relay port (optional).
+        smtp_response_code: SMTP response code (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
     """
-    tracer = _get_tracer(hostname)
-    attributes = {"server.address": hostname}
+    tracer = _get_tracer(hostname, host_name=hostname)
+    attributes: dict[str, Any] = {"server.address": hostname}
     if message_id is not None:
         attributes["message.id"] = message_id
     if sender is not None:
         attributes["email.sender"] = sender
     if recipients is not None:
-        attributes["email.recipients"] = json.dumps(recipients)
+        attributes["email.recipients"] = ",".join(recipients)
     if queue_id is not None:
         attributes["email.queue_id"] = queue_id
     if next_host is not None:
         attributes["email.next_host"] = next_host
+    if transport is not None:
+        attributes["email.transport"] = transport
+    if next_queue_id is not None:
+        attributes["email.next_queue_id"] = next_queue_id
+    if relay_host is not None:
+        attributes["email.relay_host"] = relay_host
+    if relay_ip is not None:
+        attributes["email.relay_ip"] = relay_ip
+    if relay_port is not None:
+        attributes["email.relay_port"] = relay_port
+    if smtp_response_code is not None:
+        attributes["smtp.response_code"] = smtp_response_code
     return tracer.start_span(
         name=hostname,
+        context=parent_context,
+        start_time=dt_to_ns(start_time),
+        attributes=attributes,
+        links=(
+            [trace.Link(linked_span.get_span_context())]
+            if linked_span is not None
+            else None
+        ),
+    )
+
+
+def create_delivery_span(
+    hostname: str,
+    start_time: datetime,
+    parent_context: Any,
+    recipient: Optional[str] = None,
+) -> trace.Span:
+    """Create a delivery wrapper that groups one recipient's delay stages."""
+    tracer = _get_tracer(hostname, host_name=hostname)
+    attributes = {}
+    if recipient is not None:
+        attributes["email.recipient"] = recipient
+    return tracer.start_span(
+        name="delivery",
+        context=parent_context,
+        start_time=dt_to_ns(start_time),
+        attributes=attributes,
+    )
+
+
+def create_delivery_branch_span(
+    start_time: datetime,
+    parent_context: Any,
+    destination: str,
+    recipients: Optional[list[str]] = None,
+    queue_ids: Optional[list[str]] = None,
+) -> trace.Span:
+    """Create a route branch for deliveries sent to one destination host."""
+    tracer = _get_tracer("mailtrace")
+    attributes = {"email.destination": destination}
+    if recipients:
+        attributes["email.recipients"] = ",".join(recipients)
+        if len(recipients) == 1:
+            attributes["email.recipient"] = recipients[0]
+    if queue_ids:
+        attributes["email.queue_ids"] = ",".join(queue_ids)
+    return tracer.start_span(
+        name="delivery.branch",
         context=parent_context,
         start_time=dt_to_ns(start_time),
         attributes=attributes,
@@ -163,11 +252,10 @@ def create_delay_spans(
 ) -> list[trace.Span]:
     """Create, start, and end one span per delay stage.
 
-    All stage spans share the same *parent_context* (the host span) so they
-    appear as siblings under the host in the trace view.  Each span is
-    started with the correct sequential start time derived from *start_time*
-    and the cumulative durations, and immediately ended with the appropriate
-    end time based on the stage duration.
+    All stage spans share the same *parent_context* (one delivery wrapper) so
+    they appear as siblings within a recipient-specific delivery branch. Each
+    span starts at the sequential time derived from *start_time* and the
+    cumulative durations, then ends at the corresponding stage boundary.
 
     Args:
         delays: A :class:`~mailtrace.tracing.delay_parser.DelayInfo` object
@@ -176,14 +264,14 @@ def create_delay_spans(
             tracer so stage spans share the host's ``service.name``.
         start_time: Absolute start time of the *first* stage.
         parent_context: OTEL :class:`~opentelemetry.context.Context` that
-            carries the parent (host) span.
+            carries the parent delivery span.
 
     Returns:
         List of completed SDK :class:`~opentelemetry.sdk.trace.Span`
         objects, one per stage, in the same order as the stages in *delays*.
     """
 
-    tracer = _get_tracer(hostname)
+    tracer = _get_tracer(hostname, host_name=hostname)
     spans: list[trace.Span] = []
     current = start_time
     stage_names = delays.get_delay_values().keys()
@@ -195,8 +283,8 @@ def create_delay_spans(
             attributes={"delay.duration_seconds": duration},
         )
 
-        # Avoid zero-duration spans which may be ignored by the back-end.
-        duration = max(duration, 2e-6)
+        # Avoid zero-duration spans that tracing backends may ignore.
+        duration = _get_effective_delay_duration(duration)
         span.end(end_time=dt_to_ns(current + timedelta(seconds=duration)))
 
         logger.debug(
