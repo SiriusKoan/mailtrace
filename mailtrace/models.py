@@ -1,4 +1,37 @@
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class EventType(str, Enum):
+    """Normalized event categories extracted from mail logs."""
+
+    UNKNOWN = "unknown"
+    MESSAGE_ID = "message_id"
+    CONNECTION = "connection"
+    MILTER_REJECT = "milter_reject"
+    QUEUE_ACTIVE = "queue_active"
+    QUEUE_REMOVED = "queue_removed"
+    SMTP_DELIVERY = "smtp_delivery"
+    LMTP_DELIVERY = "lmtp_delivery"
+    RSPAMD_SCAN = "rspamd_scan"
+
+
+class DeliveryStatus(str, Enum):
+    """Normalized delivery outcome for one log event."""
+
+    UNKNOWN = "unknown"
+    TEMPORARY_FAILURE = "temporary_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+    FORWARDED = "forwarded"
+    DELIVERED = "delivered"
+
+
+class SmtpStatusClass(str, Enum):
+    """SMTP status class, including enhanced status-code prefixes."""
+
+    SUCCESS = "2xx"
+    TEMPORARY_FAILURE = "4xx"
+    PERMANENT_FAILURE = "5xx"
 
 
 @dataclass
@@ -33,6 +66,10 @@ class LogEntry:
     relay_port: int | None = None
     smtp_code: int | None = None
     delays: dict[str, float | None] = field(default_factory=dict)
+    event_type: EventType = EventType.UNKNOWN
+    delivery_status: DeliveryStatus = DeliveryStatus.UNKNOWN
+    smtp_status_class: SmtpStatusClass | None = None
+    is_terminal: bool | None = None
 
     def __str__(self) -> str:
         return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"

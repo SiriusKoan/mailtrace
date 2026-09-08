@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from mailtrace.config import OpenSearchMappingConfig
+from mailtrace.events import classify_log_entry
 from mailtrace.models import LogEntry
 from mailtrace.utils import RelayResult, analyze_log_from_message
 
@@ -14,7 +15,9 @@ _MAIL_ID_RE = re.compile(r"^[0-9A-Za-z\-]+$")
 
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
-_QUEUED_AS_RE = re.compile(r"(?:queued as|id=)(?P<id>[0-9A-Za-z\-]+)")
+_QUEUED_AS_RE = re.compile(
+    r"(?:(?:queued as|forwarded as)\s+|id=)(?P<id>[0-9A-Za-z\-]+)"
+)
 _RELAY_RE = re.compile(
     r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
 )
@@ -129,7 +132,8 @@ class LogParser(ABC):
             LogEntry: The parsed and enriched log entry
         """
         entry = self.parse(log)
-        return self._enrich_from_message(entry)
+        entry = self._enrich_from_message(entry)
+        return classify_log_entry(entry)
 
     @staticmethod
     def _enrich_from_message(entry: LogEntry) -> LogEntry:
@@ -166,6 +170,9 @@ class LogParser(ABC):
                 entry.relay_port = result.relay_port
             if entry.smtp_code is None:
                 entry.smtp_code = result.smtp_code
+
+        if entry.queued_as is None:
+            entry.queued_as = extract_next_mail_id(entry)
 
         return entry
 
@@ -345,10 +352,13 @@ class OpensearchParser(LogParser):
 
         Handles multiple formats:
         - Postfix → Postfix: status=sent (250 2.0.0 Ok: queued as E7424C4B93C)
+        - Postfix internal forwarding: status=sent (forwarded as E7424C4B93C)
         - Postfix → Exim: status=sent (250 OK id=1vs9hh-00005v-2k)
         """
-        # Try Postfix format: queued as QUEUEID
-        queued_match = re.search(r"queued as ([A-F0-9]+)", message_content)
+        # Try Postfix queued or forwarded format.
+        queued_match = re.search(
+            r"(?:queued as|forwarded as) ([A-F0-9]+)", message_content
+        )
         if queued_match:
             queue_id = queued_match.group(1)
             if check_mail_id_valid(queue_id):
