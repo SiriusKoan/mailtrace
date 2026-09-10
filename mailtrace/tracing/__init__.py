@@ -7,13 +7,16 @@ from typing import Dict, Iterable, Optional
 from opentelemetry import trace
 
 from mailtrace.config import Config
+from mailtrace.models import DeliveryStatus
 from mailtrace.parser import LogEntry
 from mailtrace.tracing.delay_parser import (
     DelayInfo,
     detect_mta_from_entries,
     get_parser_for_mta,
 )
+from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
 from mailtrace.tracing.otel import (
+    MIN_SPAN_DURATION_SECONDS,
     create_delay_spans,
     create_delivery_branch_span,
     create_delivery_span,
@@ -23,7 +26,7 @@ from mailtrace.tracing.otel import (
     flush_traces,
     get_effective_total_delay,
     init_exporter,
-    MIN_SPAN_DURATION_SECONDS,
+    mark_span_failed,
 )
 from mailtrace.tracing.query import (
     HopKey,
@@ -32,7 +35,6 @@ from mailtrace.tracing.query import (
     group_logs_by_message_id,
     query_all_logs,
 )
-from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
 
 logger = logging.getLogger("mailtrace")
 
@@ -44,6 +46,26 @@ _EXIM_DELIVERY_RECIPIENT_RE = re.compile(
 def _join_unique(values: Iterable[str | None]) -> Optional[str]:
     unique_values = list(dict.fromkeys(value for value in values if value))
     return ",".join(unique_values) if unique_values else None
+
+
+def _mark_failure_from_log(span: trace.Span, log: LogEntry) -> None:
+    mark_span_failed(
+        span,
+        log.delivery_status.value,
+        mail_status=log.mail_status,
+        smtp_response_code=log.smtp_code,
+        smtp_enhanced_status_code=log.smtp_enhanced_status_code,
+    )
+
+
+def _select_failure(logs: Iterable[LogEntry]) -> LogEntry | None:
+    temporary_failure = None
+    for log in logs:
+        if log.delivery_status is DeliveryStatus.PERMANENT_FAILURE:
+            return log
+        if log.delivery_status is DeliveryStatus.TEMPORARY_FAILURE:
+            temporary_failure = temporary_failure or log
+    return temporary_failure
 
 
 class TimingMetrics:
@@ -436,6 +458,13 @@ class EmailTracesGenerator:
             root_span = create_root_span(
                 message_id, root_start, sender=sender, recipients=recipients
             )
+            if any(
+                log.delivery_status is DeliveryStatus.PERMANENT_FAILURE
+                for log in message_id_logs
+            ):
+                mark_span_failed(
+                    root_span, DeliveryStatus.PERMANENT_FAILURE.value
+                )
             root_ctx = trace.set_span_in_context(root_span)
 
             children_by_parent: dict[HopKey, list[HopKey]] = {}
@@ -496,6 +525,15 @@ class EmailTracesGenerator:
                         recipients=recipients,
                         queue_ids=[hop[1] for hop in destination_hops],
                     )
+                    if any(
+                        log.delivery_status is DeliveryStatus.PERMANENT_FAILURE
+                        for hop in branch_hops
+                        for log in hops_logs[hop]
+                    ):
+                        mark_span_failed(
+                            branch_span,
+                            DeliveryStatus.PERMANENT_FAILURE.value,
+                        )
                     branch_ctx = trace.set_span_in_context(branch_span)
                     for hop in branch_hops:
                         branch_contexts[hop] = branch_ctx
@@ -579,10 +617,18 @@ class EmailTracesGenerator:
                         relay_port=host_relay_port,
                         smtp_response_code=host_smtp_response_code,
                     )
+                    delivery_log_ids = {id(log) for log in delivery_logs}
+                    host_failure = _select_failure(
+                        log
+                        for log in hops_logs[hop]
+                        if id(log) not in delivery_log_ids
+                    )
+                    if host_failure is not None:
+                        _mark_failure_from_log(host_span, host_failure)
                     host_ctx = trace.set_span_in_context(host_span)
                     host_spans[hop] = host_span
 
-                    for delays, delay_start, recipient, _ in delay_records:
+                    for delays, delay_start, recipient, log in delay_records:
                         delay_start += hop_offsets[hop]
                         delivery_span = create_delivery_span(
                             host,
@@ -590,6 +636,11 @@ class EmailTracesGenerator:
                             host_ctx,
                             recipient=recipient,
                         )
+                        if log.delivery_status in {
+                            DeliveryStatus.TEMPORARY_FAILURE,
+                            DeliveryStatus.PERMANENT_FAILURE,
+                        }:
+                            _mark_failure_from_log(delivery_span, log)
                         delivery_ctx = trace.set_span_in_context(delivery_span)
                         create_delay_spans(
                             delays, host, delay_start, delivery_ctx

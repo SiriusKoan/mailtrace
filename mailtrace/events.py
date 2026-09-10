@@ -9,8 +9,9 @@ from mailtrace.models import (
     SmtpStatusClass,
 )
 
-_ENHANCED_STATUS_RE = re.compile(r"(?<!\w)([245])\.\d+\.\d+(?!\w)")
+_ENHANCED_STATUS_RE = re.compile(r"(?<!\w)([245]\.\d+\.\d+)(?!\w)")
 _SMTP_REPLY_RE = re.compile(r"(?<![\d.])([245]\d{2})(?=\s)")
+_MAIL_STATUS_RE = re.compile(r"\bstatus=([a-z][a-z0-9_-]*)\b", re.IGNORECASE)
 _NEXT_QUEUE_RE = re.compile(
     r"(?:queued as|forwarded as)\s+([A-Za-z0-9_-]+)|\bid=([A-Za-z0-9_-]+)"
 )
@@ -30,24 +31,40 @@ def extract_smtp_status_class(
     message: str, smtp_code: int | str | None = None
 ) -> SmtpStatusClass | None:
     """Extract an SMTP class from reply or enhanced status codes."""
+    reply_code, enhanced_status_code = extract_smtp_status_codes(
+        message, smtp_code
+    )
+    if enhanced_status_code:
+        return _status_class_from_prefix(enhanced_status_code[0])
+    if reply_code is not None:
+        return _status_class_from_prefix(str(reply_code)[0])
+    return None
+
+
+def extract_smtp_status_codes(
+    message: str, smtp_code: int | str | None = None
+) -> tuple[int | None, str | None]:
+    """提取 SMTP reply code 與 enhanced status code。"""
     enhanced_match = _ENHANCED_STATUS_RE.search(message)
-    if enhanced_match:
-        return _status_class_from_prefix(enhanced_match.group(1))
+    enhanced_status_code = enhanced_match.group(1) if enhanced_match else None
 
     reply_match = _SMTP_REPLY_RE.search(message)
     if reply_match:
-        return _status_class_from_prefix(reply_match.group(1)[0])
+        return int(reply_match.group(1)), enhanced_status_code
 
     normalized_code: int | None = None
     if isinstance(smtp_code, int):
         normalized_code = smtp_code
     elif isinstance(smtp_code, str) and smtp_code.isdigit():
         normalized_code = int(smtp_code)
-    if normalized_code is not None and 200 <= normalized_code <= 599:
-        prefix = str(normalized_code)[0]
-        if prefix in {"2", "4", "5"}:
-            return _status_class_from_prefix(prefix)
-    return None
+    if normalized_code is None or not 200 <= normalized_code <= 599:
+        normalized_code = None
+    return normalized_code, enhanced_status_code
+
+
+def extract_mail_status(message: str) -> str | None:
+    match = _MAIL_STATUS_RE.search(message)
+    return match.group(1).lower() if match else None
 
 
 def _event_type(entry: LogEntry) -> EventType:
@@ -84,13 +101,16 @@ def _delivery_status(
 ) -> DeliveryStatus:
     message = (entry.message or "").lower()
 
-    if entry.event_type is EventType.MILTER_REJECT:
-        if status_class is SmtpStatusClass.TEMPORARY_FAILURE:
-            return DeliveryStatus.TEMPORARY_FAILURE
-        if status_class is SmtpStatusClass.PERMANENT_FAILURE:
-            return DeliveryStatus.PERMANENT_FAILURE
-        if any(term in message for term in ("try again later", "greylist")):
-            return DeliveryStatus.TEMPORARY_FAILURE
+    if entry.mail_status == "sent":
+        return (
+            DeliveryStatus.FORWARDED
+            if _has_next_queue(entry)
+            else DeliveryStatus.DELIVERED
+        )
+    if entry.mail_status in {"defer", "deferred"}:
+        return DeliveryStatus.TEMPORARY_FAILURE
+    if entry.mail_status in {"bounced", "undeliverable"}:
+        return DeliveryStatus.PERMANENT_FAILURE
 
     if re.search(r"\b(?:deferred|defer|greylist|soft reject)\b", message):
         return DeliveryStatus.TEMPORARY_FAILURE
@@ -99,12 +119,16 @@ def _delivery_status(
     ):
         return DeliveryStatus.PERMANENT_FAILURE
 
-    if re.search(r"\bstatus=sent\b", message):
-        return (
-            DeliveryStatus.FORWARDED
-            if _has_next_queue(entry)
-            else DeliveryStatus.DELIVERED
-        )
+    if entry.event_type in {
+        EventType.MILTER_REJECT,
+        EventType.SMTP_DELIVERY,
+        EventType.LMTP_DELIVERY,
+    }:
+        if status_class is SmtpStatusClass.TEMPORARY_FAILURE:
+            return DeliveryStatus.TEMPORARY_FAILURE
+        if status_class is SmtpStatusClass.PERMANENT_FAILURE:
+            return DeliveryStatus.PERMANENT_FAILURE
+
     if " saved" in f" {message}" or message.endswith("saved"):
         return DeliveryStatus.DELIVERED
     return DeliveryStatus.UNKNOWN
@@ -113,6 +137,10 @@ def _delivery_status(
 def classify_log_entry(entry: LogEntry) -> LogEntry:
     """Attach normalized event and lifecycle metadata to a parsed log entry."""
     entry.event_type = _event_type(entry)
+    entry.mail_status = extract_mail_status(entry.message or "")
+    entry.smtp_code, entry.smtp_enhanced_status_code = (
+        extract_smtp_status_codes(entry.message or "", entry.smtp_code)
+    )
     entry.smtp_status_class = extract_smtp_status_class(
         entry.message or "", entry.smtp_code
     )

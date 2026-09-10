@@ -83,6 +83,25 @@ def get_effective_total_delay(delays: DelayInfo) -> float:
     )
 
 
+def mark_span_failed(
+    span: trace.Span,
+    error_type: str,
+    mail_status: Optional[str] = None,
+    smtp_response_code: Optional[int] = None,
+    smtp_enhanced_status_code: Optional[str] = None,
+) -> None:
+    span.set_status(trace.Status(trace.StatusCode.ERROR))
+    span.set_attribute("error.type", error_type)
+    if mail_status is not None:
+        span.set_attribute("mail.delivery_status", mail_status)
+    if smtp_response_code is not None:
+        span.set_attribute("smtp.response_code", smtp_response_code)
+    if smtp_enhanced_status_code is not None:
+        span.set_attribute(
+            "smtp.enhanced_status_code", smtp_enhanced_status_code
+        )
+
+
 def create_root_span(
     message_id: str,
     start_time: datetime,

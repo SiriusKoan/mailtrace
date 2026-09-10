@@ -70,6 +70,8 @@ class LogEntry:
     delivery_status: DeliveryStatus = DeliveryStatus.UNKNOWN
     smtp_status_class: SmtpStatusClass | None = None
     is_terminal: bool | None = None
+    smtp_enhanced_status_code: str | None = None
+    mail_status: str | None = None
 
     def __str__(self) -> str:
         return f"{self.datetime} {self.hostname} {self.service}: {self.mail_id}: {self.message}"

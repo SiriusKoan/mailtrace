@@ -7,8 +7,10 @@ from opentelemetry.sdk.trace import Span as SDKSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from opentelemetry.trace import StatusCode
 
 from mailtrace.config import OpenSearchMappingConfig
+from mailtrace.events import classify_log_entry
 from mailtrace.models import (
     DeliveryStatus,
     EventType,
@@ -16,11 +18,10 @@ from mailtrace.models import (
     SmtpStatusClass,
 )
 from mailtrace.parser import OpensearchParser, SyslogParser, extract_next_mail_id
-from mailtrace.tracing import EmailTracesGenerator, otel
+from mailtrace.tracing import EmailTracesGenerator, otel, query
 from mailtrace.tracing.delay_parser import DelayInfo, detect_mta_from_entries
 from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
 from mailtrace.tracing.otel import dt_to_ns
-from mailtrace.tracing import query
 
 
 class EmailTracesGeneratorTest(unittest.TestCase):
@@ -378,6 +379,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
                 ),
             ),
         ]
+        logs = [classify_log_entry(log) for log in logs]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
 
@@ -386,6 +388,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             otel.flush_traces()
 
         finished = exporter.get_finished_spans()
+        root = next(span for span in finished if span.name == "email.delivery")
         host = next(
             span
             for span in finished
@@ -401,6 +404,8 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertEqual(
             set(deliveries), {"first@example.com", "second@example.com"}
         )
+        self.assertEqual(root.status.status_code, StatusCode.UNSET)
+        self.assertNotIn("mail.delivery_status", root.attributes)
         for delivery in deliveries.values():
             self.assertEqual(delivery.parent.span_id, host.context.span_id)
             stages = [
@@ -417,6 +422,217 @@ class EmailTracesGeneratorTest(unittest.TestCase):
                     for stage in stages
                 )
             )
+
+    def test_temporary_failure_marks_only_delivery_span(self) -> None:
+        logs = [
+            classify_log_entry(
+                LogEntry(
+                    datetime="2026-08-02T00:04:28+00:00",
+                    hostname="mail.example.com",
+                    service="postfix/cleanup",
+                    mail_id="TEMP1",
+                    message="message-id=<temporary@example.com>",
+                )
+            ),
+            classify_log_entry(
+                LogEntry(
+                    datetime="2026-08-02T00:04:29+00:00",
+                    hostname="mail.example.com",
+                    service="postfix/smtp",
+                    mail_id="TEMP1",
+                    message=(
+                        "to=<user@example.com>, delay=1, "
+                        "delays=0.1/0.1/0.1/0.7, dsn=4.7.1, "
+                        "status=deferred (451 4.7.1 Try again later)"
+                    ),
+                )
+            ),
+        ]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"temporary@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        root = next(span for span in finished if span.name == "email.delivery")
+        host = next(
+            span for span in finished if span.name == "mail.example.com"
+        )
+        delivery = next(span for span in finished if span.name == "delivery")
+        delay_spans = [
+            span
+            for span in finished
+            if span.parent and span.parent.span_id == delivery.context.span_id
+        ]
+
+        self.assertEqual(delivery.status.status_code, StatusCode.ERROR)
+        self.assertEqual(
+            delivery.attributes["error.type"], "temporary_failure"
+        )
+        self.assertEqual(
+            delivery.attributes["mail.delivery_status"], "deferred"
+        )
+        self.assertEqual(delivery.attributes["smtp.response_code"], 451)
+        self.assertEqual(
+            delivery.attributes["smtp.enhanced_status_code"], "4.7.1"
+        )
+        self.assertEqual(host.status.status_code, StatusCode.UNSET)
+        self.assertEqual(root.status.status_code, StatusCode.UNSET)
+        self.assertTrue(
+            all(
+                span.status.status_code is StatusCode.UNSET
+                for span in delay_spans
+            )
+        )
+
+    def test_permanent_milter_reject_marks_host_and_root(self) -> None:
+        logs = [
+            classify_log_entry(
+                LogEntry(
+                    datetime="2026-08-02T00:04:28+00:00",
+                    hostname="mail.example.com",
+                    service="postfix/cleanup",
+                    mail_id="REJECT1",
+                    message="message-id=<rejected@example.com>",
+                )
+            ),
+            classify_log_entry(
+                LogEntry(
+                    datetime="2026-08-02T00:04:29+00:00",
+                    hostname="mail.example.com",
+                    service="postfix/cleanup",
+                    mail_id="REJECT1",
+                    message=(
+                        "milter-reject: END-OF-MESSAGE: "
+                        "5.7.1 Command rejected"
+                    ),
+                )
+            ),
+        ]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"rejected@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        root = next(span for span in finished if span.name == "email.delivery")
+        host = next(
+            span for span in finished if span.name == "mail.example.com"
+        )
+
+        self.assertEqual(root.status.status_code, StatusCode.ERROR)
+        self.assertEqual(root.attributes["error.type"], "permanent_failure")
+        self.assertNotIn("smtp.response_code", root.attributes)
+        self.assertEqual(host.status.status_code, StatusCode.ERROR)
+        self.assertEqual(host.attributes["error.type"], "permanent_failure")
+        self.assertNotIn("smtp.response_code", host.attributes)
+        self.assertEqual(host.attributes["smtp.enhanced_status_code"], "5.7.1")
+        self.assertFalse(any(span.name == "delivery" for span in finished))
+
+    def test_permanent_failure_marks_its_branch_and_root(self) -> None:
+        logs = [
+            LogEntry(
+                datetime="2026-08-02T00:00:00+00:00",
+                hostname="source",
+                service="postfix/cleanup",
+                mail_id="SOURCE1",
+                message="message-id=<branches@example.com>",
+            ),
+            LogEntry(
+                datetime="2026-08-02T00:00:01+00:00",
+                hostname="source",
+                service="postfix/smtp",
+                mail_id="SOURCE1",
+                message=(
+                    "to=<failed@example.com>, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7, status=sent "
+                    "(250 2.0.0 Ok: queued as FAIL1)"
+                ),
+                queued_as="FAIL1",
+                relay_host="failed-destination",
+            ),
+            LogEntry(
+                datetime="2026-08-02T00:00:02+00:00",
+                hostname="source",
+                service="postfix/smtp",
+                mail_id="SOURCE1",
+                message=(
+                    "to=<sent@example.com>, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7, status=sent "
+                    "(250 2.0.0 Ok: queued as SENT1)"
+                ),
+                queued_as="SENT1",
+                relay_host="sent-destination",
+            ),
+            LogEntry(
+                datetime="2026-08-02T00:00:03+00:00",
+                hostname="failed-destination",
+                service="postfix/smtp",
+                mail_id="FAIL1",
+                message=(
+                    "to=<failed@example.com>, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7, dsn=5.1.1, "
+                    "status=bounced (550 5.1.1 User unknown)"
+                ),
+            ),
+            LogEntry(
+                datetime="2026-08-02T00:00:04+00:00",
+                hostname="sent-destination",
+                service="postfix/smtp",
+                mail_id="SENT1",
+                message=(
+                    "to=<sent@example.com>, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7, dsn=2.0.0, "
+                    "status=sent (250 2.0.0 Ok)"
+                ),
+            ),
+        ]
+        logs = [classify_log_entry(log) for log in logs]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"branches@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        root = next(span for span in finished if span.name == "email.delivery")
+        branches = {
+            span.attributes["email.destination"]: span
+            for span in finished
+            if span.name == "delivery.branch"
+        }
+        failed_host = next(
+            span
+            for span in finished
+            if span.attributes.get("email.queue_id") == "FAIL1"
+        )
+        failed_delivery = next(
+            span
+            for span in finished
+            if span.name == "delivery"
+            and span.parent
+            and span.parent.span_id == failed_host.context.span_id
+        )
+
+        self.assertEqual(root.status.status_code, StatusCode.ERROR)
+        self.assertEqual(
+            branches["failed-destination"].status.status_code,
+            StatusCode.ERROR,
+        )
+        self.assertEqual(
+            branches["sent-destination"].status.status_code,
+            StatusCode.UNSET,
+        )
+        self.assertEqual(failed_delivery.status.status_code, StatusCode.ERROR)
+        self.assertEqual(failed_host.status.status_code, StatusCode.UNSET)
+        self.assertNotIn(
+            "smtp.response_code", branches["failed-destination"].attributes
+        )
 
     def test_handoff_without_delays_uses_log_timestamp(self) -> None:
         logs = [
@@ -824,6 +1040,46 @@ class LogEventParsingTest(unittest.TestCase):
             DeliveryStatus.TEMPORARY_FAILURE,
         )
         self.assertFalse(logs[2].is_terminal)
+
+    def test_mail_status_precedes_conflicting_smtp_code(self) -> None:
+        deferred = classify_log_entry(
+            LogEntry(
+                datetime="2026-08-02T00:04:28+00:00",
+                hostname="mail.example.com",
+                service="postfix/smtp",
+                mail_id="DEFER1",
+                message=(
+                    "to=<user@example.com>, status=deferred "
+                    "(550 5.1.1 User unknown)"
+                ),
+            )
+        )
+
+        self.assertEqual(deferred.mail_status, "deferred")
+        self.assertEqual(deferred.smtp_code, 550)
+        self.assertEqual(deferred.smtp_enhanced_status_code, "5.1.1")
+        self.assertEqual(
+            deferred.delivery_status, DeliveryStatus.TEMPORARY_FAILURE
+        )
+
+    def test_delivery_event_falls_back_to_smtp_code(self) -> None:
+        rejected = classify_log_entry(
+            LogEntry(
+                datetime="2026-08-02T00:04:28+00:00",
+                hostname="mail.example.com",
+                service="postfix/lmtp",
+                mail_id="REJECT1",
+                message="to=<user@example.com>, 550 5.1.1 User unknown",
+            )
+        )
+
+        self.assertIsNone(rejected.mail_status)
+        self.assertEqual(rejected.smtp_code, 550)
+        self.assertEqual(rejected.smtp_enhanced_status_code, "5.1.1")
+        self.assertEqual(
+            rejected.delivery_status, DeliveryStatus.PERMANENT_FAILURE
+        )
+        self.assertTrue(rejected.is_terminal)
 
     def test_delivery_status_distinguishes_forwarding_and_final_delivery(
         self,
