@@ -1,0 +1,135 @@
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    hostname: opensearch.example.com
+    environment:
+      - cluster.name=mailtrace-resource-benchmark
+      - node.name=opensearch
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=wg328GY@3HUY76
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "19200:9200"
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.5
+
+  mx:
+    hostname: mx.example.com
+    build:
+      context: .
+      dockerfile: ./mx/Dockerfile
+    ports:
+      - "11025:25"
+    volumes:
+      - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - opensearch
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.10
+
+  mailer:
+    hostname: mailer.example.com
+    build:
+      context: .
+      dockerfile: ./mailer/Dockerfile
+    volumes:
+      - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - opensearch
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.20
+
+  mailpolicy:
+    hostname: mailpolicy.example.com
+    build:
+      context: .
+      dockerfile: ./mailpolicy/Dockerfile
+    ports:
+      - "21025:25"
+    volumes:
+      - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - opensearch
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.30
+
+  mailbox:
+    hostname: mailbox.example.com
+    build:
+      context: .
+      dockerfile: ./mailbox/Dockerfile
+    volumes:
+      - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - opensearch
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.40
+
+  mailbox2:
+    hostname: mailbox2.example.com
+    build:
+      context: .
+      dockerfile: ./mailbox2/Dockerfile
+    volumes:
+      - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - opensearch
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.41
+
+  tempo:
+    image: grafana/tempo:latest
+    hostname: tempo.example.com
+    command:
+      - -config.file=/etc/tempo.yaml
+    ports:
+      - "13200:3200"
+    volumes:
+      - ../../tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks:
+      mailtrace_net:
+        ipv4_address: 192.168.201.60
+
+  mailtrace:
+    image: mailtrace:latest
+    network_mode: service:opensearch
+    command:
+      - python3
+      - -m
+      - mailtrace
+      - tracing
+      - --otel-endpoint
+      - http://tempo.example.com:4317
+    environment:
+      - MAILTRACE_CONFIG=/app/config.yaml
+      - OTEL_SERVICE_NAME=mailtrace-resource-benchmark
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      - opensearch
+      - tempo
+
+networks:
+  mailtrace_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.201.0/24
+
+volumes:
+  tempo-data:

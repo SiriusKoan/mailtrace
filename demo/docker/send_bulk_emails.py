@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 
-import random
-import smtplib
-import sys
-import time
 import argparse
-from email.mime.text import MIMEText
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
 import logging
+import smtplib
 import socket
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from email.mime.text import MIMEText
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -35,76 +32,100 @@ CONFIGS = [
     },
 ]
 
-NUM_THREADS = 8
-sent_count = 0
-sent_lock = Lock()
-stop_event = Event()
+NUM_THREADS = 64
+SMTP_TIMEOUT_SECONDS = 30
+
+
+def build_configs(mx_port=10025, mailpolicy_port=20025):
+    """Return SMTP endpoint configurations for one benchmark stack."""
+    return [
+        {**CONFIGS[0], "port": mx_port},
+        {**CONFIGS[1], "port": mailpolicy_port},
+    ]
 
 
 def generate_message_id():
-    """Generate a RFC 5322 compliant Message-ID.
-
-    Format: <local-part@domain>
-    where local-part is typically a unique identifier (timestamp + UUID)
-    and domain is the hostname
-    """
+    """Generate a unique RFC 5322-compliant Message-ID."""
     try:
         hostname = socket.getfqdn()
     except Exception:
         hostname = "localhost"
 
-    # Generate unique local part using UUID and random component
     unique_id = f"{int(time.time() * 1000000)}.{uuid.uuid4().hex[:16]}"
 
     message_id = f"<{unique_id}@{hostname}>"
     return message_id
 
 
-def send_random_mail():
-    conf = random.choice(CONFIGS)
-
+def build_message(conf):
     msg = MIMEText("This is a stress test email.")
     msg["Subject"] = "SMTP Stress Test"
     msg["From"] = conf["from"]
     msg["To"] = ", ".join(conf["to"])
     msg["Message-ID"] = generate_message_id()
 
+    return msg
+
+
+def send_message(conf):
+    msg = build_message(conf)
     try:
-        with smtplib.SMTP(conf["server"], conf["port"]) as server:
+        with smtplib.SMTP(
+            conf["server"], conf["port"], timeout=SMTP_TIMEOUT_SECONDS
+        ) as server:
             if conf["helo"]:
                 server.ehlo(conf["helo"])
             server.sendmail(conf["from"], conf["to"], msg.as_string())
-            logger.info(f"Sent via port {conf['port']} to {conf['to']} - Message-ID: {msg['Message-ID']}")
-            return True
+        logger.debug(
+            "Sent via port %s to %s - Message-ID: %s",
+            conf["port"],
+            conf["to"],
+            msg["Message-ID"],
+        )
+        return True
     except Exception as e:
         logger.error(f"Error: {e}")
         return False
 
 
-def worker(emails_per_sec, duration):
-    """Worker thread that sends emails at the specified rate."""
-    global sent_count
-    start_time = time.time()
-    interval = 1.0 / emails_per_sec
-    next_send_time = start_time
+def worker(worker_index, total_emails, emails_per_sec, started_at, conf):
+    succeeded = 0
+    for index in range(worker_index, total_emails, NUM_THREADS):
+        deadline = started_at + index / emails_per_sec
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
+        succeeded += send_message(conf)
+    return succeeded
 
-    while not stop_event.is_set():
-        current_time = time.time()
-        elapsed = current_time - start_time
 
-        # Check if we've exceeded the duration
-        if elapsed >= duration:
-            break
+def send_emails(emails_per_sec, duration, configs=None):
+    """Schedule email at the global rate and return counts and elapsed time."""
+    total_emails = int(emails_per_sec * duration)
+    endpoint_configs = CONFIGS if configs is None else configs
+    worker_count = min(NUM_THREADS, total_emails)
 
-        # Send email if it's time
-        if current_time >= next_send_time:
-            send_random_mail()
-            with sent_lock:
-                sent_count += 1
-            next_send_time += interval
-        else:
-            # Sleep a bit to avoid busy waiting
-            time.sleep(0.001)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        configs = [
+            endpoint_configs[index % len(endpoint_configs)]
+            for index in range(worker_count)
+        ]
+        started_at = time.monotonic()
+        futures = [
+            executor.submit(
+                worker,
+                worker_index,
+                total_emails,
+                emails_per_sec,
+                started_at,
+                configs[worker_index],
+            )
+            for worker_index in range(worker_count)
+        ]
+        succeeded = sum(future.result() for future in futures)
+        elapsed = time.monotonic() - started_at
+
+    return succeeded, total_emails - succeeded, elapsed
 
 
 def main():
@@ -112,20 +133,21 @@ def main():
         description="Send bulk emails with specified rate"
     )
     parser.add_argument(
-        "N",
-        type=float,
-        help="Number of emails to send per second"
+        "N", type=float, help="Number of emails to send per second"
     )
-    parser.add_argument(
-        "T",
-        type=float,
-        help="Duration in seconds"
-    )
+    parser.add_argument("T", type=float, help="Duration in seconds")
+    parser.add_argument("--mx-port", type=int, default=10025)
+    parser.add_argument("--mailpolicy-port", type=int, default=20025)
 
     args = parser.parse_args()
 
     emails_per_sec = args.N
     duration = args.T
+
+    if emails_per_sec <= 0:
+        parser.error("N must be positive")
+    if duration <= 0:
+        parser.error("T must be positive")
 
     total_emails = int(emails_per_sec * duration)
 
@@ -134,30 +156,26 @@ def main():
         f"(total: ~{total_emails} emails) with {NUM_THREADS} threads"
     )
 
-    start_time = time.time()
-
     try:
-        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
-            # Submit workers for each thread
-            futures = [
-                executor.submit(worker, emails_per_sec / NUM_THREADS, duration)
-                for _ in range(NUM_THREADS)
-            ]
-
-            # Wait for all futures to complete
-            for future in futures:
-                future.result()
-
+        sent_count, failed_count, elapsed_time = send_emails(
+            emails_per_sec,
+            duration,
+            build_configs(args.mx_port, args.mailpolicy_port),
+        )
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
-        stop_event.set()
+        return 130
 
-    elapsed_time = time.time() - start_time
     logger.info(
-        f"Completed! Sent {sent_count} emails in {elapsed_time:.2f} seconds "
-        f"({sent_count/elapsed_time:.2f} emails/sec)"
+        "Completed! Sent %d emails, failed %d, in %.2f seconds "
+        "(%.2f emails/sec)",
+        sent_count,
+        failed_count,
+        elapsed_time,
+        sent_count / elapsed_time,
     )
+    return 1 if failed_count else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
