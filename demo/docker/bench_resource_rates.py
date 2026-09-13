@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -19,13 +21,127 @@ from typing import Optional
 DEFAULT_RATES = (10, 20, 50, 100, 200, 500)
 DEFAULT_DURATION_SECONDS = 600.0
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPOSITORY_ROOT = SCRIPT_DIR.parent.parent
 RESOURCE_SCRIPT = SCRIPT_DIR / "bench_resources.py"
 SENDER_SCRIPT = SCRIPT_DIR / "send_bulk_emails.py"
+COMPOSE_FILE = SCRIPT_DIR / "docker-compose.resource-benchmark.yml"
+COMPOSE_PROJECT_NAME = "mailtrace-resource-benchmark"
+COMPOSE_START_TIMEOUT_SECONDS = 300
+SERVICE_READY_TIMEOUT_SECONDS = 300.0
+TRACE_COMPLETION_TIMEOUT_SECONDS = 3600.0
+BENCHMARK_MX_PORT = 11025
+BENCHMARK_MAILPOLICY_PORT = 21025
 MONITOR_START_TIMEOUT_SECONDS = 60.0
 MONITOR_STOP_TIMEOUT_SECONDS = 60.0
 DOCKER_COMMAND_TIMEOUT_SECONDS = 300.0
 DEFAULT_TRACE_POLL_INTERVAL_SECONDS = 120.0
 TRACE_COUNT_PATTERN = re.compile(r"Traces generated\s+(\d+)\s*$", re.MULTILINE)
+
+
+def default_output_dir() -> Path:
+    """回傳本次實驗使用的預設結果目錄。"""
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return REPOSITORY_ROOT / "results" / f"resource-{timestamp}"
+
+
+def compose_command(*args: str) -> list[str]:
+    """建立專用實驗環境的 Docker Compose 命令。"""
+    return [
+        "docker",
+        "compose",
+        "--project-name",
+        COMPOSE_PROJECT_NAME,
+        "--file",
+        str(COMPOSE_FILE),
+        *args,
+    ]
+
+
+def cleanup_environment() -> None:
+    """移除實驗容器、網路、磁碟區及孤立容器。"""
+    result = subprocess.run(
+        compose_command("down", "--volumes", "--remove-orphans"),
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"docker compose cleanup failed with status {result.returncode}"
+        )
+
+
+def wait_for_http_service(
+    url: str, timeout: float = SERVICE_READY_TIMEOUT_SECONDS
+) -> None:
+    """等待 HTTP 服務回傳成功狀態。"""
+    deadline = time.monotonic() + timeout
+    last_error = "service did not respond"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as response:
+                if 200 <= response.status < 300:
+                    return
+                last_error = f"HTTP status {response.status}"
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(f"service did not become ready at {url}: {last_error}")
+
+
+def start_environment() -> None:
+    """建置並啟動專用實驗環境，等待所有服務就緒。"""
+    result = subprocess.run(
+        compose_command(
+            "up",
+            "--build",
+            "--wait",
+            "--wait-timeout",
+            str(COMPOSE_START_TIMEOUT_SECONDS),
+        ),
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"docker compose up failed with status {result.returncode}"
+        )
+    wait_for_http_service("http://127.0.0.1:13200/ready")
+
+
+def compose_container_id(service: str) -> str:
+    """取得專用實驗環境中指定服務的容器 ID。"""
+    result = subprocess.run(
+        compose_command("ps", "--quiet", service),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    container_ids = result.stdout.split()
+    if result.returncode != 0 or len(container_ids) != 1:
+        detail = result.stderr.strip() or "container is not running"
+        raise RuntimeError(f"could not resolve {service} container: {detail}")
+    return container_ids[0]
+
+
+def capture_compose_logs(output_dir: Path) -> None:
+    """在清理失敗環境前保留末尾容器日誌。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "compose.stderr.log"
+    try:
+        with path.open("w", encoding="utf-8") as output:
+            subprocess.run(
+                compose_command("logs", "--no-color", "--tail", "200"),
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+    except OSError as exc:
+        print(f"could not capture compose logs: {exc}", file=sys.stderr)
 
 
 def write_cpu_usage_svg(csv_path: Path, output_path: Path, rate: int) -> None:
@@ -246,13 +362,38 @@ def nonempty_postfix_queues(containers: list[str]) -> list[str]:
     ]
 
 
+def exim_queue_is_empty(container: str) -> bool:
+    """判斷 Exim 容器是否沒有待處理郵件。"""
+    result = subprocess.run(
+        ["docker", "exec", container, "exim4", "-bpc"],
+        capture_output=True,
+        text=True,
+        timeout=DOCKER_COMMAND_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not read the queue from {container}: {result.stderr.strip()}"
+        )
+    try:
+        return int(result.stdout.strip()) == 0
+    except ValueError as exc:
+        raise RuntimeError(
+            f"invalid Exim queue count from {container}: {result.stdout.strip()}"
+        ) from exc
+
+
 def wait_for_trace_completion(
     trace_follower: TraceLogFollower,
     queue_containers: list[str],
     expected_trace_count: int,
     poll_interval: float,
+    *,
+    exim_queue_container: Optional[str] = None,
+    timeout: float = TRACE_COMPLETION_TIMEOUT_SECONDS,
 ) -> int:
-    """Wait for exact trace parity and empty Postfix queues."""
+    """等待 trace 數量相符，並確認 Postfix 與 Exim 佇列清空。"""
+    deadline = time.monotonic() + timeout
     while True:
         trace_count = trace_follower.trace_count()
         print(
@@ -268,22 +409,33 @@ def wait_for_trace_completion(
         if trace_count == expected_trace_count:
             try:
                 pending_queues = nonempty_postfix_queues(queue_containers)
+                if (
+                    exim_queue_container is not None
+                    and not exim_queue_is_empty(exim_queue_container)
+                ):
+                    pending_queues.append(exim_queue_container)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 print(
-                    f"Postfix queue check failed; retrying: {exc}",
+                    f"Mail queue check failed; retrying: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
             else:
                 print(
-                    "Pending Postfix queues: "
+                    "Pending mail queues: "
                     + (", ".join(pending_queues) or "none"),
                     file=sys.stderr,
                     flush=True,
                 )
                 if not pending_queues:
                     return trace_count
-        time.sleep(poll_interval)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                "trace completion timed out: "
+                f"observed {trace_count}/{expected_trace_count} traces"
+            )
+        time.sleep(min(poll_interval, remaining))
 
 
 def run_rate(
@@ -294,9 +446,8 @@ def run_rate(
     *,
     trace_container: Optional[str] = None,
     queue_containers: Optional[list[str]] = None,
+    exim_queue_container: Optional[str] = None,
     trace_poll_interval: float = DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
-    sender_mx_port: int = 10025,
-    sender_mailpolicy_port: int = 20025,
 ) -> tuple[dict[str, object], bool]:
     """Send email and measure resources at one requested rate."""
     stem = f"resources_{rate}_emails_per_sec"
@@ -357,9 +508,9 @@ def run_rate(
                     str(rate),
                     str(duration),
                     "--mx-port",
-                    str(sender_mx_port),
+                    str(BENCHMARK_MX_PORT),
                     "--mailpolicy-port",
-                    str(sender_mailpolicy_port),
+                    str(BENCHMARK_MAILPOLICY_PORT),
                 ],
                 stdout=sender_log_file,
                 stderr=subprocess.STDOUT,
@@ -372,6 +523,7 @@ def run_rate(
                     postfix_containers,
                     submitted_email_count,
                     trace_poll_interval,
+                    exim_queue_container=exim_queue_container,
                 )
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             run_error = str(exc)
@@ -430,10 +582,9 @@ def run(
     *,
     trace_container: Optional[str] = None,
     queue_containers: Optional[list[str]] = None,
+    exim_queue_container: Optional[str] = None,
     trace_poll_interval: float = DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
-    sender_mx_port: int = 10025,
-    sender_mailpolicy_port: int = 20025,
-) -> int:
+) -> tuple[dict[str, object], int]:
     output_dir.mkdir(parents=True, exist_ok=True)
     results = []
     success = True
@@ -445,32 +596,105 @@ def run(
             duration,
             trace_container=trace_container,
             queue_containers=queue_containers,
+            exim_queue_container=exim_queue_container,
             trace_poll_interval=trace_poll_interval,
-            sender_mx_port=sender_mx_port,
-            sender_mailpolicy_port=sender_mailpolicy_port,
         )
         results.append(result)
         success = success and rate_success
 
-    json.dump(
-        {
-            "container": container,
-            "rates": rates,
-            "duration_seconds": duration,
-            "trace_container": trace_container,
-            "runs": results,
-        },
-        sys.stdout,
-        separators=(",", ":"),
-    )
-    sys.stdout.write("\n")
-    return 0 if success else 1
+    report = {
+        "container": container,
+        "rates": rates,
+        "duration_seconds": duration,
+        "trace_container": trace_container,
+        "runs": results,
+    }
+    return report, 0 if success else 1
+
+
+def run_managed_experiment(
+    output_dir: Path,
+    rates: list[int],
+    duration: float,
+    trace_poll_interval: float,
+) -> tuple[dict[str, object], int]:
+    """管理 Docker 環境並執行完整資源實驗。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report: dict[str, object] = {
+        "container": None,
+        "rates": rates,
+        "duration_seconds": duration,
+        "trace_container": None,
+        "runs": [],
+        "output_dir": str(output_dir),
+        "error": None,
+        "cleanup_error": None,
+    }
+    status = 1
+    try:
+        cleanup_environment()
+        start_environment()
+        containers = {
+            service: compose_container_id(service)
+            for service in (
+                "mailtrace",
+                "mx",
+                "mailpolicy",
+                "mailbox",
+                "mailbox2",
+                "mailer",
+            )
+        }
+        report, status = run(
+            containers["mailtrace"],
+            output_dir,
+            rates,
+            duration,
+            trace_container=containers["mailtrace"],
+            queue_containers=[
+                containers["mx"],
+                containers["mailpolicy"],
+                containers["mailbox"],
+                containers["mailbox2"],
+            ],
+            exim_queue_container=containers["mailer"],
+            trace_poll_interval=trace_poll_interval,
+        )
+        report.update(
+            {
+                "output_dir": str(output_dir),
+                "error": (
+                    None
+                    if status == 0
+                    else "one or more rate experiments failed"
+                ),
+                "cleanup_error": None,
+            }
+        )
+    except KeyboardInterrupt:
+        report["error"] = "experiment interrupted"
+        status = 130
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        report["error"] = str(exc)
+        status = 1
+    finally:
+        if status != 0:
+            capture_compose_logs(output_dir)
+        try:
+            cleanup_environment()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            report["cleanup_error"] = str(exc)
+            capture_compose_logs(output_dir)
+            if status == 0:
+                status = 1
+    return report, status
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--container", required=True)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--output-dir", type=Path, default=default_output_dir()
+    )
     parser.add_argument(
         "--rates",
         nargs="+",
@@ -484,21 +708,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=DEFAULT_DURATION_SECONDS,
         metavar="SECONDS",
     )
-    parser.add_argument("--trace-container")
-    parser.add_argument(
-        "--queue-container",
-        action="append",
-        default=[],
-        help="Postfix container that must be empty before completion",
-    )
     parser.add_argument(
         "--trace-poll-interval",
         type=float,
         default=DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
         metavar="SECONDS",
     )
-    parser.add_argument("--sender-mx-port", type=int, default=10025)
-    parser.add_argument("--sender-mailpolicy-port", type=int, default=20025)
     args = parser.parse_args(argv)
     if any(rate <= 0 for rate in args.rates):
         parser.error("--rates values must be positive")
@@ -506,24 +721,31 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         parser.error("--duration must be positive")
     if args.trace_poll_interval <= 0:
         parser.error("--trace-poll-interval must be positive")
-    if args.queue_container and not args.trace_container:
-        parser.error("--queue-container requires --trace-container")
     return args
+
+
+def raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
+    """將終止訊號轉為可執行 finally 清理流程的中斷。"""
+    raise KeyboardInterrupt
 
 
 def main() -> int:
     args = parse_args()
-    return run(
-        args.container,
-        args.output_dir,
-        args.rates,
-        args.duration,
-        trace_container=args.trace_container,
-        queue_containers=args.queue_container,
-        trace_poll_interval=args.trace_poll_interval,
-        sender_mx_port=args.sender_mx_port,
-        sender_mailpolicy_port=args.sender_mailpolicy_port,
+    previous_sigterm_handler = signal.signal(
+        signal.SIGTERM, raise_keyboard_interrupt
     )
+    try:
+        report, status = run_managed_experiment(
+            args.output_dir,
+            args.rates,
+            args.duration,
+            args.trace_poll_interval,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
+    json.dump(report, sys.stdout, separators=(",", ":"))
+    sys.stdout.write("\n")
+    return status
 
 
 if __name__ == "__main__":

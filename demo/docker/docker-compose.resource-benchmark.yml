@@ -18,6 +18,17 @@ services:
         hard: 65536
     ports:
       - "19200:9200"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl --silent --fail --insecure
+          --user admin:wg328GY@3HUY76
+          https://localhost:9200/_cluster/health >/dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.5
@@ -32,7 +43,13 @@ services:
     volumes:
       - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.10
@@ -45,7 +62,13 @@ services:
     volumes:
       - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exim4 -bpc >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.20
@@ -60,7 +83,13 @@ services:
     volumes:
       - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.30
@@ -73,7 +102,13 @@ services:
     volumes:
       - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.40
@@ -86,7 +121,13 @@ services:
     volumes:
       - ./vector/vector.benchmark.yaml:/etc/vector/vector.yaml:ro
     depends_on:
-      - opensearch
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "postfix status"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
     networks:
       mailtrace_net:
         ipv4_address: 192.168.201.41
@@ -106,6 +147,9 @@ services:
         ipv4_address: 192.168.201.60
 
   mailtrace:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
     image: mailtrace:latest
     network_mode: service:opensearch
     command:
@@ -121,8 +165,10 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     depends_on:
-      - opensearch
-      - tempo
+      opensearch:
+        condition: service_healthy
+      tempo:
+        condition: service_started
 
 networks:
   mailtrace_net:

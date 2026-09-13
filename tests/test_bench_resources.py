@@ -288,6 +288,14 @@ class CollectionTest(unittest.TestCase):
 
 
 class RateBenchmarkTest(unittest.TestCase):
+    def test_no_arguments_selects_managed_environment_defaults(self) -> None:
+        args = bench_resource_rates.parse_args([])
+
+        self.assertEqual(args.rates, [10, 20, 50, 100, 200, 500])
+        self.assertEqual(args.duration, 600.0)
+        self.assertEqual(args.output_dir.parent.name, "results")
+        self.assertRegex(args.output_dir.name, r"resource-\d{8}-\d{6}")
+
     def test_writes_cpu_usage_timestamp_svg(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             csv_path = Path(directory) / "resources.csv"
@@ -324,12 +332,117 @@ class RateBenchmarkTest(unittest.TestCase):
             self.assertIn("<polyline", svg)
 
     def test_default_rates_are_email_rates(self) -> None:
-        args = bench_resource_rates.parse_args(
-            ["--container", "mailtrace", "--output-dir", "results"]
-        )
+        args = bench_resource_rates.parse_args(["--output-dir", "results"])
 
         self.assertEqual(args.rates, [10, 20, 50, 100, 200, 500])
         self.assertEqual(args.duration, 600.0)
+
+    def test_checks_exim_queue_count(self) -> None:
+        with patch.object(
+            bench_resource_rates.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="0\n", stderr=""
+            ),
+        ):
+            self.assertTrue(
+                bench_resource_rates.exim_queue_is_empty("mailer-container")
+            )
+
+    def test_managed_experiment_cleans_stale_and_created_environment(
+        self,
+    ) -> None:
+        output_dir = Path("results/test")
+        container_ids = {
+            "mailtrace": "trace-id",
+            "mx": "mx-id",
+            "mailpolicy": "policy-id",
+            "mailbox": "mailbox-id",
+            "mailbox2": "mailbox2-id",
+            "mailer": "mailer-id",
+        }
+        rate_report = {
+            "container": "trace-id",
+            "rates": [5],
+            "duration_seconds": 1.0,
+            "trace_container": "trace-id",
+            "runs": [],
+        }
+        with patch.object(
+            bench_resource_rates, "cleanup_environment", return_value=None
+        ) as cleanup, patch.object(
+            bench_resource_rates, "start_environment"
+        ) as start, patch.object(
+            bench_resource_rates,
+            "compose_container_id",
+            side_effect=lambda service: container_ids[service],
+        ), patch.object(
+            bench_resource_rates,
+            "run",
+            return_value=(rate_report, 0),
+        ) as run:
+            report, status = bench_resource_rates.run_managed_experiment(
+                output_dir, [5], 1.0, 0.1
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(report["output_dir"], str(output_dir))
+        self.assertEqual(cleanup.call_count, 2)
+        start.assert_called_once_with()
+        run.assert_called_once_with(
+            "trace-id",
+            output_dir,
+            [5],
+            1.0,
+            trace_container="trace-id",
+            queue_containers=[
+                "mx-id",
+                "policy-id",
+                "mailbox-id",
+                "mailbox2-id",
+            ],
+            exim_queue_container="mailer-id",
+            trace_poll_interval=0.1,
+        )
+
+    def test_start_failure_is_reported_and_still_cleans_up(self) -> None:
+        output_dir = Path("results/test")
+        with patch.object(
+            bench_resource_rates, "cleanup_environment", return_value=None
+        ) as cleanup, patch.object(
+            bench_resource_rates,
+            "start_environment",
+            side_effect=RuntimeError("compose up failed"),
+        ), patch.object(
+            bench_resource_rates, "capture_compose_logs"
+        ) as capture:
+            report, status = bench_resource_rates.run_managed_experiment(
+                output_dir, [5], 1.0, 0.1
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["runs"], [])
+        self.assertEqual(report["error"], "compose up failed")
+        self.assertEqual(cleanup.call_count, 2)
+        capture.assert_called_once_with(output_dir)
+
+    def test_interrupt_is_reported_and_still_cleans_up(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            bench_resource_rates, "cleanup_environment", return_value=None
+        ) as cleanup, patch.object(
+            bench_resource_rates,
+            "start_environment",
+            side_effect=KeyboardInterrupt,
+        ), patch.object(
+            bench_resource_rates, "capture_compose_logs"
+        ):
+            report, status = bench_resource_rates.run_managed_experiment(
+                Path(directory), [5], 1.0, 0.1
+            )
+
+        self.assertEqual(status, 130)
+        self.assertEqual(report["error"], "experiment interrupted")
+        self.assertEqual(cleanup.call_count, 2)
 
     def test_sums_generated_trace_counts(self) -> None:
         log_output = "\n".join(
@@ -362,6 +475,31 @@ class RateBenchmarkTest(unittest.TestCase):
         queue_check.assert_called_once_with(["mailqueue"])
         sleep.assert_called_once_with(120.0)
 
+    def test_waits_for_exim_queue_to_empty(self) -> None:
+        trace_follower = Mock()
+        trace_follower.trace_count.return_value = 20
+        with patch.object(
+            bench_resource_rates,
+            "nonempty_postfix_queues",
+            side_effect=[[], []],
+        ), patch.object(
+            bench_resource_rates,
+            "exim_queue_is_empty",
+            side_effect=[False, True],
+        ) as exim_check, patch.object(
+            bench_resource_rates.time, "sleep"
+        ):
+            count = bench_resource_rates.wait_for_trace_completion(
+                trace_follower,
+                ["mailqueue"],
+                20,
+                0.1,
+                exim_queue_container="mailer",
+            )
+
+        self.assertEqual(count, 20)
+        self.assertEqual(exim_check.call_count, 2)
+
     def test_rejects_trace_count_above_submissions(self) -> None:
         trace_follower = Mock()
         trace_follower.trace_count.return_value = 21
@@ -385,10 +523,9 @@ class RateBenchmarkTest(unittest.TestCase):
         self.assertEqual(count, 20)
         sleep.assert_called_once_with(120.0)
 
-    def test_runs_every_rate_and_outputs_one_json_object(self) -> None:
+    def test_runs_every_rate_and_returns_one_report(self) -> None:
         rates = [10, 20]
         with tempfile.TemporaryDirectory() as directory:
-            stdout = io.StringIO()
             with patch.object(
                 bench_resource_rates,
                 "run_rate",
@@ -396,8 +533,8 @@ class RateBenchmarkTest(unittest.TestCase):
                     ({"emails_per_second": 10}, True),
                     ({"emails_per_second": 20}, True),
                 ],
-            ) as run_rate, redirect_stdout(stdout):
-                status = bench_resource_rates.run(
+            ) as run_rate:
+                result, status = bench_resource_rates.run(
                     "mailtrace", Path(directory) / "results", rates, 3.0
                 )
 
@@ -405,9 +542,38 @@ class RateBenchmarkTest(unittest.TestCase):
         self.assertEqual(
             [call.args[2] for call in run_rate.call_args_list], rates
         )
-        result = json.loads(stdout.getvalue())
         self.assertEqual(result["rates"], rates)
         self.assertEqual(len(result["runs"]), 2)
+
+    def test_cleanup_failure_changes_success_to_failure(self) -> None:
+        rate_report = {
+            "container": "trace-id",
+            "rates": [5],
+            "duration_seconds": 1.0,
+            "trace_container": "trace-id",
+            "runs": [],
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            bench_resource_rates,
+            "cleanup_environment",
+            side_effect=[None, RuntimeError("cleanup failed")],
+        ), patch.object(
+            bench_resource_rates, "start_environment"
+        ), patch.object(
+            bench_resource_rates,
+            "compose_container_id",
+            return_value="trace-id",
+        ), patch.object(
+            bench_resource_rates, "run", return_value=(rate_report, 0)
+        ), patch.object(
+            bench_resource_rates, "capture_compose_logs"
+        ):
+            report, status = bench_resource_rates.run_managed_experiment(
+                Path(directory), [5], 1.0, 0.1
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["cleanup_error"], "cleanup failed")
 
     def test_sender_counts_only_successful_deliveries(self) -> None:
         with patch.object(
