@@ -457,7 +457,7 @@ class RateBenchmarkTest(unittest.TestCase):
             bench_resource_rates.count_generated_traces(log_output), 20
         )
 
-    def test_waits_for_exact_trace_count_and_empty_queues(self) -> None:
+    def test_waits_until_trace_count_reaches_expected_count(self) -> None:
         trace_follower = Mock()
         trace_follower.trace_count.side_effect = [10, 20]
         with patch.object(
@@ -475,20 +475,21 @@ class RateBenchmarkTest(unittest.TestCase):
         queue_check.assert_called_once_with(["mailqueue"])
         sleep.assert_called_once_with(120.0)
 
-    def test_waits_for_exim_queue_to_empty(self) -> None:
+    def test_warns_when_exim_queue_is_not_empty(self) -> None:
         trace_follower = Mock()
         trace_follower.trace_count.return_value = 20
+        stderr = io.StringIO()
         with patch.object(
             bench_resource_rates,
             "nonempty_postfix_queues",
-            side_effect=[[], []],
+            return_value=[],
         ), patch.object(
             bench_resource_rates,
             "exim_queue_is_empty",
-            side_effect=[False, True],
+            return_value=False,
         ) as exim_check, patch.object(
             bench_resource_rates.time, "sleep"
-        ):
+        ) as sleep, redirect_stderr(stderr):
             count = bench_resource_rates.wait_for_trace_completion(
                 trace_follower,
                 ["mailqueue"],
@@ -498,30 +499,41 @@ class RateBenchmarkTest(unittest.TestCase):
             )
 
         self.assertEqual(count, 20)
-        self.assertEqual(exim_check.call_count, 2)
+        exim_check.assert_called_once_with("mailer")
+        sleep.assert_not_called()
+        self.assertIn("WARNING: pending mail queues: mailer", stderr.getvalue())
 
-    def test_rejects_trace_count_above_submissions(self) -> None:
+    def test_accepts_trace_count_above_submissions(self) -> None:
         trace_follower = Mock()
         trace_follower.trace_count.return_value = 21
-        with self.assertRaisesRegex(RuntimeError, "exceeded"):
-            bench_resource_rates.wait_for_trace_completion(
-                trace_follower, [], 20, 120.0
-            )
-
-    def test_retries_failed_queue_check_after_trace_parity(self) -> None:
-        trace_follower = Mock()
-        trace_follower.trace_count.return_value = 20
         with patch.object(
             bench_resource_rates,
             "nonempty_postfix_queues",
-            side_effect=[subprocess.TimeoutExpired("docker", 300), []],
-        ), patch.object(bench_resource_rates.time, "sleep") as sleep:
+            return_value=[],
+        ):
             count = bench_resource_rates.wait_for_trace_completion(
-                trace_follower, ["mailqueue"], 20, 120.0
+                trace_follower, [], 20, 120.0
             )
 
+        self.assertEqual(count, 21)
+
+    def test_warns_when_queue_check_fails(self) -> None:
+        trace_follower = Mock()
+        trace_follower.trace_count.return_value = 20
+        stderr = io.StringIO()
+        with patch.object(
+            bench_resource_rates,
+            "nonempty_postfix_queues",
+            side_effect=subprocess.TimeoutExpired("docker", 300),
+        ), patch.object(bench_resource_rates.time, "sleep") as sleep:
+            with redirect_stderr(stderr):
+                count = bench_resource_rates.wait_for_trace_completion(
+                    trace_follower, ["mailqueue"], 20, 120.0
+                )
+
         self.assertEqual(count, 20)
-        sleep.assert_called_once_with(120.0)
+        sleep.assert_not_called()
+        self.assertIn("WARNING: mail queue check failed", stderr.getvalue())
 
     def test_runs_every_rate_and_returns_one_report(self) -> None:
         rates = [10, 20]

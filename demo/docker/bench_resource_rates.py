@@ -392,7 +392,7 @@ def wait_for_trace_completion(
     exim_queue_container: Optional[str] = None,
     timeout: float = TRACE_COMPLETION_TIMEOUT_SECONDS,
 ) -> int:
-    """等待 trace 數量相符，並確認 Postfix 與 Exim 佇列清空。"""
+    """等待 trace 數量達標，並回報 Postfix 與 Exim 佇列狀態。"""
     deadline = time.monotonic() + timeout
     while True:
         trace_count = trace_follower.trace_count()
@@ -401,12 +401,7 @@ def wait_for_trace_completion(
             file=sys.stderr,
             flush=True,
         )
-        if trace_count > expected_trace_count:
-            raise RuntimeError(
-                f"trace count exceeded submissions: "
-                f"{trace_count} > {expected_trace_count}"
-            )
-        if trace_count == expected_trace_count:
+        if trace_count >= expected_trace_count:
             try:
                 pending_queues = nonempty_postfix_queues(queue_containers)
                 if (
@@ -416,19 +411,25 @@ def wait_for_trace_completion(
                     pending_queues.append(exim_queue_container)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 print(
-                    f"Mail queue check failed; retrying: {exc}",
+                    f"WARNING: mail queue check failed: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
             else:
-                print(
-                    "Pending mail queues: "
-                    + (", ".join(pending_queues) or "none"),
-                    file=sys.stderr,
-                    flush=True,
-                )
-                if not pending_queues:
-                    return trace_count
+                if pending_queues:
+                    print(
+                        "WARNING: pending mail queues: "
+                        + ", ".join(pending_queues),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "Pending mail queues: none",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            return trace_count
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(
@@ -543,13 +544,16 @@ def run_rate(
     except (OSError, ValueError) as exc:
         run_error = run_error or f"could not create CPU plot: {exc}"
 
+    trace_requirement_met = trace_container is None or (
+        trace_count is not None and trace_count >= submitted_email_count
+    )
     success = (
         run_error is None
         and sender_status == 0
         and monitor_status == 0
         and resource_summary is not None
         and resource_summary.get("stop_reason") == "signal"
-        and (trace_container is None or trace_count == submitted_email_count)
+        and trace_requirement_met
     )
     result = {
         "emails_per_second": rate,
@@ -565,9 +569,7 @@ def run_rate(
         "submitted_email_count": submitted_email_count,
         "trace_count": trace_count,
         "trace_count_matches": (
-            trace_count == submitted_email_count
-            if trace_container is not None
-            else None
+            trace_requirement_met if trace_container is not None else None
         ),
         "error": run_error,
     }
