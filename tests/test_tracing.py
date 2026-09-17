@@ -17,7 +17,11 @@ from mailtrace.models import (
     LogEntry,
     SmtpStatusClass,
 )
-from mailtrace.parser import OpensearchParser, SyslogParser, extract_next_mail_id
+from mailtrace.parser import (
+    OpensearchParser,
+    SyslogParser,
+    extract_next_mail_id,
+)
 from mailtrace.tracing import EmailTracesGenerator, otel, query
 from mailtrace.tracing.delay_parser import DelayInfo, detect_mta_from_entries
 from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
@@ -115,7 +119,9 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             {("maildirect10", "E2F1"), ("maildirect10", "E4F2")},
         )
 
-    def test_message_grouping_backfills_logs_seen_before_message_id(self) -> None:
+    def test_message_grouping_backfills_logs_seen_before_message_id(
+        self,
+    ) -> None:
         message_id = "local-forward@example.com"
         timestamp = "2026-08-01T03:26:09+00:00"
         logs = [
@@ -151,7 +157,9 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         self.assertEqual(grouped[message_id], logs)
 
-    def test_message_grouping_reuses_queue_mapping_across_batches(self) -> None:
+    def test_message_grouping_reuses_queue_mapping_across_batches(
+        self,
+    ) -> None:
         message_id = "late-delivery@example.com"
         queue_id = "MAILER3Q"
         queue_mapping: dict[tuple[str, str], str] = {}
@@ -226,7 +234,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertEqual(pending.logs, first_batch + later_batch)
         self.assertEqual(pending.last_seen_round, 2)
 
-    def test_host_hops_are_sequential_siblings_with_causal_links(self) -> None:
+    def test_host_hops_are_nested_under_handoff_transmissions(self) -> None:
         logs = [
             LogEntry(
                 datetime="2026-07-30T16:10:00+00:00",
@@ -309,17 +317,16 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         )
 
         self.assertEqual(first.parent.span_id, root.context.span_id)
-        self.assertEqual(second.parent.span_id, root.context.span_id)
-        self.assertEqual(remote.parent.span_id, root.context.span_id)
-        self.assertEqual(second.links[0].context.span_id, first.context.span_id)
-        self.assertEqual(remote.links[0].context.span_id, second.context.span_id)
-        self.assertLess(first.start_time, second.start_time)
-        self.assertLess(second.start_time, remote.start_time)
-        self.assertLess(first.end_time, second.end_time)
-        self.assertLess(second.end_time, remote.end_time)
-        self.assertEqual(first.attributes["email.transport"], "postfix/local")
+        self.assertNotIn("email.explicit_handoff", first.attributes)
+        self.assertIs(second.attributes["email.explicit_handoff"], True)
+        self.assertIs(remote.attributes["email.explicit_handoff"], True)
+        self.assertFalse(first.links)
+        self.assertFalse(second.links)
+        self.assertFalse(remote.links)
+        self.assertNotIn("email.transport", first.attributes)
+        self.assertNotIn("email.transport", second.attributes)
+        self.assertNotIn("email.transport", remote.attributes)
         self.assertEqual(first.attributes["email.next_queue_id"], "LOCAL2")
-        self.assertEqual(second.attributes["email.transport"], "postfix/smtp")
         self.assertEqual(second.attributes["email.next_queue_id"], "REMOTE1")
         self.assertEqual(second.attributes["email.relay_host"], "mailer4")
         self.assertEqual(second.attributes["email.relay_ip"], "192.0.2.4")
@@ -328,28 +335,54 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         finished = exporter.get_finished_spans()
 
-        def stage_for(host_span, stage_name):
-            delivery_ids = {
-                span.context.span_id
+        def delivery_for(host_span):
+            return next(
+                span
                 for span in finished
                 if span.name == "delivery"
                 and span.parent
                 and span.parent.span_id == host_span.context.span_id
-            }
+            )
+
+        def stage_for(delivery_span, stage_name):
             return next(
                 span
                 for span in finished
                 if span.name == stage_name
                 and span.parent
-                and span.parent.span_id in delivery_ids
+                and span.parent.span_id == delivery_span.context.span_id
             )
 
-        transmission = stage_for(second, "transmission")
-        before_qmgr = stage_for(remote, "before_qmgr")
-        self.assertEqual(transmission.start_time, before_qmgr.start_time)
-        self.assertEqual(transmission.end_time, before_qmgr.end_time)
+        first_delivery = delivery_for(first)
+        second_delivery = delivery_for(second)
+        remote_delivery = delivery_for(remote)
+        first_transmission = stage_for(first_delivery, "transmission")
+        second_transmission = stage_for(second_delivery, "transmission")
+        remote_before_qmgr = stage_for(remote_delivery, "before_qmgr")
 
-    def test_multiple_deliveries_have_recipient_branches(self) -> None:
+        self.assertEqual(
+            second.parent.span_id, first_transmission.context.span_id
+        )
+        self.assertEqual(
+            remote.parent.span_id, second_transmission.context.span_id
+        )
+        self.assertEqual(
+            first_delivery.attributes["email.transport"], "postfix/local"
+        )
+        self.assertEqual(
+            second_delivery.attributes["email.transport"], "postfix/smtp"
+        )
+        self.assertEqual(
+            remote_delivery.attributes["email.transport"], "postfix/smtp"
+        )
+        self.assertEqual(
+            second_transmission.start_time, remote_before_qmgr.start_time
+        )
+        self.assertEqual(
+            second_transmission.end_time, remote_before_qmgr.end_time
+        )
+
+    def test_multiple_deliveries_create_recipient_host_branches(self) -> None:
         logs = [
             LogEntry(
                 datetime="2026-07-30T16:20:00+00:00",
@@ -389,12 +422,12 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         finished = exporter.get_finished_spans()
         root = next(span for span in finished if span.name == "email.delivery")
-        host = next(
-            span
+        hosts = {
+            span.attributes["email.recipients"]: span
             for span in finished
             if span.attributes
             and span.attributes.get("email.queue_id") == "SOURCE1"
-        )
+        }
         deliveries = {
             span.attributes.get("email.recipient"): span
             for span in finished
@@ -404,10 +437,13 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertEqual(
             set(deliveries), {"first@example.com", "second@example.com"}
         )
+        self.assertEqual(set(hosts), set(deliveries))
         self.assertEqual(root.status.status_code, StatusCode.UNSET)
         self.assertNotIn("mail.delivery_status", root.attributes)
-        for delivery in deliveries.values():
-            self.assertEqual(delivery.parent.span_id, host.context.span_id)
+        for recipient, delivery in deliveries.items():
+            self.assertEqual(
+                delivery.parent.span_id, hosts[recipient].context.span_id
+            )
             stages = [
                 span
                 for span in finished
@@ -422,6 +458,201 @@ class EmailTracesGeneratorTest(unittest.TestCase):
                     for stage in stages
                 )
             )
+
+    def test_shared_downstream_queue_preserves_recipient_handoffs(
+        self,
+    ) -> None:
+        logs = [
+            LogEntry(
+                datetime="2026-07-30T16:00:00+00:00",
+                hostname="source",
+                service="postfix/cleanup",
+                mail_id="SOURCE1",
+                message="message-id=<shared@example.com>",
+            ),
+            LogEntry(
+                datetime="2026-07-30T16:00:01+00:00",
+                hostname="source",
+                service="postfix/smtp",
+                mail_id="SOURCE1",
+                message=(
+                    "to=<first@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+                queued_as="DEST1",
+                relay_host="destination",
+            ),
+            LogEntry(
+                datetime="2026-07-30T16:00:02+00:00",
+                hostname="source",
+                service="postfix/smtp",
+                mail_id="SOURCE1",
+                message=(
+                    "to=<second@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+                queued_as="DEST1",
+                relay_host="destination",
+            ),
+            LogEntry(
+                datetime="2026-07-30T16:00:03+00:00",
+                hostname="destination",
+                service="postfix/smtp",
+                mail_id="DEST1",
+                message=(
+                    "to=<first@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+            ),
+            LogEntry(
+                datetime="2026-07-30T16:00:04+00:00",
+                hostname="destination",
+                service="postfix/smtp",
+                mail_id="DEST1",
+                message=(
+                    "to=<second@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+            ),
+        ]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"shared@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        hosts = {
+            (
+                span.attributes["email.queue_id"],
+                span.attributes["email.recipients"],
+            ): span
+            for span in finished
+            if span.attributes and "email.queue_id" in span.attributes
+        }
+        self.assertEqual(
+            set(hosts),
+            {
+                ("SOURCE1", "first@example.com"),
+                ("SOURCE1", "second@example.com"),
+                ("DEST1", "first@example.com"),
+                ("DEST1", "second@example.com"),
+            },
+        )
+
+        def transmission_for(host_span):
+            delivery = next(
+                span
+                for span in finished
+                if span.name == "delivery"
+                and span.parent
+                and span.parent.span_id == host_span.context.span_id
+            )
+            return next(
+                span
+                for span in finished
+                if span.name == "transmission"
+                and span.parent
+                and span.parent.span_id == delivery.context.span_id
+            )
+
+        for recipient in ("first@example.com", "second@example.com"):
+            source = hosts[("SOURCE1", recipient)]
+            destination = hosts[("DEST1", recipient)]
+            self.assertEqual(
+                destination.parent.span_id,
+                transmission_for(source).context.span_id,
+            )
+            self.assertIs(
+                destination.attributes["email.explicit_handoff"], True
+            )
+            self.assertFalse(destination.links)
+
+    def test_unlinked_same_host_queue_reuses_previous_parent(self) -> None:
+        logs = [
+            LogEntry(
+                datetime="2026-07-30T17:00:00+00:00",
+                hostname="source",
+                service="postfix/cleanup",
+                mail_id="SOURCE1",
+                message="message-id=<inferred@example.com>",
+            ),
+            LogEntry(
+                datetime="2026-07-30T17:00:01+00:00",
+                hostname="source",
+                service="postfix/smtp",
+                mail_id="SOURCE1",
+                message=(
+                    "to=<list@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+                queued_as="LIST1",
+                relay_host="list-host",
+            ),
+            LogEntry(
+                datetime="2026-07-30T17:00:02+00:00",
+                hostname="list-host",
+                service="postfix/smtp",
+                mail_id="LIST1",
+                message=(
+                    "to=<first@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+            ),
+            LogEntry(
+                datetime="2026-07-30T17:00:04+00:00",
+                hostname="list-host",
+                service="postfix/smtp",
+                mail_id="LIST2",
+                message=(
+                    "to=<second@example.com>, status=sent, delay=1, "
+                    "delays=0.1/0.1/0.1/0.7"
+                ),
+            ),
+        ]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"inferred@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        hosts = {
+            span.attributes["email.queue_id"]: span
+            for span in finished
+            if span.attributes and "email.queue_id" in span.attributes
+        }
+        source_delivery = next(
+            span
+            for span in finished
+            if span.name == "delivery"
+            and span.parent
+            and span.parent.span_id == hosts["SOURCE1"].context.span_id
+        )
+        source_transmission = next(
+            span
+            for span in finished
+            if span.name == "transmission"
+            and span.parent
+            and span.parent.span_id == source_delivery.context.span_id
+        )
+
+        self.assertEqual(
+            hosts["LIST1"].parent.span_id,
+            source_transmission.context.span_id,
+        )
+        self.assertEqual(
+            hosts["LIST2"].parent.span_id,
+            source_transmission.context.span_id,
+        )
+        self.assertIs(
+            hosts["LIST1"].attributes["email.explicit_handoff"], True
+        )
+        self.assertIs(
+            hosts["LIST2"].attributes["email.explicit_handoff"], False
+        )
 
     def test_temporary_failure_marks_only_delivery_span(self) -> None:
         logs = [
@@ -533,7 +764,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertEqual(host.attributes["smtp.enhanced_status_code"], "5.7.1")
         self.assertFalse(any(span.name == "delivery" for span in finished))
 
-    def test_permanent_failure_marks_its_branch_and_root(self) -> None:
+    def test_permanent_failure_marks_its_delivery_and_root(self) -> None:
         logs = [
             LogEntry(
                 datetime="2026-08-02T00:00:00+00:00",
@@ -601,11 +832,6 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         finished = exporter.get_finished_spans()
         root = next(span for span in finished if span.name == "email.delivery")
-        branches = {
-            span.attributes["email.destination"]: span
-            for span in finished
-            if span.name == "delivery.branch"
-        }
         failed_host = next(
             span
             for span in finished
@@ -620,19 +846,11 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         )
 
         self.assertEqual(root.status.status_code, StatusCode.ERROR)
-        self.assertEqual(
-            branches["failed-destination"].status.status_code,
-            StatusCode.ERROR,
-        )
-        self.assertEqual(
-            branches["sent-destination"].status.status_code,
-            StatusCode.UNSET,
+        self.assertFalse(
+            any(span.name == "delivery.branch" for span in finished)
         )
         self.assertEqual(failed_delivery.status.status_code, StatusCode.ERROR)
         self.assertEqual(failed_host.status.status_code, StatusCode.UNSET)
-        self.assertNotIn(
-            "smtp.response_code", branches["failed-destination"].attributes
-        )
 
     def test_handoff_without_delays_uses_log_timestamp(self) -> None:
         logs = [
@@ -656,9 +874,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
                 hostname="source",
                 service="postfix/smtp",
                 mail_id="CHILD1",
-                message=(
-                    "status=sent, delay=1, delays=0.1/0.1/0.1/0.7"
-                ),
+                message=("status=sent, delay=1, delays=0.1/0.1/0.1/0.7"),
             ),
         ]
         exporter = InMemorySpanExporter()
@@ -680,11 +896,15 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertEqual(spans["SOURCE1"].end_time, handoff_time)
         self.assertEqual(spans["CHILD1"].start_time, handoff_time)
         self.assertEqual(
-            spans["CHILD1"].links[0].context.span_id,
+            spans["CHILD1"].parent.span_id,
             spans["SOURCE1"].context.span_id,
         )
+        self.assertIs(
+            spans["CHILD1"].attributes["email.explicit_handoff"], True
+        )
+        self.assertFalse(spans["CHILD1"].links)
 
-    def test_relayed_queues_create_parallel_host_branches(self) -> None:
+    def test_relayed_queues_create_recipient_host_trees(self) -> None:
         logs = [
             LogEntry(
                 datetime="2026-07-30T15:00:00+08:00",
@@ -748,79 +968,76 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             generator._export_traces({"fanout@example.com": logs})
             otel.flush_traces()
 
-        spans = {
-            span.attributes.get("email.queue_id"): span
-            for span in exporter.get_finished_spans()
-            if span.attributes and "email.queue_id" in span.attributes
-        }
-        source_span = spans["SRC1"]
-        destination_a = spans["DST1"]
-        destination_b = spans["DST2"]
-        leaf_a = spans["LEAF1"]
-        root = next(
+        finished = exporter.get_finished_spans()
+        host_spans = [
             span
-            for span in exporter.get_finished_spans()
-            if span.name == "email.delivery"
-        )
-        branches = {
-            span.attributes.get("email.destination"): span
-            for span in exporter.get_finished_spans()
-            if span.name == "delivery.branch" and span.attributes
+            for span in finished
+            if span.attributes and "email.queue_id" in span.attributes
+        ]
+        source_spans = {
+            span.attributes["email.recipients"]: span
+            for span in host_spans
+            if span.attributes["email.queue_id"] == "SRC1"
         }
+        hosts_by_queue = {
+            span.attributes["email.queue_id"]: span
+            for span in host_spans
+            if span.attributes["email.queue_id"] != "SRC1"
+        }
+        destination_a = hosts_by_queue["DST1"]
+        destination_b = hosts_by_queue["DST2"]
+        leaf_a = hosts_by_queue["LEAF1"]
+        root = next(span for span in finished if span.name == "email.delivery")
 
-        self.assertEqual(source_span.parent.span_id, root.context.span_id)
-        self.assertEqual(set(branches), {"destination-a", "destination-b"})
+        def transmission_for(host_span):
+            delivery = next(
+                span
+                for span in finished
+                if span.name == "delivery"
+                and span.parent
+                and span.parent.span_id == host_span.context.span_id
+            )
+            return next(
+                span
+                for span in finished
+                if span.name == "transmission"
+                and span.parent
+                and span.parent.span_id == delivery.context.span_id
+            )
+
+        self.assertEqual(
+            set(source_spans), {"first@example.com", "second@example.com"}
+        )
         self.assertTrue(
             all(
-                branch.parent.span_id == root.context.span_id
-                for branch in branches.values()
+                span.parent.span_id == root.context.span_id
+                for span in source_spans.values()
             )
+        )
+        self.assertFalse(
+            any(span.name == "delivery.branch" for span in finished)
         )
         self.assertEqual(
             destination_a.parent.span_id,
-            branches["destination-a"].context.span_id,
+            transmission_for(
+                source_spans["first@example.com"]
+            ).context.span_id,
         )
         self.assertEqual(
             destination_b.parent.span_id,
-            branches["destination-b"].context.span_id,
+            transmission_for(
+                source_spans["second@example.com"]
+            ).context.span_id,
         )
         self.assertEqual(
             leaf_a.parent.span_id,
-            branches["destination-a"].context.span_id,
+            transmission_for(destination_a).context.span_id,
         )
-        self.assertEqual(
-            branches["destination-a"].attributes.get("email.recipient"),
-            "first@example.com",
-        )
-        self.assertEqual(
-            branches["destination-b"].attributes.get("email.recipient"),
-            "second@example.com",
-        )
-        self.assertEqual(
-            destination_a.links[0].context.span_id, source_span.context.span_id
-        )
-        self.assertEqual(
-            destination_b.links[0].context.span_id, source_span.context.span_id
-        )
-        self.assertEqual(
-            leaf_a.links[0].context.span_id, destination_a.context.span_id
-        )
-        self.assertLessEqual(
-            branches["destination-a"].start_time, destination_a.start_time
-        )
-        self.assertGreaterEqual(
-            branches["destination-a"].end_time, leaf_a.end_time
-        )
-        self.assertLessEqual(
-            branches["destination-b"].start_time, destination_b.start_time
-        )
-        self.assertGreaterEqual(
-            branches["destination-b"].end_time, destination_b.end_time
-        )
+        self.assertTrue(all(not span.links for span in host_spans))
 
         delivery_recipients = {
             span.attributes.get("email.recipient")
-            for span in exporter.get_finished_spans()
+            for span in finished
             if span.name == "delivery" and span.attributes
         }
         self.assertTrue(
@@ -885,26 +1102,54 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             otel.flush_traces()
 
         finished = exporter.get_finished_spans()
-        root = next(span for span in finished if span.name == "email.delivery")
-        hosts = {
-            span.attributes.get("email.queue_id"): span
+        host_spans = [
+            span
             for span in finished
             if span.attributes and "email.queue_id" in span.attributes
+        ]
+        source_spans = {
+            span.attributes["email.recipients"]: span
+            for span in host_spans
+            if span.attributes["email.queue_id"] == "SRC1"
         }
+        hosts = {
+            span.attributes["email.queue_id"]: span
+            for span in host_spans
+            if span.attributes["email.queue_id"] != "SRC1"
+        }
+
+        def transmission_for(host_span):
+            delivery = next(
+                span
+                for span in finished
+                if span.name == "delivery"
+                and span.parent
+                and span.parent.span_id == host_span.context.span_id
+            )
+            return next(
+                span
+                for span in finished
+                if span.name == "transmission"
+                and span.parent
+                and span.parent.span_id == delivery.context.span_id
+            )
 
         self.assertFalse(
             any(span.name == "delivery.branch" for span in finished)
         )
-        self.assertEqual(hosts["DST1"].parent.span_id, root.context.span_id)
-        self.assertEqual(hosts["DST2"].parent.span_id, root.context.span_id)
         self.assertEqual(
-            hosts["DST1"].links[0].context.span_id,
-            hosts["SRC1"].context.span_id,
+            hosts["DST1"].parent.span_id,
+            transmission_for(
+                source_spans["first@example.com"]
+            ).context.span_id,
         )
         self.assertEqual(
-            hosts["DST2"].links[0].context.span_id,
-            hosts["SRC1"].context.span_id,
+            hosts["DST2"].parent.span_id,
+            transmission_for(
+                source_spans["second@example.com"]
+            ).context.span_id,
         )
+        self.assertTrue(all(not span.links for span in host_spans))
 
     def test_hop_parent_matching_accepts_fully_qualified_relay_host(
         self,
@@ -1155,12 +1400,8 @@ class TraceLifecycleTest(unittest.TestCase):
             has_terminal_outcome=False,
         )
 
-        self.assertFalse(
-            should_export_trace(pending, 13, 15, 12, 1800)
-        )
-        self.assertTrue(
-            should_export_trace(pending, 121, 15, 12, 1800)
-        )
+        self.assertFalse(should_export_trace(pending, 13, 15, 12, 1800))
+        self.assertTrue(should_export_trace(pending, 121, 15, 12, 1800))
 
     def test_terminal_failure_exports_after_hold_rounds(self) -> None:
         pending = PendingTrace(
@@ -1170,9 +1411,7 @@ class TraceLifecycleTest(unittest.TestCase):
             has_terminal_outcome=True,
         )
 
-        self.assertTrue(
-            should_export_trace(pending, 13, 15, 12, 1800)
-        )
+        self.assertTrue(should_export_trace(pending, 13, 15, 12, 1800))
 
 
 class OpenTelemetryResourceTest(unittest.TestCase):
@@ -1237,7 +1476,7 @@ class OpenTelemetryResourceTest(unittest.TestCase):
             "first@example.com,second@example.com",
         )
 
-    def test_host_span_contains_delivery_attributes(self) -> None:
+    def test_host_span_contains_route_attributes(self) -> None:
         start_time = datetime.fromisoformat("2026-01-08T22:55:08+08:00")
 
         with patch.object(otel, "_exporter", None):
@@ -1245,7 +1484,7 @@ class OpenTelemetryResourceTest(unittest.TestCase):
                 "mailpolicy",
                 start_time,
                 Context(),
-                transport="postfix/smtp",
+                explicit_handoff=False,
                 next_queue_id="NEXT123",
                 relay_host="mailer4",
                 relay_ip="192.0.2.4",
@@ -1258,12 +1497,30 @@ class OpenTelemetryResourceTest(unittest.TestCase):
             self.fail(f"Expected SDKSpan, got {type(span).__name__}")
         if span.attributes is None:
             self.fail("Expected span attributes")
-        self.assertEqual(span.attributes["email.transport"], "postfix/smtp")
+        self.assertNotIn("email.transport", span.attributes)
+        self.assertIs(span.attributes["email.explicit_handoff"], False)
         self.assertEqual(span.attributes["email.next_queue_id"], "NEXT123")
         self.assertEqual(span.attributes["email.relay_host"], "mailer4")
         self.assertEqual(span.attributes["email.relay_ip"], "192.0.2.4")
         self.assertEqual(span.attributes["email.relay_port"], 25)
         self.assertEqual(span.attributes["smtp.response_code"], 250)
+
+    def test_delivery_span_contains_transport(self) -> None:
+        start_time = datetime.fromisoformat("2026-01-08T22:55:08+08:00")
+
+        with patch.object(otel, "_exporter", None):
+            span = otel.create_delivery_span(
+                "mailpolicy",
+                start_time,
+                Context(),
+                recipient="recipient@example.com",
+                transport="postfix/smtp",
+            )
+            span.end(end_time=dt_to_ns(start_time))
+
+        if span.attributes is None:
+            self.fail("Expected span attributes")
+        self.assertEqual(span.attributes["email.transport"], "postfix/smtp")
 
     def test_delay_span_resource_identifies_host(self) -> None:
         start_time = datetime.fromisoformat("2026-01-08T22:55:08+08:00")

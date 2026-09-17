@@ -57,7 +57,7 @@ class LogEntry:
     # todo: datetime field should be converted to datetime object
     datetime: str
     hostname: str
-    service: str
+    service: str | None
     mail_id: str | None
     message: str
     queued_as: str | None = None

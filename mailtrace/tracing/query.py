@@ -131,11 +131,14 @@ def query_all_logs(
                     break
 
                 all_logs.extend(
-                    parser.parse_with_enrichment(Hit(hit).to_dict()) for hit in hits
+                    parser.parse_with_enrichment(Hit(hit).to_dict())
+                    for hit in hits
                 )
 
                 if not scroll_id:
-                    logger.warning("OpenSearch returned hits without a scroll ID")
+                    logger.warning(
+                        "OpenSearch returned hits without a scroll ID"
+                    )
                     break
 
                 response = client.scroll(
@@ -148,7 +151,10 @@ def query_all_logs(
                         body={"scroll_id": [scroll_id]},
                     )
                 except Exception as clear_error:
-                    logger.debug("Failed to clear OpenSearch scroll context: %s", clear_error)
+                    logger.debug(
+                        "Failed to clear OpenSearch scroll context: %s",
+                        clear_error,
+                    )
 
         logger.info(f"Found {len(all_logs)} log entries from index")
 
@@ -204,16 +210,14 @@ def group_logs_by_message_id(
     """
     grouped_logs: Dict[str, list[LogEntry]] = {}
     queue_mapping = (
-        queue_id_to_msg_id_map
-        if queue_id_to_msg_id_map is not None
-        else {}
+        queue_id_to_msg_id_map if queue_id_to_msg_id_map is not None else {}
     )
 
     def register_queue_mappings(log: LogEntry, message_id: str) -> None:
         if log.mail_id:
-            queue_mapping[
-                (_normalize_hostname(log.hostname), log.mail_id)
-            ] = message_id
+            queue_mapping[(_normalize_hostname(log.hostname), log.mail_id)] = (
+                message_id
+            )
 
         if log.relay_host and log.queued_as:
             queue_mapping[
@@ -277,16 +281,16 @@ def group_logs_by_hops(logs: list[LogEntry]) -> dict[HopKey, list[LogEntry]]:
     return grouped_logs
 
 
-def build_hop_links(
+def build_hop_handoffs(
     hops: dict[HopKey, list[LogEntry]],
-) -> dict[HopKey, tuple[HopKey, LogEntry]]:
-    """Map each downstream hop to its upstream hop and handoff log."""
+) -> dict[HopKey, list[tuple[HopKey, LogEntry]]]:
+    """Map downstream hops to every observed upstream handoff log."""
     hop_index = {
         (_normalize_hostname(hostname), queue_id): hop
         for hop in hops
         for hostname, queue_id in [hop]
     }
-    links: dict[HopKey, tuple[HopKey, LogEntry]] = {}
+    handoffs: dict[HopKey, list[tuple[HopKey, LogEntry]]] = {}
 
     for source_hop, logs in hops.items():
         source_host, _ = source_hop
@@ -299,9 +303,19 @@ def build_hop_links(
                 (_normalize_hostname(next_host), next_queue_id)
             )
             if target_hop and target_hop != source_hop:
-                links.setdefault(target_hop, (source_hop, log))
+                handoffs.setdefault(target_hop, []).append((source_hop, log))
 
-    return links
+    return handoffs
+
+
+def build_hop_links(
+    hops: dict[HopKey, list[LogEntry]],
+) -> dict[HopKey, tuple[HopKey, LogEntry]]:
+    """Map each downstream hop to its first observed upstream handoff."""
+    return {
+        child_hop: handoffs[0]
+        for child_hop, handoffs in build_hop_handoffs(hops).items()
+    }
 
 
 def build_hop_parents(

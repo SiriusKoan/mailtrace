@@ -18,7 +18,6 @@ from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
 from mailtrace.tracing.otel import (
     MIN_SPAN_DURATION_SECONDS,
     create_delay_spans,
-    create_delivery_branch_span,
     create_delivery_span,
     create_host_span,
     create_root_span,
@@ -30,6 +29,7 @@ from mailtrace.tracing.otel import (
 )
 from mailtrace.tracing.query import (
     HopKey,
+    build_hop_handoffs,
     build_hop_links,
     group_logs_by_hops,
     group_logs_by_message_id,
@@ -195,9 +195,7 @@ class EmailTracesGenerator:
                 )
                 continue
 
-            added = pending.merge(
-                new_logs, self._current_round, self._log_key
-            )
+            added = pending.merge(new_logs, self._current_round, self._log_key)
             skipped = len(new_logs) - added
             if skipped:
                 logger.debug(
@@ -288,6 +286,7 @@ class EmailTracesGenerator:
 
         for message_id, message_id_logs in logs_by_message_id.items():
             hops_logs = group_logs_by_hops(message_id_logs)
+            hop_handoffs = build_hop_handoffs(hops_logs)
             hop_links = build_hop_links(hops_logs)
             hop_parents = {
                 child_hop: parent_hop
@@ -351,9 +350,7 @@ class EmailTracesGenerator:
                 )
 
                 if delay_records:
-                    host_start = min(
-                        start for _, start, _, _ in delay_records
-                    )
+                    host_start = min(start for _, start, _, _ in delay_records)
                     host_end = max(
                         start
                         + timedelta(seconds=get_effective_total_delay(delays))
@@ -376,13 +373,54 @@ class EmailTracesGenerator:
                 )
                 continue
 
+            hop_placements: dict[
+                HopKey,
+                tuple[
+                    list[tuple[HopKey, LogEntry]],
+                    Optional[bool],
+                ],
+            ] = {}
+            hops_by_host: dict[str, list[HopKey]] = {}
+            for hop in hop_info:
+                normalized_host = hop[0].rstrip(".").split(".", 1)[0].lower()
+                hops_by_host.setdefault(normalized_host, []).append(hop)
+            for host_hops in hops_by_host.values():
+                host_hops.sort(
+                    key=lambda hop: (
+                        hop_info[hop][1],
+                        hop_info[hop][2],
+                        hop[1],
+                    )
+                )
+                previous_hop = None
+                for hop in host_hops:
+                    explicit_handoffs = hop_handoffs.get(hop)
+                    if explicit_handoffs:
+                        hop_placements[hop] = (
+                            explicit_handoffs,
+                            True,
+                        )
+                    elif previous_hop is not None:
+                        previous_handoffs, _ = hop_placements[previous_hop]
+                        hop_placements[hop] = (
+                            previous_handoffs,
+                            False,
+                        )
+                    else:
+                        hop_placements[hop] = ([], None)
+                    previous_hop = hop
+
+            hop_dependencies = {
+                hop: {parent_hop for parent_hop, _ in handoffs}
+                for hop, (handoffs, _) in hop_placements.items()
+            }
             pending_hops = list(hop_info)
             ordered_hops: list[HopKey] = []
             while pending_hops:
                 ready_hops = [
                     hop
                     for hop in pending_hops
-                    if hop_parents.get(hop) not in pending_hops
+                    if not hop_dependencies[hop].intersection(pending_hops)
                 ]
                 if not ready_hops:
                     logger.warning(
@@ -392,6 +430,8 @@ class EmailTracesGenerator:
                     for hop in pending_hops:
                         hop_parents.pop(hop, None)
                         hop_links.pop(hop, None)
+                        hop_placements[hop] = ([], None)
+                        hop_dependencies[hop].clear()
                     ready_hops = pending_hops.copy()
                 for hop in ready_hops:
                     pending_hops.remove(hop)
@@ -467,81 +507,11 @@ class EmailTracesGenerator:
                 )
             root_ctx = trace.set_span_in_context(root_span)
 
-            children_by_parent: dict[HopKey, list[HopKey]] = {}
-            for child_hop, parent_hop in hop_parents.items():
-                children_by_parent.setdefault(parent_hop, []).append(child_hop)
-
-            branch_contexts: dict[HopKey, object] = {}
-            branch_spans: list[tuple[trace.Span, datetime]] = []
-            for parent_hop in ordered_hops:
-                child_hops = children_by_parent.get(parent_hop, [])
-                destinations: dict[str, list[HopKey]] = {}
-                destination_names: dict[str, str] = {}
-                for child_hop in child_hops:
-                    destination = child_hop[0]
-                    destination_key = destination.rstrip(".").lower()
-                    destinations.setdefault(destination_key, []).append(
-                        child_hop
-                    )
-                    destination_names.setdefault(
-                        destination_key, destination
-                    )
-                if len(destinations) < 2:
-                    continue
-
-                for destination_key, destination_hops in destinations.items():
-                    branch_hops: set[HopKey] = set()
-                    pending_branch_hops = destination_hops.copy()
-                    while pending_branch_hops:
-                        branch_hop = pending_branch_hops.pop()
-                        if branch_hop in branch_hops:
-                            continue
-                        branch_hops.add(branch_hop)
-                        pending_branch_hops.extend(
-                            children_by_parent.get(branch_hop, [])
-                        )
-
-                    branch_start = min(
-                        hop_bounds[hop][0] for hop in branch_hops
-                    )
-                    branch_end = max(
-                        hop_bounds[hop][1] for hop in branch_hops
-                    )
-                    recipients = []
-                    for hop in destination_hops:
-                        _, handoff_log = hop_links[hop]
-                        _, handoff_recipients = (
-                            self._extract_sender_recipient([handoff_log])
-                        )
-                        recipients.extend(handoff_recipients or [])
-                    recipients = list(dict.fromkeys(recipients))
-                    parent_context = branch_contexts.get(
-                        parent_hop, root_ctx
-                    )
-                    branch_span = create_delivery_branch_span(
-                        branch_start,
-                        parent_context,
-                        destination_names[destination_key],
-                        recipients=recipients,
-                        queue_ids=[hop[1] for hop in destination_hops],
-                    )
-                    if any(
-                        log.delivery_status is DeliveryStatus.PERMANENT_FAILURE
-                        for hop in branch_hops
-                        for log in hops_logs[hop]
-                    ):
-                        mark_span_failed(
-                            branch_span,
-                            DeliveryStatus.PERMANENT_FAILURE.value,
-                        )
-                    branch_ctx = trace.set_span_in_context(branch_span)
-                    for hop in branch_hops:
-                        branch_contexts[hop] = branch_ctx
-                    branch_spans.append((branch_span, branch_end))
-
             # Create upstream hops before their downstream branches.
             pending_hops = ordered_hops.copy()
-            host_spans: dict[HopKey, trace.Span] = {}
+            host_contexts: dict[HopKey, list[object]] = {}
+            delivery_host_contexts: dict[int, object] = {}
+            handoff_contexts: dict[int, object] = {}
             while pending_hops:
                 progressed = False
                 for hop in pending_hops.copy():
@@ -552,34 +522,29 @@ class EmailTracesGenerator:
                     host, host_queue_id = hop
                     delay_records, _, _ = hop_info[hop]
                     host_start, host_end = hop_bounds[hop]
-                    parent_context = branch_contexts.get(hop, root_ctx)
+                    incoming_handoffs, explicit_handoff = hop_placements[hop]
+                    records_by_recipient: dict[
+                        Optional[str],
+                        list[
+                            tuple[
+                                DelayInfo,
+                                datetime,
+                                Optional[str],
+                                LogEntry,
+                            ]
+                        ],
+                    ] = {}
+                    for record in delay_records:
+                        records_by_recipient.setdefault(record[2], []).append(
+                            record
+                        )
+                    if not records_by_recipient:
+                        records_by_recipient[None] = []
 
-                    # Extract sender and recipients specific to this host.
-                    host_sender, host_recipients = (
+                    host_sender, all_host_recipients = (
                         self._extract_sender_recipient(hops_logs[hop])
                     )
                     delivery_logs = [record[3] for record in delay_records]
-                    transport_logs = delivery_logs or hops_logs[hop]
-                    host_transport = _join_unique(
-                        log.service for log in transport_logs
-                    )
-                    host_next_queue_id = _join_unique(
-                        log.queued_as for log in hops_logs[hop]
-                    )
-                    host_relay_host = _join_unique(
-                        log.relay_host for log in hops_logs[hop]
-                    )
-                    host_relay_ip = _join_unique(
-                        log.relay_ip for log in hops_logs[hop]
-                    )
-                    host_relay_port = next(
-                        (
-                            log.relay_port
-                            for log in hops_logs[hop]
-                            if log.relay_port is not None
-                        ),
-                        None,
-                    )
                     host_smtp_response_code = next(
                         (
                             log.smtp_code
@@ -588,72 +553,152 @@ class EmailTracesGenerator:
                         ),
                         None,
                     )
-                    host_next_host = next(
-                        (
-                            log.relay_host
-                            for log in hops_logs[hop]
-                            if log.relay_host
-                        ),
-                        None,
-                    )
-                    host_span = create_host_span(
-                        host,
-                        host_start,
-                        parent_context,
-                        message_id=message_id,
-                        sender=host_sender,
-                        recipients=host_recipients,
-                        queue_id=host_queue_id,
-                        next_host=host_next_host,
-                        linked_span=(
-                            host_spans.get(parent_hop)
-                            if parent_hop is not None
-                            else None
-                        ),
-                        transport=host_transport,
-                        next_queue_id=host_next_queue_id,
-                        relay_host=host_relay_host,
-                        relay_ip=host_relay_ip,
-                        relay_port=host_relay_port,
-                        smtp_response_code=host_smtp_response_code,
-                    )
                     delivery_log_ids = {id(log) for log in delivery_logs}
                     host_failure = _select_failure(
                         log
                         for log in hops_logs[hop]
                         if id(log) not in delivery_log_ids
                     )
-                    if host_failure is not None:
-                        _mark_failure_from_log(host_span, host_failure)
-                    host_ctx = trace.set_span_in_context(host_span)
-                    host_spans[hop] = host_span
+                    for (
+                        recipient,
+                        branch_records,
+                    ) in records_by_recipient.items():
+                        selected_handoff = None
+                        if len(incoming_handoffs) == 1:
+                            selected_handoff = incoming_handoffs[0]
+                        elif incoming_handoffs:
+                            matching_handoffs = []
+                            for handoff in incoming_handoffs:
+                                _, handoff_recipients = (
+                                    self._extract_sender_recipient(
+                                        [handoff[1]]
+                                    )
+                                )
+                                if recipient in (handoff_recipients or []):
+                                    matching_handoffs.append(handoff)
+                            if matching_handoffs:
+                                selected_handoff = matching_handoffs[0]
+                            else:
+                                selected_handoff = incoming_handoffs[0]
+                                logger.warning(
+                                    "Ambiguous handoff for hop %s recipient %s; "
+                                    "using the first observed edge",
+                                    hop,
+                                    recipient,
+                                )
 
-                    for delays, delay_start, recipient, log in delay_records:
-                        delay_start += hop_offsets[hop]
-                        delivery_span = create_delivery_span(
+                        if selected_handoff is None:
+                            parent_context = root_ctx
+                        else:
+                            selected_parent, handoff_log = selected_handoff
+                            parent_context = handoff_contexts.get(
+                                id(handoff_log)
+                            ) or delivery_host_contexts.get(id(handoff_log))
+                            if parent_context is None:
+                                parent_context = host_contexts[
+                                    selected_parent
+                                ][0]
+
+                        branch_logs = (
+                            [record[3] for record in branch_records]
+                            if len(records_by_recipient) > 1
+                            else hops_logs[hop]
+                        )
+                        host_recipients = (
+                            [recipient]
+                            if recipient is not None
+                            else all_host_recipients
+                        )
+                        host_next_queue_id = _join_unique(
+                            log.queued_as for log in branch_logs
+                        )
+                        host_relay_host = _join_unique(
+                            log.relay_host for log in branch_logs
+                        )
+                        host_relay_ip = _join_unique(
+                            log.relay_ip for log in branch_logs
+                        )
+                        host_relay_port = next(
+                            (
+                                log.relay_port
+                                for log in branch_logs
+                                if log.relay_port is not None
+                            ),
+                            None,
+                        )
+                        host_next_host = next(
+                            (
+                                log.relay_host
+                                for log in branch_logs
+                                if log.relay_host
+                            ),
+                            None,
+                        )
+                        host_span = create_host_span(
                             host,
-                            delay_start,
-                            host_ctx,
-                            recipient=recipient,
+                            host_start,
+                            parent_context,
+                            message_id=message_id,
+                            sender=host_sender,
+                            recipients=host_recipients,
+                            queue_id=host_queue_id,
+                            next_host=host_next_host,
+                            explicit_handoff=(explicit_handoff),
+                            next_queue_id=host_next_queue_id,
+                            relay_host=host_relay_host,
+                            relay_ip=host_relay_ip,
+                            relay_port=host_relay_port,
+                            smtp_response_code=host_smtp_response_code,
                         )
-                        if log.delivery_status in {
-                            DeliveryStatus.TEMPORARY_FAILURE,
-                            DeliveryStatus.PERMANENT_FAILURE,
-                        }:
-                            _mark_failure_from_log(delivery_span, log)
-                        delivery_ctx = trace.set_span_in_context(delivery_span)
-                        create_delay_spans(
-                            delays, host, delay_start, delivery_ctx
-                        )
-                        delivery_end = delay_start + timedelta(
-                            seconds=get_effective_total_delay(delays)
-                        )
-                        delivery_span.end(end_time=dt_to_ns(delivery_end))
+                        if host_failure is not None:
+                            _mark_failure_from_log(host_span, host_failure)
+                        host_ctx = trace.set_span_in_context(host_span)
+                        host_contexts.setdefault(hop, []).append(host_ctx)
 
-                    logger.debug(
-                        f"Close host span: {hop} at {host_end.isoformat()}"
-                    )
-                    host_span.end(end_time=dt_to_ns(host_end))
+                        for _, _, _, log in branch_records:
+                            delivery_host_contexts[id(log)] = host_ctx
+
+                        for (
+                            delays,
+                            delay_start,
+                            delivery_recipient,
+                            log,
+                        ) in branch_records:
+                            delay_start += hop_offsets[hop]
+                            delivery_span = create_delivery_span(
+                                host,
+                                delay_start,
+                                host_ctx,
+                                recipient=delivery_recipient,
+                                transport=log.service,
+                            )
+                            if log.delivery_status in {
+                                DeliveryStatus.TEMPORARY_FAILURE,
+                                DeliveryStatus.PERMANENT_FAILURE,
+                            }:
+                                _mark_failure_from_log(delivery_span, log)
+                            delivery_ctx = trace.set_span_in_context(
+                                delivery_span
+                            )
+                            delay_spans = create_delay_spans(
+                                delays, host, delay_start, delivery_ctx
+                            )
+                            if delay_spans:
+                                handoff_contexts[id(log)] = (
+                                    trace.set_span_in_context(delay_spans[-1])
+                                )
+                            delivery_end = delay_start + timedelta(
+                                seconds=get_effective_total_delay(delays)
+                            )
+                            delivery_span.end(end_time=dt_to_ns(delivery_end))
+
+                        logger.debug(
+                            "Close host span: %s recipient %s at %s",
+                            hop,
+                            recipient,
+                            host_end.isoformat(),
+                        )
+                        host_span.end(end_time=dt_to_ns(host_end))
                     pending_hops.remove(hop)
                     progressed = True
 
@@ -664,9 +709,6 @@ class EmailTracesGenerator:
                     )
                     for hop in pending_hops:
                         hop_parents.pop(hop, None)
-
-            for branch_span, branch_end in branch_spans:
-                branch_span.end(end_time=dt_to_ns(branch_end))
 
             # End the root span last
             root_span.end(end_time=int(root_end.timestamp() * 1e9))

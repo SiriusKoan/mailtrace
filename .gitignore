@@ -4,3 +4,7 @@ config.yaml
 *egg-info
 .direnv
 results
+
+# Generated tracing fixtures
+tests/fixtures/tracing/407f68f2d3f243b141a523b77fff11c.logs.json
+tests/fixtures/tracing/bfcd087bea2eb1a820d5102d3ea88a71.trace.json

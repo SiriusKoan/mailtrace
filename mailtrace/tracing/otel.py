@@ -144,8 +144,7 @@ def create_host_span(
     recipients: Optional[list[str]] = None,
     queue_id: Optional[str] = None,
     next_host: Optional[str] = None,
-    linked_span: Optional[trace.Span] = None,
-    transport: Optional[str] = None,
+    explicit_handoff: Optional[bool] = None,
     next_queue_id: Optional[str] = None,
     relay_host: Optional[str] = None,
     relay_ip: Optional[str] = None,
@@ -172,8 +171,8 @@ def create_host_span(
         recipients: List of email recipient addresses (optional).
         queue_id: Queue ID for this host (optional).
         next_host: Next host this host relays the message to (optional).
-        linked_span: Previous host span linked by the queue handoff (optional).
-        transport: Delivery transport used by this host (optional).
+        explicit_handoff: Whether the incoming queue handoff is explicit
+            (optional).
         next_queue_id: Queue ID created by the next hop (optional).
         relay_host: Relay hostname (optional).
         relay_ip: Relay IP address (optional).
@@ -195,8 +194,8 @@ def create_host_span(
         attributes["email.queue_id"] = queue_id
     if next_host is not None:
         attributes["email.next_host"] = next_host
-    if transport is not None:
-        attributes["email.transport"] = transport
+    if explicit_handoff is not None:
+        attributes["email.explicit_handoff"] = explicit_handoff
     if next_queue_id is not None:
         attributes["email.next_queue_id"] = next_queue_id
     if relay_host is not None:
@@ -212,11 +211,6 @@ def create_host_span(
         context=parent_context,
         start_time=dt_to_ns(start_time),
         attributes=attributes,
-        links=(
-            [trace.Link(linked_span.get_span_context())]
-            if linked_span is not None
-            else None
-        ),
     )
 
 
@@ -225,38 +219,17 @@ def create_delivery_span(
     start_time: datetime,
     parent_context: Any,
     recipient: Optional[str] = None,
+    transport: Optional[str] = None,
 ) -> trace.Span:
     """Create a delivery wrapper that groups one recipient's delay stages."""
     tracer = _get_tracer(hostname, host_name=hostname)
     attributes = {}
     if recipient is not None:
         attributes["email.recipient"] = recipient
+    if transport is not None:
+        attributes["email.transport"] = transport
     return tracer.start_span(
         name="delivery",
-        context=parent_context,
-        start_time=dt_to_ns(start_time),
-        attributes=attributes,
-    )
-
-
-def create_delivery_branch_span(
-    start_time: datetime,
-    parent_context: Any,
-    destination: str,
-    recipients: Optional[list[str]] = None,
-    queue_ids: Optional[list[str]] = None,
-) -> trace.Span:
-    """Create a route branch for deliveries sent to one destination host."""
-    tracer = _get_tracer("mailtrace")
-    attributes = {"email.destination": destination}
-    if recipients:
-        attributes["email.recipients"] = ",".join(recipients)
-        if len(recipients) == 1:
-            attributes["email.recipient"] = recipients[0]
-    if queue_ids:
-        attributes["email.queue_ids"] = ",".join(queue_ids)
-    return tracer.start_span(
-        name="delivery.branch",
         context=parent_context,
         start_time=dt_to_ns(start_time),
         attributes=attributes,
