@@ -171,8 +171,8 @@ def create_host_span(
         recipients: List of email recipient addresses (optional).
         queue_id: Queue ID for this host (optional).
         next_host: Next host this host relays the message to (optional).
-        explicit_handoff: Whether the incoming queue handoff is explicit
-            (optional).
+        explicit_handoff: Incoming queue handoff classification: ``True`` is
+            explicit, ``False`` is implicit, and ``None`` means no handoff.
         next_queue_id: Queue ID created by the next hop (optional).
         relay_host: Relay hostname (optional).
         relay_ip: Relay IP address (optional).
@@ -194,8 +194,11 @@ def create_host_span(
         attributes["email.queue_id"] = queue_id
     if next_host is not None:
         attributes["email.next_host"] = next_host
-    if explicit_handoff is not None:
-        attributes["email.explicit_handoff"] = explicit_handoff
+    attributes["email.handoff"] = {
+        True: "explicit",
+        False: "implicit",
+        None: "none",
+    }[explicit_handoff]
     if next_queue_id is not None:
         attributes["email.next_queue_id"] = next_queue_id
     if relay_host is not None:

@@ -317,9 +317,9 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         )
 
         self.assertEqual(first.parent.span_id, root.context.span_id)
-        self.assertNotIn("email.explicit_handoff", first.attributes)
-        self.assertIs(second.attributes["email.explicit_handoff"], True)
-        self.assertIs(remote.attributes["email.explicit_handoff"], True)
+        self.assertEqual(first.attributes["email.handoff"], "none")
+        self.assertEqual(second.attributes["email.handoff"], "explicit")
+        self.assertEqual(remote.attributes["email.handoff"], "explicit")
         self.assertFalse(first.links)
         self.assertFalse(second.links)
         self.assertFalse(remote.links)
@@ -564,8 +564,8 @@ class EmailTracesGeneratorTest(unittest.TestCase):
                 destination.parent.span_id,
                 transmission_for(source).context.span_id,
             )
-            self.assertIs(
-                destination.attributes["email.explicit_handoff"], True
+            self.assertEqual(
+                destination.attributes["email.handoff"], "explicit"
             )
             self.assertFalse(destination.links)
 
@@ -647,11 +647,11 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             hosts["LIST2"].parent.span_id,
             source_transmission.context.span_id,
         )
-        self.assertIs(
-            hosts["LIST1"].attributes["email.explicit_handoff"], True
+        self.assertEqual(
+            hosts["LIST1"].attributes["email.handoff"], "explicit"
         )
-        self.assertIs(
-            hosts["LIST2"].attributes["email.explicit_handoff"], False
+        self.assertEqual(
+            hosts["LIST2"].attributes["email.handoff"], "implicit"
         )
 
     def test_temporary_failure_marks_only_delivery_span(self) -> None:
@@ -899,8 +899,8 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             spans["CHILD1"].parent.span_id,
             spans["SOURCE1"].context.span_id,
         )
-        self.assertIs(
-            spans["CHILD1"].attributes["email.explicit_handoff"], True
+        self.assertEqual(
+            spans["CHILD1"].attributes["email.handoff"], "explicit"
         )
         self.assertFalse(spans["CHILD1"].links)
 
@@ -1498,7 +1498,7 @@ class OpenTelemetryResourceTest(unittest.TestCase):
         if span.attributes is None:
             self.fail("Expected span attributes")
         self.assertNotIn("email.transport", span.attributes)
-        self.assertIs(span.attributes["email.explicit_handoff"], False)
+        self.assertEqual(span.attributes["email.handoff"], "implicit")
         self.assertEqual(span.attributes["email.next_queue_id"], "NEXT123")
         self.assertEqual(span.attributes["email.relay_host"], "mailer4")
         self.assertEqual(span.attributes["email.relay_ip"], "192.0.2.4")

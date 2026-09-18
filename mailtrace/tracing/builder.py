@@ -203,46 +203,16 @@ def _plan_hops(
         for child_hop, (parent_hop, _) in hop_links.items()
     }
 
-    hop_placements: dict[HopKey, HopPlacement] = {}
-    hops_by_host: dict[str, list[HopKey]] = {}
-    for hop in prepared_hops:
-        normalized_host = hop[0].rstrip(".").split(".", 1)[0].lower()
-        hops_by_host.setdefault(normalized_host, []).append(hop)
-
-    for host_hops in hops_by_host.values():
-        host_hops.sort(
-            key=lambda hop: (
-                prepared_hops[hop].raw_start,
-                prepared_hops[hop].raw_end,
-                hop[1],
-            )
-        )
-        previous_hop = None
-        for hop in host_hops:
-            explicit_handoffs = hop_handoffs.get(hop)
-            if explicit_handoffs:
-                hop_placements[hop] = HopPlacement(
-                    handoffs=tuple(explicit_handoffs),
-                    explicit_handoff=True,
-                )
-            elif previous_hop is not None:
-                hop_placements[hop] = HopPlacement(
-                    handoffs=hop_placements[previous_hop].handoffs,
-                    explicit_handoff=False,
-                )
-            else:
-                hop_placements[hop] = HopPlacement(
-                    handoffs=(),
-                    explicit_handoff=None,
-                )
-            previous_hop = hop
-
     hop_dependencies = {
-        hop: {parent_hop for parent_hop, _ in placement.handoffs}
-        for hop, placement in hop_placements.items()
+        hop: {
+            parent_hop
+            for parent_hop, _ in hop_handoffs.get(hop, ())
+        }
+        for hop in prepared_hops
     }
     pending_hops = list(prepared_hops)
     ordered_hops: list[HopKey] = []
+    detached_hops: set[HopKey] = set()
 
     while pending_hops:
         ready_hops = [
@@ -259,16 +229,48 @@ def _plan_hops(
             for hop in pending_hops:
                 hop_parents.pop(hop, None)
                 hop_links.pop(hop, None)
-                hop_placements[hop] = HopPlacement(
-                    handoffs=(),
-                    explicit_handoff=None,
-                )
                 hop_dependencies[hop].clear()
-            ready_hops = pending_hops.copy()
+            detached_hops.update(pending_hops)
+            ready_hops = pending_hops
 
-        for hop in ready_hops:
-            pending_hops.remove(hop)
-            ordered_hops.append(hop)
+        next_hop = min(
+            ready_hops,
+            key=lambda hop: (
+                prepared_hops[hop].raw_start,
+                prepared_hops[hop].raw_end,
+                hop,
+            ),
+        )
+        pending_hops.remove(next_hop)
+        ordered_hops.append(next_hop)
+
+    hop_order = {hop: index for index, hop in enumerate(ordered_hops)}
+    hop_placements: dict[HopKey, HopPlacement] = {}
+    hops_by_host: dict[str, list[HopKey]] = {}
+    for hop in prepared_hops:
+        normalized_host = hop[0].rstrip(".").split(".", 1)[0].lower()
+        hops_by_host.setdefault(normalized_host, []).append(hop)
+
+    for host_hops in hops_by_host.values():
+        host_hops.sort(key=hop_order.__getitem__)
+        previous_hop = None
+        for hop in host_hops:
+            explicit_handoffs = hop_handoffs.get(hop)
+            if hop in detached_hops:
+                hop_placements[hop] = HopPlacement((), None)
+            elif explicit_handoffs:
+                hop_placements[hop] = HopPlacement(
+                    handoffs=tuple(explicit_handoffs),
+                    explicit_handoff=True,
+                )
+            elif previous_hop is not None:
+                hop_placements[hop] = HopPlacement(
+                    handoffs=hop_placements[previous_hop].handoffs,
+                    explicit_handoff=False,
+                )
+            else:
+                hop_placements[hop] = HopPlacement((), None)
+            previous_hop = hop
 
     return hop_placements, hop_links, hop_parents, ordered_hops
 

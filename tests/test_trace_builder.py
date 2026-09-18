@@ -112,6 +112,46 @@ class TraceBuilderTest(unittest.TestCase):
         self.assertLess(ordered.index(parent_hop), ordered.index(child_hop))
         self.assertLess(ordered.index(parent_hop), ordered.index(inferred_hop))
 
+    def test_plan_hops_prioritizes_explicit_handoff_over_time(self) -> None:
+        start = datetime.fromisoformat("2026-01-08T12:00:00+00:00")
+        parent_hop = ("mail-a", "QUEUE-A")
+        child_hop = ("mail-a", "QUEUE-B")
+        handoff_log = LogEntry(
+            datetime=start.isoformat(),
+            hostname=parent_hop[0],
+            service="postfix/local",
+            mail_id=parent_hop[1],
+            message="status=sent",
+            queued_as=child_hop[1],
+        )
+        prepared = {
+            parent_hop: PreparedHop(
+                logs=[handoff_log],
+                delivery_records=[],
+                raw_start=start,
+                raw_end=start + timedelta(seconds=1),
+            ),
+            child_hop: PreparedHop(
+                logs=[],
+                delivery_records=[],
+                raw_start=start - timedelta(seconds=1),
+                raw_end=start + timedelta(seconds=2),
+            ),
+        }
+
+        placements, links, parents, ordered = _plan_hops(
+            "message@example.com", prepared
+        )
+
+        handoff = (parent_hop, handoff_log)
+        self.assertEqual(
+            placements[child_hop],
+            HopPlacement(handoffs=(handoff,), explicit_handoff=True),
+        )
+        self.assertEqual(links, {child_hop: handoff})
+        self.assertEqual(parents, {child_hop: parent_hop})
+        self.assertLess(ordered.index(parent_hop), ordered.index(child_hop))
+
     def test_plan_hops_attaches_cycles_to_root(self) -> None:
         start = datetime.fromisoformat("2026-01-08T12:00:00+00:00")
         hop_a = ("mail-a", "QUEUE-A")
