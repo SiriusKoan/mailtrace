@@ -12,6 +12,11 @@ logger = logging.getLogger("mailtrace")
 
 # Mail ID validation pattern (alphanumeric and hyphens, supports both Postfix and Exim formats)
 _MAIL_ID_RE = re.compile(r"^[0-9A-Za-z\-]+$")
+_POSTFIX_QUEUE_ID_RE = re.compile(
+    r"(?:[0-9A-F]{6,}|"
+    r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{10,}z"
+    r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]+)"
+)
 
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
@@ -388,24 +393,23 @@ class OpensearchParser(LogParser):
             if mail_id:
                 return mail_id
 
-        # Parse mail_id from message content
-        # Try Exim format first: "YYYY-MM-DD HH:MM:SS.sss QUEUEID <=" or "YYYY-MM-DD HH:MM:SS QUEUEID <="
-        exim_match = re.search(
-            r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+([A-Za-z0-9_-]+)\s+(?:<=|=>|->|\*\*|Completed)",
-            message_content,
-        )
-        if exim_match:
-            mail_id_candidate = exim_match.group(1)
-            if check_mail_id_valid(mail_id_candidate):
-                return mail_id_candidate
+        service = self._get_mapped_value("service", log)
+        service = service.lower() if isinstance(service, str) else ""
 
-        # Try Postfix format: QUEUEID: rest of message
-        mail_id_candidate = message_content.split(":")[0]
-        return (
-            mail_id_candidate
-            if check_mail_id_valid(mail_id_candidate)
-            else None
-        )
+        if "exim" in service:
+            exim_match = re.search(
+                r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+([A-Za-z0-9_-]+)\s+(?:<=|=>|->|\*\*|Completed)",
+                message_content,
+            )
+            if exim_match:
+                return exim_match.group(1)
+
+        if not service.startswith("postfix/"):
+            return None
+        mail_id_candidate, separator, _ = message_content.partition(":")
+        if separator and _POSTFIX_QUEUE_ID_RE.fullmatch(mail_id_candidate):
+            return mail_id_candidate
+        return None
 
     def parse(self, log: dict) -> LogEntry:
         """

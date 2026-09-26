@@ -1257,6 +1257,82 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
 
 class LogEventParsingTest(unittest.TestCase):
+    def test_opensearch_parser_extracts_service_specific_queue_ids(
+        self,
+    ) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(
+                facility="",
+                hostname="host.name",
+                message="message",
+                timestamp="@timestamp",
+                service="appname",
+            )
+        )
+        cases = [
+            (
+                "postfix/cleanup",
+                "C3CD21F3E90: message-id=<message@example.com>",
+                "C3CD21F3E90",
+            ),
+            (
+                "postfix/cleanup",
+                "3Pt2mN2VXxznjll: message-id=<message@example.com>",
+                "3Pt2mN2VXxznjll",
+            ),
+            (
+                "exim",
+                "2026-02-15 23:12:03 1vrdn1-00000F-1u "
+                "<= sender@example.com",
+                "1vrdn1-00000F-1u",
+            ),
+        ]
+
+        for service, message, expected in cases:
+            with self.subTest(service=service):
+                entry = parser.parse(
+                    {
+                        "@timestamp": "2026-09-24T08:50:00Z",
+                        "host": {"name": "mail.example.com"},
+                        "appname": service,
+                        "message": message,
+                    }
+                )
+                self.assertEqual(entry.mail_id, expected)
+
+    def test_opensearch_parser_ignores_non_queue_message_prefixes(
+        self,
+    ) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(
+                facility="",
+                hostname="host.name",
+                message="message",
+                timestamp="@timestamp",
+                service="appname",
+            )
+        )
+        cases = [
+            ("postfix/anvil", "statistics: max connection rate 9/60s"),
+            ("postfix/smtpd", "warning: SASL authentication failed"),
+            ("postfix/smtpd", "NOQUEUE: reject: RCPT from unknown"),
+            ("dovecot", "pop3-login: Info: Disconnected"),
+            ("dovecot", "managesieve-login: Info: Disconnected"),
+        ]
+
+        for service, message in cases:
+            with self.subTest(service=service, message=message):
+                entry = parser.parse(
+                    {
+                        "@timestamp": "2026-09-24T08:50:00Z",
+                        "host": {"name": "mail.example.com"},
+                        "appname": service,
+                        "message": message,
+                    }
+                )
+                self.assertIsNone(entry.mail_id)
+                self.assertEqual(entry.message, message)
+
     def test_milter_reject_extracts_event_and_temporary_status(self) -> None:
         lines = [
             "2026-08-02T00:04:28+08:00 csmx2.cs.nctu.edu.tw "
@@ -1364,7 +1440,7 @@ class LogEventParsingTest(unittest.TestCase):
                 "@timestamp": "2026-08-02T00:04:28Z",
                 "host": {"name": "csmx2"},
                 "appname": "postfix/cleanup",
-                "message": "LOGQ1: message-id=<message@example.com>",
+                "message": "C3CD21F3E90: message-id=<message@example.com>",
                 "postfix": {
                     "queueid": "STRUCTURED-QID",
                     "message-id": "structured@example.com",
@@ -1372,7 +1448,7 @@ class LogEventParsingTest(unittest.TestCase):
             }
         )
 
-        self.assertEqual(entry.mail_id, "LOGQ1")
+        self.assertEqual(entry.mail_id, "C3CD21F3E90")
         self.assertEqual(entry.event_type, EventType.MESSAGE_ID)
 
 
