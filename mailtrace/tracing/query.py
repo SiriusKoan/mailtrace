@@ -179,7 +179,7 @@ def _extract_message_id_from_log(log: LogEntry) -> str | None:
     This is present in logs that include the message-id field.
     """
     # Try Postfix format first: message-id=<id@domain>
-    msg_id_match = re.search(r"message-id=<([^>]+)>", log.message)
+    msg_id_match = re.search(r"(?<![\w-])message-id=<([^>]+)>", log.message)
     if msg_id_match:
         return msg_id_match.group(1)
 

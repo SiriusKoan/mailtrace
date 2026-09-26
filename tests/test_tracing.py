@@ -157,6 +157,28 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         self.assertEqual(grouped[message_id], logs)
 
+    def test_message_grouping_ignores_resent_message_id(self) -> None:
+        logs = [
+            LogEntry(
+                datetime="2026-08-01T03:26:09+00:00",
+                hostname="mailer3",
+                service="postfix/cleanup",
+                mail_id="MAILER3Q",
+                message="resent-message-id=<resent@example.com>",
+            ),
+            LogEntry(
+                datetime="2026-08-01T03:26:10+00:00",
+                hostname="mailer3",
+                service="postfix/cleanup",
+                mail_id="MAILER3Q",
+                message="message-id=<original@example.com>",
+            ),
+        ]
+
+        grouped = query.group_logs_by_message_id(logs)
+
+        self.assertEqual(grouped, {"original@example.com": logs})
+
     def test_message_grouping_reuses_queue_mapping_across_batches(
         self,
     ) -> None:
