@@ -111,6 +111,16 @@ def parse_exim_relay_info(log_entry: "LogEntry") -> RelayResult | None:
     )
 
 
+def parse_relay_info(log_entry: "LogEntry") -> RelayResult | None:
+    """Select the production relay parser for the entry's MTA type."""
+    service = (log_entry.service or "").lower()
+    if service in ("exim", "exim4"):
+        return parse_exim_relay_info(log_entry)
+    if service in ("postfix/smtp", "postfix/lmtp"):
+        return parse_postfix_relay_info(log_entry)
+    return None
+
+
 class LogParser(ABC):
     """Abstract base class for log parsers."""
 
@@ -163,7 +173,9 @@ class LogParser(ABC):
         ):
             return entry  # Already complete
 
-        result = analyze_log_from_message(entry.message)
+        result = parse_relay_info(entry) or analyze_log_from_message(
+            entry.message
+        )
         if result:
             if entry.queued_as is None:
                 entry.queued_as = result.mail_id

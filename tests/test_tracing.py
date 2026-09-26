@@ -94,6 +94,55 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             )
         )
 
+    def test_exim_delay_fields_across_logs_create_delivery_spans(self) -> None:
+        logs = [
+            LogEntry(
+                datetime="2026-09-26T13:00:00+00:00",
+                hostname="mailer1.example.com",
+                service="exim4",
+                mail_id="1xTEST-000001-AA",
+                message=(
+                    "1xTEST-000001-AA <= sender@example.com "
+                    "id=exim@example.com RT=0.01s"
+                ),
+            ),
+            LogEntry(
+                datetime="2026-09-26T13:00:00.100000+00:00",
+                hostname="mailer1.example.com",
+                service="exim4",
+                mail_id="1xTEST-000001-AA",
+                message=(
+                    "1xTEST-000001-AA => recipient@example.com "
+                    "R=domain1_relay T=remote_smtp DT=0.02s"
+                ),
+            ),
+            LogEntry(
+                datetime="2026-09-26T13:00:00.110000+00:00",
+                hostname="mailer1.example.com",
+                service="exim4",
+                mail_id="1xTEST-000001-AA",
+                message="1xTEST-000001-AA Completed QT=0.10s",
+            ),
+        ]
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces({"exim@example.com": logs})
+            otel.flush_traces()
+
+        finished = exporter.get_finished_spans()
+        delivery = next(span for span in finished if span.name == "delivery")
+        stages = {
+            span.name
+            for span in finished
+            if span.parent and span.parent.span_id == delivery.context.span_id
+        }
+
+        self.assertEqual(
+            stages, {"receive_time", "queue_time", "deliver_time"}
+        )
+
     def test_groups_same_host_queue_ids_as_separate_hops(self) -> None:
         logs = [
             LogEntry(
@@ -1279,6 +1328,68 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
 
 class LogEventParsingTest(unittest.TestCase):
+    def test_opensearch_parser_enriches_postfix_to_exim_relay(self) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(
+                facility="",
+                hostname="host.name",
+                message="message",
+                timestamp="@timestamp",
+                service="appname",
+            )
+        )
+
+        entry = parser.parse_with_enrichment(
+            {
+                "@timestamp": "2026-09-26T13:14:57Z",
+                "host": {"name": "mx"},
+                "appname": "postfix/smtp",
+                "message": (
+                    "1A874A4C3F0: to=<single@1.example.com>, "
+                    "relay=mailer1.example.com[192.168.200.20]:25, "
+                    "status=sent (250 OK id=1xASEz-000010-1B)"
+                ),
+            }
+        )
+
+        self.assertEqual(entry.queued_as, "1xASEz-000010-1B")
+        self.assertEqual(entry.relay_host, "mailer1.example.com")
+        self.assertEqual(entry.relay_ip, "192.168.200.20")
+        self.assertEqual(entry.relay_port, 25)
+        self.assertEqual(entry.smtp_code, 250)
+
+    def test_opensearch_parser_enriches_exim_to_postfix_relay(self) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(
+                facility="",
+                hostname="host.name",
+                message="message",
+                timestamp="@timestamp",
+                service="appname",
+            )
+        )
+
+        entry = parser.parse_with_enrichment(
+            {
+                "@timestamp": "2026-09-26T13:14:57Z",
+                "host": {"name": "mailer1"},
+                "appname": "exim4",
+                "message": (
+                    "2026-09-26 21:14:57.804 1xASEz-000010-1B "
+                    "=> single@1.example.com R=domain1_relay "
+                    "T=remote_smtp H=mailpolicy1.example.com "
+                    '[192.168.200.30] C="250 2.0.0 Ok: 838 bytes '
+                    'queued as A678EA4C469" DT=0.190s'
+                ),
+            }
+        )
+
+        self.assertEqual(entry.queued_as, "A678EA4C469")
+        self.assertEqual(entry.relay_host, "mailpolicy1.example.com")
+        self.assertEqual(entry.relay_ip, "192.168.200.30")
+        self.assertEqual(entry.relay_port, 25)
+        self.assertEqual(entry.smtp_code, 250)
+
     def test_opensearch_parser_extracts_service_specific_queue_ids(
         self,
     ) -> None:

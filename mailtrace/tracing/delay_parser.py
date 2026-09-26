@@ -225,7 +225,7 @@ class EximDelayParser(DelayParser):
 
         # Parse QT (Queue Time): QT=X.XXs
         qt_match = re.search(r"QT=([\d.]+)s?", message)
-        qt = 0
+        qt = None
         if qt_match:
             qt = float(qt_match.group(1))
 
@@ -240,9 +240,13 @@ class EximDelayParser(DelayParser):
             delay_info.deliver_time = float(dt_match.group(1))
 
         # Calculate queue_time = QT - RT - DT
-        if delay_info.total_delay is not None:
-            rt = delay_info.receive_time or 0.0
-            dt = delay_info.deliver_time or 0.0
+        if (
+            qt is not None
+            and delay_info.receive_time is not None
+            and delay_info.deliver_time is not None
+        ):
+            rt = delay_info.receive_time
+            dt = delay_info.deliver_time
             delay_info.queue_time = max(0.0, qt - rt - dt)
 
         return delay_info

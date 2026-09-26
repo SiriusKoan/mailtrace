@@ -132,11 +132,15 @@ def _prepare_hops(
 
     for hop, host_logs in hops_logs.items():
         host, _ = hop
-        parser = get_parser_for_mta(detect_mta_from_entries(host_logs))
+        mta_type = detect_mta_from_entries(host_logs)
+        parser = get_parser_for_mta(mta_type)
         delivery_records: list[DeliveryRecord] = []
+        exim_context = " ".join(log.message for log in host_logs)
 
         for log in host_logs:
             parsed_delay = parser.parse(log.message)
+            if mta_type == "exim" and parsed_delay.deliver_time is not None:
+                parsed_delay = parser.parse(f"{log.message} {exim_context}")
             if not parsed_delay.get_delay_values():
                 continue
 

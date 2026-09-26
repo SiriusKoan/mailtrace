@@ -5,10 +5,7 @@ from mailtrace.aggregator.opensearch import OpenSearch
 from mailtrace.aggregator.ssh_host import SSHHost
 from mailtrace.config import Config, Method
 from mailtrace.models import LogQuery
-from mailtrace.parser import (
-    parse_exim_relay_info,
-    parse_postfix_relay_info,
-)
+from mailtrace.parser import parse_relay_info
 from mailtrace.utils import RelayResult, print_blue
 
 logger = logging.getLogger("mailtrace")
@@ -64,11 +61,7 @@ def do_trace(mail_id: str, aggregator: LogAggregator) -> RelayResult | None:
         if log_entry.service not in _RELAY_SERVICES:
             continue
 
-        # Try Postfix relay parsing first
-        if log_entry.service in ("exim", "exim4"):
-            result = parse_exim_relay_info(log_entry)
-        else:
-            result = parse_postfix_relay_info(log_entry)
+        result = parse_relay_info(log_entry)
 
         if result:
             logger.info(
