@@ -356,10 +356,13 @@ class RateBenchmarkTest(unittest.TestCase):
         container_ids = {
             "mailtrace": "trace-id",
             "mx": "mx-id",
-            "mailpolicy": "policy-id",
+            "mailpolicy1": "policy1-id",
+            "mailpolicy2": "policy2-id",
+            "mailpolicy3": "policy3-id",
             "mailbox": "mailbox-id",
-            "mailbox2": "mailbox2-id",
-            "mailer": "mailer-id",
+            "mailer1": "mailer1-id",
+            "mailer2": "mailer2-id",
+            "mailer3": "mailer3-id",
         }
         rate_report = {
             "container": "trace-id",
@@ -368,19 +371,22 @@ class RateBenchmarkTest(unittest.TestCase):
             "trace_container": "trace-id",
             "runs": [],
         }
-        with patch.object(
-            bench_resource_rates, "cleanup_environment", return_value=None
-        ) as cleanup, patch.object(
-            bench_resource_rates, "start_environment"
-        ) as start, patch.object(
-            bench_resource_rates,
-            "compose_container_id",
-            side_effect=lambda service: container_ids[service],
-        ), patch.object(
-            bench_resource_rates,
-            "run",
-            return_value=(rate_report, 0),
-        ) as run:
+        with (
+            patch.object(
+                bench_resource_rates, "cleanup_environment", return_value=None
+            ) as cleanup,
+            patch.object(bench_resource_rates, "start_environment") as start,
+            patch.object(
+                bench_resource_rates,
+                "compose_container_id",
+                side_effect=lambda service: container_ids[service],
+            ),
+            patch.object(
+                bench_resource_rates,
+                "run",
+                return_value=(rate_report, 0),
+            ) as run,
+        ):
             report, status = bench_resource_rates.run_managed_experiment(
                 output_dir, [5], 1.0, 0.1
             )
@@ -397,25 +403,34 @@ class RateBenchmarkTest(unittest.TestCase):
             trace_container="trace-id",
             queue_containers=[
                 "mx-id",
-                "policy-id",
+                "policy1-id",
+                "policy2-id",
+                "policy3-id",
                 "mailbox-id",
-                "mailbox2-id",
             ],
-            exim_queue_container="mailer-id",
+            exim_queue_containers=[
+                "mailer1-id",
+                "mailer2-id",
+                "mailer3-id",
+            ],
             trace_poll_interval=0.1,
         )
 
     def test_start_failure_is_reported_and_still_cleans_up(self) -> None:
         output_dir = Path("results/test")
-        with patch.object(
-            bench_resource_rates, "cleanup_environment", return_value=None
-        ) as cleanup, patch.object(
-            bench_resource_rates,
-            "start_environment",
-            side_effect=RuntimeError("compose up failed"),
-        ), patch.object(
-            bench_resource_rates, "capture_compose_logs"
-        ) as capture:
+        with (
+            patch.object(
+                bench_resource_rates, "cleanup_environment", return_value=None
+            ) as cleanup,
+            patch.object(
+                bench_resource_rates,
+                "start_environment",
+                side_effect=RuntimeError("compose up failed"),
+            ),
+            patch.object(
+                bench_resource_rates, "capture_compose_logs"
+            ) as capture,
+        ):
             report, status = bench_resource_rates.run_managed_experiment(
                 output_dir, [5], 1.0, 0.1
             )
@@ -427,14 +442,17 @@ class RateBenchmarkTest(unittest.TestCase):
         capture.assert_called_once_with(output_dir)
 
     def test_interrupt_is_reported_and_still_cleans_up(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            bench_resource_rates, "cleanup_environment", return_value=None
-        ) as cleanup, patch.object(
-            bench_resource_rates,
-            "start_environment",
-            side_effect=KeyboardInterrupt,
-        ), patch.object(
-            bench_resource_rates, "capture_compose_logs"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                bench_resource_rates, "cleanup_environment", return_value=None
+            ) as cleanup,
+            patch.object(
+                bench_resource_rates,
+                "start_environment",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch.object(bench_resource_rates, "capture_compose_logs"),
         ):
             report, status = bench_resource_rates.run_managed_experiment(
                 Path(directory), [5], 1.0, 0.1
@@ -460,13 +478,14 @@ class RateBenchmarkTest(unittest.TestCase):
     def test_waits_until_trace_count_reaches_expected_count(self) -> None:
         trace_follower = Mock()
         trace_follower.trace_count.side_effect = [10, 20]
-        with patch.object(
-            bench_resource_rates,
-            "nonempty_postfix_queues",
-            return_value=[],
-        ) as queue_check, patch.object(
-            bench_resource_rates.time, "sleep"
-        ) as sleep:
+        with (
+            patch.object(
+                bench_resource_rates,
+                "nonempty_postfix_queues",
+                return_value=[],
+            ) as queue_check,
+            patch.object(bench_resource_rates.time, "sleep") as sleep,
+        ):
             count = bench_resource_rates.wait_for_trace_completion(
                 trace_follower, ["mailqueue"], 20, 120.0
             )
@@ -479,29 +498,34 @@ class RateBenchmarkTest(unittest.TestCase):
         trace_follower = Mock()
         trace_follower.trace_count.return_value = 20
         stderr = io.StringIO()
-        with patch.object(
-            bench_resource_rates,
-            "nonempty_postfix_queues",
-            return_value=[],
-        ), patch.object(
-            bench_resource_rates,
-            "exim_queue_is_empty",
-            return_value=False,
-        ) as exim_check, patch.object(
-            bench_resource_rates.time, "sleep"
-        ) as sleep, redirect_stderr(stderr):
+        with (
+            patch.object(
+                bench_resource_rates,
+                "nonempty_postfix_queues",
+                return_value=[],
+            ),
+            patch.object(
+                bench_resource_rates,
+                "exim_queue_is_empty",
+                return_value=False,
+            ) as exim_check,
+            patch.object(bench_resource_rates.time, "sleep") as sleep,
+            redirect_stderr(stderr),
+        ):
             count = bench_resource_rates.wait_for_trace_completion(
                 trace_follower,
                 ["mailqueue"],
                 20,
                 0.1,
-                exim_queue_container="mailer",
+                exim_queue_containers=["mailer"],
             )
 
         self.assertEqual(count, 20)
         exim_check.assert_called_once_with("mailer")
         sleep.assert_not_called()
-        self.assertIn("WARNING: pending mail queues: mailer", stderr.getvalue())
+        self.assertIn(
+            "WARNING: pending mail queues: mailer", stderr.getvalue()
+        )
 
     def test_accepts_trace_count_above_submissions(self) -> None:
         trace_follower = Mock()
@@ -521,11 +545,14 @@ class RateBenchmarkTest(unittest.TestCase):
         trace_follower = Mock()
         trace_follower.trace_count.return_value = 20
         stderr = io.StringIO()
-        with patch.object(
-            bench_resource_rates,
-            "nonempty_postfix_queues",
-            side_effect=subprocess.TimeoutExpired("docker", 300),
-        ), patch.object(bench_resource_rates.time, "sleep") as sleep:
+        with (
+            patch.object(
+                bench_resource_rates,
+                "nonempty_postfix_queues",
+                side_effect=subprocess.TimeoutExpired("docker", 300),
+            ),
+            patch.object(bench_resource_rates.time, "sleep") as sleep,
+        ):
             with redirect_stderr(stderr):
                 count = bench_resource_rates.wait_for_trace_completion(
                     trace_follower, ["mailqueue"], 20, 120.0
@@ -565,20 +592,23 @@ class RateBenchmarkTest(unittest.TestCase):
             "trace_container": "trace-id",
             "runs": [],
         }
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            bench_resource_rates,
-            "cleanup_environment",
-            side_effect=[None, RuntimeError("cleanup failed")],
-        ), patch.object(
-            bench_resource_rates, "start_environment"
-        ), patch.object(
-            bench_resource_rates,
-            "compose_container_id",
-            return_value="trace-id",
-        ), patch.object(
-            bench_resource_rates, "run", return_value=(rate_report, 0)
-        ), patch.object(
-            bench_resource_rates, "capture_compose_logs"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(
+                bench_resource_rates,
+                "cleanup_environment",
+                side_effect=[None, RuntimeError("cleanup failed")],
+            ),
+            patch.object(bench_resource_rates, "start_environment"),
+            patch.object(
+                bench_resource_rates,
+                "compose_container_id",
+                return_value="trace-id",
+            ),
+            patch.object(
+                bench_resource_rates, "run", return_value=(rate_report, 0)
+            ),
+            patch.object(bench_resource_rates, "capture_compose_logs"),
         ):
             report, status = bench_resource_rates.run_managed_experiment(
                 Path(directory), [5], 1.0, 0.1
@@ -598,10 +628,11 @@ class RateBenchmarkTest(unittest.TestCase):
         self.assertGreater(elapsed, 0)
 
     def test_sender_builds_ports_for_isolated_stack(self) -> None:
-        configs = send_bulk_emails.build_configs(11025, 21025)
+        configs = send_bulk_emails.build_configs(11025, (21025, 21026, 21027))
 
         self.assertEqual(
-            [config["port"] for config in configs], [11025, 21025]
+            [config["port"] for config in configs],
+            [11025, 11025, 11025, 21025, 21026, 21027],
         )
 
 

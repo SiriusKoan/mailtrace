@@ -3,12 +3,32 @@ Host mx.example.com
     Port 22226
     User root
 
-Host mailer.example.com
+Host mailer1.example.com
     HostName localhost
     Port 22226
     User root
 
-Host mailpolicy.example.com
+Host mailer2.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailer3.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailpolicy1.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailpolicy2.example.com
+    HostName localhost
+    Port 22226
+    User root
+
+Host mailpolicy3.example.com
     HostName localhost
     Port 22226
     User root

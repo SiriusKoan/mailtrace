@@ -17,7 +17,11 @@ ssh_config:
     # log_parser: SyslogParser  # Optional - auto-detects format by default
     time_format: "%Y-%m-%dT%H:%M:%S"
   hosts:
-    mailer.example.com:
+    mailer1.example.com:
+      log_parser: EximParser
+    mailer2.example.com:
+      log_parser: EximParser
+    mailer3.example.com:
       log_parser: EximParser
   # Uncomment the following section before using loghost
   # hosts:
@@ -25,14 +29,30 @@ ssh_config:
   #     log_files:
   #       - /var/log/mx/mail.log
   #     # log_parser and time_format inherited from host_config
-  #   mailer.example.com:
+  #   mailer1.example.com:
   #     log_files:
-  #       - /var/log/mailer/mail.log
+  #       - /var/log/mailer1/mail.log
   #     log_parser: Rfc3164Parser  # Override for BSD syslog format
   #     time_format: "%b %d %H:%M:%S"
-  #   mailpolicy.example.com:
+  #   mailer2.example.com:
   #     log_files:
-  #       - /var/log/mailpolicy/mail.log
+  #       - /var/log/mailer2/mail.log
+  #     log_parser: Rfc3164Parser
+  #     time_format: "%b %d %H:%M:%S"
+  #   mailer3.example.com:
+  #     log_files:
+  #       - /var/log/mailer3/mail.log
+  #     log_parser: Rfc3164Parser
+  #     time_format: "%b %d %H:%M:%S"
+  #   mailpolicy1.example.com:
+  #     log_files:
+  #       - /var/log/mailpolicy1/mail.log
+  #   mailpolicy2.example.com:
+  #     log_files:
+  #       - /var/log/mailpolicy2/mail.log
+  #   mailpolicy3.example.com:
+  #     log_files:
+  #       - /var/log/mailpolicy3/mail.log
   #   mailbox.example.com:
   #     log_files:
   #       - /var/log/mailbox/mail.log
@@ -53,8 +73,8 @@ opensearch_config:
     timestamp: "timestamp"
     service: "appname"
 tracing:
-  sleep_seconds: 2
-  hold_rounds: 1
-  go_back_seconds: 5
+  sleep_seconds: 20
+  hold_rounds: 5
+  go_back_seconds: 10
   max_trace_age_seconds: 1800
   scroll_batch_size: 1000

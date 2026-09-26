@@ -24,13 +24,16 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPOSITORY_ROOT = SCRIPT_DIR.parent.parent
 RESOURCE_SCRIPT = SCRIPT_DIR / "bench_resources.py"
 SENDER_SCRIPT = SCRIPT_DIR / "send_bulk_emails.py"
-COMPOSE_FILE = SCRIPT_DIR / "docker-compose.resource-benchmark.yml"
+COMPOSE_FILES = (
+    SCRIPT_DIR / "docker-compose.yml",
+    SCRIPT_DIR / "docker-compose.resource-benchmark.yml",
+)
 COMPOSE_PROJECT_NAME = "mailtrace-resource-benchmark"
 COMPOSE_START_TIMEOUT_SECONDS = 300
 SERVICE_READY_TIMEOUT_SECONDS = 300.0
 TRACE_COMPLETION_TIMEOUT_SECONDS = 3600.0
 BENCHMARK_MX_PORT = 11025
-BENCHMARK_MAILPOLICY_PORT = 21025
+BENCHMARK_MAILER_PORTS = (21025, 21026, 21027)
 MONITOR_START_TIMEOUT_SECONDS = 60.0
 MONITOR_STOP_TIMEOUT_SECONDS = 60.0
 DOCKER_COMMAND_TIMEOUT_SECONDS = 300.0
@@ -39,26 +42,26 @@ TRACE_COUNT_PATTERN = re.compile(r"Traces generated\s+(\d+)\s*$", re.MULTILINE)
 
 
 def default_output_dir() -> Path:
-    """回傳本次實驗使用的預設結果目錄。"""
+    """Return the default result directory for this experiment."""
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return REPOSITORY_ROOT / "results" / f"resource-{timestamp}"
 
 
 def compose_command(*args: str) -> list[str]:
-    """建立專用實驗環境的 Docker Compose 命令。"""
-    return [
+    """Build a Docker Compose command for the isolated experiment stack."""
+    command = [
         "docker",
         "compose",
         "--project-name",
         COMPOSE_PROJECT_NAME,
-        "--file",
-        str(COMPOSE_FILE),
-        *args,
     ]
+    for compose_file in COMPOSE_FILES:
+        command.extend(("--file", str(compose_file)))
+    return [*command, *args]
 
 
 def cleanup_environment() -> None:
-    """移除實驗容器、網路、磁碟區及孤立容器。"""
+    """Remove experiment containers, networks, volumes, and orphans."""
     result = subprocess.run(
         compose_command("down", "--volumes", "--remove-orphans"),
         stdout=sys.stderr,
@@ -75,7 +78,7 @@ def cleanup_environment() -> None:
 def wait_for_http_service(
     url: str, timeout: float = SERVICE_READY_TIMEOUT_SECONDS
 ) -> None:
-    """等待 HTTP 服務回傳成功狀態。"""
+    """Wait until an HTTP service returns a successful response."""
     deadline = time.monotonic() + timeout
     last_error = "service did not respond"
     while time.monotonic() < deadline:
@@ -91,7 +94,7 @@ def wait_for_http_service(
 
 
 def start_environment() -> None:
-    """建置並啟動專用實驗環境，等待所有服務就緒。"""
+    """Build and start the isolated stack, then wait for readiness."""
     result = subprocess.run(
         compose_command(
             "up",
@@ -113,7 +116,7 @@ def start_environment() -> None:
 
 
 def compose_container_id(service: str) -> str:
-    """取得專用實驗環境中指定服務的容器 ID。"""
+    """Return a service container ID from the isolated stack."""
     result = subprocess.run(
         compose_command("ps", "--quiet", service),
         capture_output=True,
@@ -128,7 +131,7 @@ def compose_container_id(service: str) -> str:
 
 
 def capture_compose_logs(output_dir: Path) -> None:
-    """在清理失敗環境前保留末尾容器日誌。"""
+    """Save recent container logs before tearing down a failed stack."""
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "compose.stderr.log"
     try:
@@ -363,7 +366,7 @@ def nonempty_postfix_queues(containers: list[str]) -> list[str]:
 
 
 def exim_queue_is_empty(container: str) -> bool:
-    """判斷 Exim 容器是否沒有待處理郵件。"""
+    """Return whether an Exim container has an empty queue."""
     result = subprocess.run(
         ["docker", "exec", container, "exim4", "-bpc"],
         capture_output=True,
@@ -389,10 +392,10 @@ def wait_for_trace_completion(
     expected_trace_count: int,
     poll_interval: float,
     *,
-    exim_queue_container: Optional[str] = None,
+    exim_queue_containers: Optional[list[str]] = None,
     timeout: float = TRACE_COMPLETION_TIMEOUT_SECONDS,
 ) -> int:
-    """等待 trace 數量達標，並回報 Postfix 與 Exim 佇列狀態。"""
+    """Wait for the trace target and report Postfix and Exim queue state."""
     deadline = time.monotonic() + timeout
     while True:
         trace_count = trace_follower.trace_count()
@@ -404,11 +407,9 @@ def wait_for_trace_completion(
         if trace_count >= expected_trace_count:
             try:
                 pending_queues = nonempty_postfix_queues(queue_containers)
-                if (
-                    exim_queue_container is not None
-                    and not exim_queue_is_empty(exim_queue_container)
-                ):
-                    pending_queues.append(exim_queue_container)
+                for container in exim_queue_containers or []:
+                    if not exim_queue_is_empty(container):
+                        pending_queues.append(container)
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                 print(
                     f"WARNING: mail queue check failed: {exc}",
@@ -447,7 +448,7 @@ def run_rate(
     *,
     trace_container: Optional[str] = None,
     queue_containers: Optional[list[str]] = None,
-    exim_queue_container: Optional[str] = None,
+    exim_queue_containers: Optional[list[str]] = None,
     trace_poll_interval: float = DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
 ) -> tuple[dict[str, object], bool]:
     """Send email and measure resources at one requested rate."""
@@ -475,13 +476,11 @@ def run_rate(
     case_started_at: Optional[str] = None
     postfix_containers = queue_containers or []
 
-    with summary_path.open(
-        "w", encoding="utf-8"
-    ) as summary_file, monitor_error_path.open(
-        "w", encoding="utf-8"
-    ) as monitor_error_file, sender_log_path.open(
-        "w", encoding="utf-8"
-    ) as sender_log_file:
+    with (
+        summary_path.open("w", encoding="utf-8") as summary_file,
+        monitor_error_path.open("w", encoding="utf-8") as monitor_error_file,
+        sender_log_path.open("w", encoding="utf-8") as sender_log_file,
+    ):
         try:
             monitor = subprocess.Popen(
                 [
@@ -510,8 +509,8 @@ def run_rate(
                     str(duration),
                     "--mx-port",
                     str(BENCHMARK_MX_PORT),
-                    "--mailpolicy-port",
-                    str(BENCHMARK_MAILPOLICY_PORT),
+                    "--mailer-ports",
+                    *(str(port) for port in BENCHMARK_MAILER_PORTS),
                 ],
                 stdout=sender_log_file,
                 stderr=subprocess.STDOUT,
@@ -524,7 +523,7 @@ def run_rate(
                     postfix_containers,
                     submitted_email_count,
                     trace_poll_interval,
-                    exim_queue_container=exim_queue_container,
+                    exim_queue_containers=exim_queue_containers,
                 )
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             run_error = str(exc)
@@ -584,7 +583,7 @@ def run(
     *,
     trace_container: Optional[str] = None,
     queue_containers: Optional[list[str]] = None,
-    exim_queue_container: Optional[str] = None,
+    exim_queue_containers: Optional[list[str]] = None,
     trace_poll_interval: float = DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
 ) -> tuple[dict[str, object], int]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -598,7 +597,7 @@ def run(
             duration,
             trace_container=trace_container,
             queue_containers=queue_containers,
-            exim_queue_container=exim_queue_container,
+            exim_queue_containers=exim_queue_containers,
             trace_poll_interval=trace_poll_interval,
         )
         results.append(result)
@@ -620,7 +619,7 @@ def run_managed_experiment(
     duration: float,
     trace_poll_interval: float,
 ) -> tuple[dict[str, object], int]:
-    """管理 Docker 環境並執行完整資源實驗。"""
+    """Manage the Docker stack and execute the resource experiment."""
     output_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, object] = {
         "container": None,
@@ -641,10 +640,13 @@ def run_managed_experiment(
             for service in (
                 "mailtrace",
                 "mx",
-                "mailpolicy",
+                "mailpolicy1",
+                "mailpolicy2",
+                "mailpolicy3",
                 "mailbox",
-                "mailbox2",
-                "mailer",
+                "mailer1",
+                "mailer2",
+                "mailer3",
             )
         }
         report, status = run(
@@ -655,11 +657,16 @@ def run_managed_experiment(
             trace_container=containers["mailtrace"],
             queue_containers=[
                 containers["mx"],
-                containers["mailpolicy"],
+                containers["mailpolicy1"],
+                containers["mailpolicy2"],
+                containers["mailpolicy3"],
                 containers["mailbox"],
-                containers["mailbox2"],
             ],
-            exim_queue_container=containers["mailer"],
+            exim_queue_containers=[
+                containers["mailer1"],
+                containers["mailer2"],
+                containers["mailer3"],
+            ],
             trace_poll_interval=trace_poll_interval,
         )
         report.update(
@@ -727,7 +734,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
-    """將終止訊號轉為可執行 finally 清理流程的中斷。"""
+    """Convert a termination signal into an interrupt for cleanup."""
     raise KeyboardInterrupt
 
 

@@ -15,33 +15,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CONFIGS = [
-    {
-        "server": "127.0.0.1",
-        "port": 10025,
-        "from": "user1@example.com",
-        "to": ["user2@example.com"],
-        "helo": None,
-    },
-    {
-        "server": "127.0.0.1",
-        "port": 20025,
-        "from": "me@siriuskoan.one",
-        "to": ["user1@example.com", "user1@example2.com"],
-        "helo": "siriuskoan.one",
-    },
-]
-
 NUM_THREADS = 64
 SMTP_TIMEOUT_SECONDS = 30
 
 
-def build_configs(mx_port=10025, mailpolicy_port=20025):
-    """Return SMTP endpoint configurations for one benchmark stack."""
+def build_configs(mx_port=10025, mailer_ports=(20025, 20026, 20027)):
+    """Return SMTP settings for the six successful delivery scenarios."""
+    route_specs = (
+        (mx_port, "single@1.example.com", "mx-1-single"),
+        (mx_port, "team@2.example.com", "mx-2-team"),
+        (mx_port, "single@3.example.com", "mx-3-single"),
+        (mailer_ports[0], "team@1.example.com", "mailer-1-team"),
+        (mailer_ports[1], "single@2.example.com", "mailer-2-single"),
+        (mailer_ports[2], "team@3.example.com", "mailer-3-team"),
+    )
     return [
-        {**CONFIGS[0], "port": mx_port},
-        {**CONFIGS[1], "port": mailpolicy_port},
+        {
+            "server": "127.0.0.1",
+            "port": port,
+            "from": f"sender-{name}@sender.test",
+            "to": [recipient],
+            "helo": "sender.test",
+        }
+        for port, recipient, name in route_specs
     ]
+
+
+CONFIGS = build_configs()
 
 
 def generate_message_id():
@@ -137,7 +137,12 @@ def main():
     )
     parser.add_argument("T", type=float, help="Duration in seconds")
     parser.add_argument("--mx-port", type=int, default=10025)
-    parser.add_argument("--mailpolicy-port", type=int, default=20025)
+    parser.add_argument(
+        "--mailer-ports",
+        type=int,
+        nargs=3,
+        default=[20025, 20026, 20027],
+    )
 
     args = parser.parse_args()
 
@@ -160,7 +165,7 @@ def main():
         sent_count, failed_count, elapsed_time = send_emails(
             emails_per_sec,
             duration,
-            build_configs(args.mx_port, args.mailpolicy_port),
+            build_configs(args.mx_port, args.mailer_ports),
         )
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")

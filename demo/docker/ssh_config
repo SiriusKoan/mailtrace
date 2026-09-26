@@ -3,14 +3,34 @@ Host mx*
     Port 22222
     User root
 
-Host mailer*
+Host mailer1*
     HostName localhost
     Port 22223
     User root
 
-Host mailpolicy*
+Host mailer2*
+    HostName localhost
+    Port 22228
+    User root
+
+Host mailer3*
+    HostName localhost
+    Port 22229
+    User root
+
+Host mailpolicy1*
     HostName localhost
     Port 22224
+    User root
+
+Host mailpolicy2*
+    HostName localhost
+    Port 22230
+    User root
+
+Host mailpolicy3*
+    HostName localhost
+    Port 22231
     User root
 
 Host mailbox*

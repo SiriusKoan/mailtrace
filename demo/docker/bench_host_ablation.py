@@ -92,15 +92,15 @@ def resolve_path(path: str) -> Path:
     return resolved.resolve()
 
 
-def send_mailpolicy_dual_email() -> bool:
-    """Send one email through the mailpolicy dual-recipient path."""
+def send_mailer_team_email() -> bool:
+    """Send one message through a mailer entrypoint and a team alias."""
     proc = subprocess.run(
         [
             "swaks",
             "--to",
-            "user1@example.com,user1@example2.com",
+            "team@1.example.com",
             "--from",
-            "me@siriuskoan.one",
+            "sender-mailer-team@sender.test",
             "--helo",
             "siriuskoan.one",
             "--server",
@@ -115,15 +115,15 @@ def send_mailpolicy_dual_email() -> bool:
     return proc.returncode == 0
 
 
-def send_mx_mailbox_email() -> bool:
-    """Send one email through the mx to mailbox path."""
+def send_mx_single_email() -> bool:
+    """Send one message through the MX entrypoint and a single alias."""
     proc = subprocess.run(
         [
             "swaks",
             "--to",
-            "user2@example.com",
+            "single@1.example.com",
             "--from",
-            "user1@example.com",
+            "sender-mx-single@sender.test",
             "--server",
             "127.0.0.1",
             "--port",
@@ -151,27 +151,27 @@ def send_emails(script: Path, n: int, traffic_path: str) -> None:
             )
         return
 
-    if traffic_path == "mailpolicy-dual":
+    if traffic_path == "mailer-team":
         failures = 0
         for _ in range(n):
-            if not send_mailpolicy_dual_email():
+            if not send_mailer_team_email():
                 failures += 1
             time.sleep(0.1)
         if failures:
             raise RuntimeError(
-                f"mailpolicy-dual sender failed {failures}/{n} email(s)"
+                f"mailer-team sender failed {failures}/{n} email(s)"
             )
         return
 
-    if traffic_path == "mx-mailbox":
+    if traffic_path == "mx-single":
         failures = 0
         for _ in range(n):
-            if not send_mx_mailbox_email():
+            if not send_mx_single_email():
                 failures += 1
             time.sleep(0.1)
         if failures:
             raise RuntimeError(
-                f"mx-mailbox sender failed {failures}/{n} email(s)"
+                f"mx-single sender failed {failures}/{n} email(s)"
             )
         return
 
@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--traffic-path",
-        choices=["random", "mailpolicy-dual", "mx-mailbox"],
+        choices=["random", "mailer-team", "mx-single"],
         default=DEFAULT_TRAFFIC_PATH,
         help="Email traffic path to generate",
     )

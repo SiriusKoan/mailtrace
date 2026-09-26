@@ -24,7 +24,7 @@ inet_protocols = ipv4
 mynetworks_style = subnet
 #mynetworks_style = host
 #
-mynetworks = 192.168.200.0/24 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128
+mynetworks = 192.168.0.0/16 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128
 
 # Uncomment the next line to generate "delayed mail" warnings
 #delay_warning_time = 4h
@@ -88,7 +88,7 @@ smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
 myhostname = mailpolicy.example.com
 inet_interfaces = all
-relay_domains = example.com, example1.com, example2.com
+relay_domains = 1.example.com, 2.example.com, 3.example.com, delivery.example.com
 
 smtpd_sasl_auth_enable = yes
 smtpd_sasl_type = dovecot

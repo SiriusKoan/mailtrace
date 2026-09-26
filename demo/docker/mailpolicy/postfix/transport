@@ -1,3 +1,4 @@
-/.*@example\.com$/   smtp:[mailer.example.com]
-/.*@example1\.com$/   smtp:[mailer.example.com]
-/.*@example2\.com$/   smtp:[mailer.example.com]
+/.*@1\.example\.com$/          smtp:[mx.example.com]
+/.*@2\.example\.com$/          smtp:[mx.example.com]
+/.*@3\.example\.com$/          smtp:[mx.example.com]
+/.*@delivery\.example\.com$/   smtp:[mailbox.example.com]
