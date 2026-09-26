@@ -1,108 +1,99 @@
-# Demo - Docker
+# Docker Demo
 
-## Setup
-
-Prepare the environment:
+## 啟動環境
 
 ```shell
-$ uv sync --all-groups
+uv sync --all-groups
+docker compose -f demo/docker/docker-compose.yml up -d --build
 ```
 
-And make sure you have Docker and [swaks](https://linux.die.net/man/1/swaks) installed.
+主要服務與入口：
 
-## Start
+| 服務 | 主機名稱 | 主機連接埠 |
+|---|---|---:|
+| MX | `mx.example.com` | SMTP `10025` |
+| Mailer 1 | `mailer1.example.com` | SMTP `20025` |
+| Mailer 2 | `mailer2.example.com` | SMTP `20026` |
+| Mailer 3 | `mailer3.example.com` | SMTP `20027` |
+| Mailbox | `mailbox.example.com` | IMAP `10143` |
+| OpenSearch | `opensearch.example.com` | HTTPS `9200` |
+| Tempo | `tempo.example.com` | HTTP `3200`、OTLP gRPC `14317` |
+
+## 郵件拓樸
+
+從 MX 入口寄送：
+
+```text
+mx -> mailerN -> mailpolicyN -> mailbox
+                             -> mx -> mailerM -> mailpolicyM -> mailbox  (alias 分支)
+```
+
+從 Mailer 入口寄送：
+
+```text
+mailerN -> mailpolicyN -> mailbox
+                      -> mx -> mailerM -> mailpolicyM -> mailbox  (alias 分支)
+```
+
+每個 `mailpolicyN` 使用獨立的 Postfix `virtual_alias_maps`，不把公開測試
+網域視為 local domain。一般 alias 目標屬於 `delivery.example.com`，由當前
+`mailpolicyN` 直接送至 `mailbox`。`team` 的第二個 alias 目標屬於下一個
+公開測試網域，因此會回到 `mx`，再經過下一組 `mailer` 與 `mailpolicy`。
+
+| 收件者 | Alias 目標 |
+|---|---|
+| `single@N.example.com` | `user1@delivery.example.com` |
+| `team@1.example.com` | `user1@delivery.example.com`、`alias-from-1@2.example.com` |
+| `team@2.example.com` | `user1@delivery.example.com`、`alias-from-2@3.example.com` |
+| `team@3.example.com` | `user1@delivery.example.com`、`alias-from-3@1.example.com` |
+
+## Handoff 正確性驗證
+
+`bench_handoff_correctness.py` 固定寄送六封郵件：
+
+| 情境 | 收件者 | 預期路徑 | Mailbox |
+|---|---|---|---|
+| `mx-1-single` | `single@1.example.com` | `mx -> mailer1 -> mailpolicy1 -> mailbox` | `user1` |
+| `mx-2-team` | `team@2.example.com` | `user1: mx -> mailer2 -> mailpolicy2 -> mailbox`<br>`user2: mx -> mailer2 -> mailpolicy2 -> mx -> mailer3 -> mailpolicy3 -> mailbox` | `user1`、`user2` |
+| `mx-3-single` | `single@3.example.com` | `mx -> mailer3 -> mailpolicy3 -> mailbox` | `user1` |
+| `mailer-1-team` | `team@1.example.com` | `user1: mailer1 -> mailpolicy1 -> mailbox`<br>`user2: mailer1 -> mailpolicy1 -> mx -> mailer2 -> mailpolicy2 -> mailbox` | `user1`、`user2` |
+| `mailer-2-single` | `single@2.example.com` | `mailer2 -> mailpolicy2 -> mailbox` | `user1` |
+| `mailer-3-team` | `team@3.example.com` | `user1: mailer3 -> mailpolicy3 -> mailbox`<br>`user2: mailer3 -> mailpolicy3 -> mx -> mailer1 -> mailpolicy1 -> mailbox` | `user1`、`user2` |
+
+執行方式：
 
 ```shell
-$ docker compose up -d
+uv run python demo/docker/bench_handoff_correctness.py
 ```
 
-It will launch the demo environment, including 4 email servers, 1 OpenSearch node, and 1 OpenSearch Dashboard.
+腳本使用三份資料驗證 `mailtrace.tracing.builder.export_traces`：
 
-## Demo Setup
+- 從 mailbox 透過 IMAP 讀取原始郵件，解析 `Received` chain。
+- 直接查詢 OpenSearch 原始文件，以獨立正規表示式解析 queue handoff。
+- 使用正式的 query、group 與 `export_traces`，將輸出 span 投影成 handoff graph。
 
-Change the `method` field in `config.yaml` to `ssh` or `opensearch`.
+正確性不符時，腳本記錄失敗項目並回傳狀態碼 `0`；SMTP、IMAP、
+OpenSearch 或設定錯誤等基礎設施問題回傳非零狀態碼。
 
-Change the `opensearch_config.time_zone` field in `config.yaml` to your desired time zone. By default, it is set to UTC+8.
+## Resource benchmark
 
-### Using Loghost
-
-If you want to use loghost to access logs from multiple email servers, follow these steps:
-
-1. Set the `method` field in `config.yaml` to `ssh`.
-
-2. In `config.yaml`, uncomment the `ssh_config_file` line that references `ssh_config_loghost`:
-```yaml
-ssh_config_file: demo/docker/ssh_config_loghost
-```
-
-3. In `config.yaml`, uncomment the `hosts` section under `ssh_config.host_config` and configure the log files and parsers for each email server:
-```yaml
-hosts:
-  mx.example.com:
-    log_files:
-      - /var/log/mx/mail.log
-    log_parser: SyslogParser
-    time_format: "%Y-%m-%dT%H:%M:%S"
-  mailer.example.com:
-    log_files:
-      - /var/log/mailer/mail.log
-    log_parser: SyslogParser
-    time_format: "%Y-%m-%dT%H:%M:%S"
-  mailpolicy.example.com:
-    log_files:
-      - /var/log/mailpolicy/mail.log
-    log_parser: SyslogParser
-    time_format: "%Y-%m-%dT%H:%M:%S"
-  mailbox.example.com:
-    log_files:
-      - /var/log/mailbox/mail.log
-    log_parser: SyslogParser
-    time_format: "%Y-%m-%dT%H:%M:%S"
-```
-
-This allows mailtrace to query multiple email servers simultaneously, aggregating logs from all configured hosts.
-
-## Demo External to Internal (`mx`)
-
-[![asciicast](https://asciinema.org/a/761209.svg)](https://asciinema.org/a/761209)
+Resource benchmark Compose 是主 Compose 的覆寫檔：
 
 ```shell
-$ swaks \
-    --to user1@example.com \
-    --from me@siriuskoan.one \
-    --helo siriuskoan.one \
-    --server 127.0.0.1 -p 10025
-
-$ python3 -m mailtrace run \
-    -c demo/docker/config.yaml \
-    -h mx.example.com \
-    -k user1 \
-    --time '2025-12-10 20:00:00' --time-range 1h
+docker compose \
+  -f demo/docker/docker-compose.yml \
+  -f demo/docker/docker-compose.resource-benchmark.yml \
+  up -d --build
 ```
 
-## Demo Internal to Internal (`mailer`)
+覆寫檔只調整隔離網段、主機連接埠、healthcheck、Vector 設定與
+mailtrace daemon。`bench_resource_rates.py` 會自動使用這兩個 Compose 檔案。
 
-[![asciicast](https://asciinema.org/a/761210.svg)](https://asciinema.org/a/761210)
+## 其他流量產生器
 
 ```shell
-$ swaks \
-    --to user2@example.com \
-    --from user1@example.com \
-    --server 127.0.0.1 -p 20025
-
-$ python3 -m mailtrace run \
-    -c demo/docker/config.yaml \
-    -h mailpolicy.example.com \
-    -k user1 \
-    --time '2025-12-10 20:00:00' --time-range 1h
+demo/docker/send_bulk_emails.sh 100
+uv run python demo/docker/send_bulk_emails.py 20 60
 ```
 
-## Bulk Email Sending
-
-Run the script `send_bulk_emails.sh` with desired number of emails to send:
-
-```shell
-$ ./send_bulk_emails.sh 1000
-```
-
-It will send emails with the above two commands randomly.
+兩個工具都會在上述六種路徑之間分配郵件。
