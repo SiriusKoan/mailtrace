@@ -1271,6 +1271,11 @@ class LogEventParsingTest(unittest.TestCase):
         )
         cases = [
             (
+                "postfix",
+                "EFA573207D8: message-id=<message@example.com>",
+                "EFA573207D8",
+            ),
+            (
                 "postfix/cleanup",
                 "C3CD21F3E90: message-id=<message@example.com>",
                 "C3CD21F3E90",
@@ -1316,6 +1321,10 @@ class LogEventParsingTest(unittest.TestCase):
             ("postfix/anvil", "statistics: max connection rate 9/60s"),
             ("postfix/smtpd", "warning: SASL authentication failed"),
             ("postfix/smtpd", "NOQUEUE: reject: RCPT from unknown"),
+            (
+                "postfix-proxy",
+                "C3CD21F3E90: message-id=<message@example.com>",
+            ),
             ("dovecot", "pop3-login: Info: Disconnected"),
             ("dovecot", "managesieve-login: Info: Disconnected"),
         ]

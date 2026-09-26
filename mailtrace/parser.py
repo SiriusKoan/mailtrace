@@ -404,7 +404,7 @@ class OpensearchParser(LogParser):
             if exim_match:
                 return exim_match.group(1)
 
-        if not service.startswith("postfix/"):
+        if service != "postfix" and not service.startswith("postfix/"):
             return None
         mail_id_candidate, separator, _ = message_content.partition(":")
         if separator and _POSTFIX_QUEUE_ID_RE.fullmatch(mail_id_candidate):
