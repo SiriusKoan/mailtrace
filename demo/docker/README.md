@@ -48,19 +48,33 @@ policy pair.
 | `team@1.example.com` | `user1@delivery.example.com`, `alias-from-1@2.example.com` |
 | `team@2.example.com` | `user1@delivery.example.com`, `alias-from-2@3.example.com` |
 | `team@3.example.com` | `user1@delivery.example.com`, `alias-from-3@1.example.com` |
+| `parallel@1.example.com` | `parallel-a@2.example.com`, `parallel-b@2.example.com` |
+| `revisit-start@1.example.com` | `revisit-middle@2.example.com` |
+| `revisit-middle@2.example.com` | `revisit-return@1.example.com` |
+| `revisit-return@1.example.com` | `user1@delivery.example.com` |
 
 ## Handoff correctness validation
 
-`bench_handoff_correctness.py` sends six fixed messages:
+`bench_handoff_correctness.py` sends sixteen fixed messages. The first twelve
+cover every combination of MX or mailer entrypoint, domains 1 through 3, and
+single-recipient or team aliases:
 
-| Scenario | Recipient | Expected route | Mailbox |
-|---|---|---|---|
-| `mx-1-single` | `single@1.example.com` | `mx -> mailer1 -> mailpolicy1 -> mailbox` | `user1` |
-| `mx-2-team` | `team@2.example.com` | `user1: mx -> mailer2 -> mailpolicy2 -> mailbox`<br>`user2: mx -> mailer2 -> mailpolicy2 -> mx -> mailer3 -> mailpolicy3 -> mailbox` | `user1`, `user2` |
-| `mx-3-single` | `single@3.example.com` | `mx -> mailer3 -> mailpolicy3 -> mailbox` | `user1` |
-| `mailer-1-team` | `team@1.example.com` | `user1: mailer1 -> mailpolicy1 -> mailbox`<br>`user2: mailer1 -> mailpolicy1 -> mx -> mailer2 -> mailpolicy2 -> mailbox` | `user1`, `user2` |
-| `mailer-2-single` | `single@2.example.com` | `mailer2 -> mailpolicy2 -> mailbox` | `user1` |
-| `mailer-3-team` | `team@3.example.com` | `user1: mailer3 -> mailpolicy3 -> mailbox`<br>`user2: mailer3 -> mailpolicy3 -> mx -> mailer1 -> mailpolicy1 -> mailbox` | `user1`, `user2` |
+| Entrypoint | Domain | Alias | Expected routes |
+|---|---:|---|---|
+| MX | `N` | `single` | `user1: mx -> mailerN -> mailpolicyN -> mailbox` |
+| MX | `N` | `team` | `user1: mx -> mailerN -> mailpolicyN -> mailbox`<br>`user2: mx -> mailerN -> mailpolicyN -> mx -> mailerM -> mailpolicyM -> mailbox` |
+| Mailer N | `N` | `single` | `user1: mailerN -> mailpolicyN -> mailbox` |
+| Mailer N | `N` | `team` | `user1: mailerN -> mailpolicyN -> mailbox`<br>`user2: mailerN -> mailpolicyN -> mx -> mailerM -> mailpolicyM -> mailbox` |
+
+Here, `N` is 1, 2, or 3, while `M` is the next domain in the `1 -> 2 -> 3 -> 1`
+cycle. Four additional scenarios exercise shared queues and repeated hosts:
+
+| Scenario | Envelope recipients | Expected routes |
+|---|---|---|
+| `mx-multi-domain` | `single@1.example.com`, `alias-from-1@2.example.com` | `user1: mx -> mailer1 -> mailpolicy1 -> mailbox`<br>`user2: mx -> mailer2 -> mailpolicy2 -> mailbox` |
+| `mailer-multi-domain` | `single@1.example.com`, `alias-from-1@2.example.com` | `user1: mailer1 -> mailpolicy1 -> mailbox`<br>`user2: mailer1 -> mailpolicy2 -> mailbox` |
+| `parallel-shared-route` | `parallel@1.example.com` | `user1/user2: mx -> mailer1 -> mailpolicy1 -> mx -> mailer2 -> mailpolicy2 -> mailbox` |
+| `revisit-origin` | `revisit-start@1.example.com` | `user1: mx -> mailer1 -> mailpolicy1 -> mx -> mailer2 -> mailpolicy2 -> mx -> mailer1 -> mailpolicy1 -> mailbox` |
 
 Run it with:
 
@@ -106,4 +120,4 @@ demo/docker/send_bulk_emails.sh 100
 uv run python demo/docker/send_bulk_emails.py 20 60
 ```
 
-Both tools distribute messages across the six routes described above.
+Both tools distribute messages across the configured routes described above.

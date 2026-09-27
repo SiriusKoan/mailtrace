@@ -13,12 +13,32 @@ from demo.docker.bench_handoff_correctness import (
 
 
 class ScenarioTest(unittest.TestCase):
-    def test_builds_six_routes_with_two_entrypoint_types(self) -> None:
+    def test_builds_full_route_matrix_and_complex_cases(self) -> None:
         scenarios = build_scenarios(10025, [20025, 20026, 20027])
+        by_name = {scenario.name: scenario for scenario in scenarios}
 
-        self.assertEqual(len(scenarios), 6)
+        self.assertEqual(len(scenarios), 16)
         self.assertEqual(
-            scenarios[0].expected_routes,
+            set(by_name),
+            {
+                *(
+                    f"mx-{number}-{alias}"
+                    for number in range(1, 4)
+                    for alias in ("single", "team")
+                ),
+                *(
+                    f"mailer-{number}-{alias}"
+                    for number in range(1, 4)
+                    for alias in ("single", "team")
+                ),
+                "mx-multi-domain",
+                "mailer-multi-domain",
+                "parallel-shared-route",
+                "revisit-origin",
+            },
+        )
+        self.assertEqual(
+            by_name["mx-1-single"].expected_routes,
             {
                 "user1": (
                     "mx.example.com",
@@ -29,7 +49,7 @@ class ScenarioTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            scenarios[3].expected_routes,
+            by_name["mailer-1-team"].expected_routes,
             {
                 "user1": (
                     "mailer1.example.com",
@@ -46,9 +66,66 @@ class ScenarioTest(unittest.TestCase):
                 ),
             },
         )
-        self.assertEqual(scenarios[1].expected_users, ("user1", "user2"))
-        self.assertEqual(expected_graph_size(scenarios[0]), (4, 3))
-        self.assertEqual(expected_graph_size(scenarios[1]), (8, 7))
+        self.assertEqual(
+            by_name["mx-multi-domain"].recipients,
+            (
+                "single@1.example.com",
+                "alias-from-1@2.example.com",
+            ),
+        )
+        self.assertEqual(
+            by_name["mailer-multi-domain"].expected_routes,
+            {
+                "user1": (
+                    "mailer1.example.com",
+                    "mailpolicy1.example.com",
+                    "mailbox.example.com",
+                ),
+                "user2": (
+                    "mailer1.example.com",
+                    "mailpolicy2.example.com",
+                    "mailbox.example.com",
+                ),
+            },
+        )
+        self.assertEqual(
+            by_name["parallel-shared-route"].expected_routes["user1"],
+            by_name["parallel-shared-route"].expected_routes["user2"],
+        )
+        self.assertEqual(
+            by_name["revisit-origin"].expected_routes,
+            {
+                "user1": (
+                    "mx.example.com",
+                    "mailer1.example.com",
+                    "mailpolicy1.example.com",
+                    "mx.example.com",
+                    "mailer2.example.com",
+                    "mailpolicy2.example.com",
+                    "mx.example.com",
+                    "mailer1.example.com",
+                    "mailpolicy1.example.com",
+                    "mailbox.example.com",
+                )
+            },
+        )
+        self.assertEqual(
+            by_name["mx-1-team"].expected_users, ("user1", "user2")
+        )
+        self.assertEqual(expected_graph_size(by_name["mx-1-single"]), (4, 3))
+        self.assertEqual(expected_graph_size(by_name["mx-1-team"]), (8, 7))
+        self.assertEqual(
+            expected_graph_size(by_name["mx-multi-domain"]), (7, 6)
+        )
+        self.assertEqual(
+            expected_graph_size(by_name["mailer-multi-domain"]), (5, 4)
+        )
+        self.assertEqual(
+            expected_graph_size(by_name["parallel-shared-route"]), (7, 6)
+        )
+        self.assertEqual(
+            expected_graph_size(by_name["revisit-origin"]), (10, 9)
+        )
 
 
 class ReceivedTest(unittest.TestCase):

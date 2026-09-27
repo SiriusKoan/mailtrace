@@ -76,7 +76,7 @@ class InfrastructureError(RuntimeError):
 class Scenario:
     name: str
     sender: str
-    recipient: str
+    recipients: tuple[str, ...]
     smtp_port: int
     expected_routes: dict[str, tuple[str, ...]]
 
@@ -109,47 +109,121 @@ def normalize_host(hostname: str) -> str:
 
 
 def build_scenarios(mx_port: int, mailer_ports: list[int]) -> list[Scenario]:
-    """Build the six fixed successful-delivery scenarios."""
+    """Build the fixed successful-delivery scenarios."""
     routes = {
         1: ("mailer1.example.com", "mailpolicy1.example.com"),
         2: ("mailer2.example.com", "mailpolicy2.example.com"),
         3: ("mailer3.example.com", "mailpolicy3.example.com"),
     }
-    specs = (
-        ("mx-1-single", 1, "single", True),
-        ("mx-2-team", 2, "team", True),
-        ("mx-3-single", 3, "single", True),
-        ("mailer-1-team", 1, "team", False),
-        ("mailer-2-single", 2, "single", False),
-        ("mailer-3-team", 3, "team", False),
-    )
     scenarios = []
-    for name, domain_number, alias, through_mx in specs:
-        mailer, mailpolicy = routes[domain_number]
-        route_prefix = (
-            ("mx.example.com", mailer, mailpolicy)
-            if through_mx
-            else (mailer, mailpolicy)
-        )
-        expected_routes = {"user1": route_prefix + ("mailbox.example.com",)}
-        if alias == "team":
-            next_number = domain_number % 3 + 1
-            expected_routes["user2"] = route_prefix + (
-                "mx.example.com",
-                *routes[next_number],
-                "mailbox.example.com",
-            )
-        scenarios.append(
+    for entrypoint, through_mx in (("mx", True), ("mailer", False)):
+        for domain_number, (mailer, mailpolicy) in routes.items():
+            for alias in ("single", "team"):
+                name = f"{entrypoint}-{domain_number}-{alias}"
+                route_prefix = (
+                    ("mx.example.com", mailer, mailpolicy)
+                    if through_mx
+                    else (mailer, mailpolicy)
+                )
+                expected_routes = {
+                    "user1": route_prefix + ("mailbox.example.com",)
+                }
+                if alias == "team":
+                    next_number = domain_number % 3 + 1
+                    expected_routes["user2"] = route_prefix + (
+                        "mx.example.com",
+                        *routes[next_number],
+                        "mailbox.example.com",
+                    )
+                scenarios.append(
+                    Scenario(
+                        name=name,
+                        sender=f"sender-{name}@sender.test",
+                        recipients=(f"{alias}@{domain_number}.example.com",),
+                        smtp_port=(
+                            mx_port
+                            if through_mx
+                            else mailer_ports[domain_number - 1]
+                        ),
+                        expected_routes=expected_routes,
+                    )
+                )
+
+    scenarios.extend(
+        (
             Scenario(
-                name=name,
-                sender=f"sender-{name}@sender.test",
-                recipient=f"{alias}@{domain_number}.example.com",
-                smtp_port=(
-                    mx_port if through_mx else mailer_ports[domain_number - 1]
+                name="mx-multi-domain",
+                sender="sender-mx-multi-domain@sender.test",
+                recipients=(
+                    "single@1.example.com",
+                    "alias-from-1@2.example.com",
                 ),
-                expected_routes=expected_routes,
-            )
+                smtp_port=mx_port,
+                expected_routes={
+                    "user1": (
+                        "mx.example.com",
+                        *routes[1],
+                        "mailbox.example.com",
+                    ),
+                    "user2": (
+                        "mx.example.com",
+                        *routes[2],
+                        "mailbox.example.com",
+                    ),
+                },
+            ),
+            Scenario(
+                name="mailer-multi-domain",
+                sender="sender-mailer-multi-domain@sender.test",
+                recipients=(
+                    "single@1.example.com",
+                    "alias-from-1@2.example.com",
+                ),
+                smtp_port=mailer_ports[0],
+                expected_routes={
+                    "user1": (*routes[1], "mailbox.example.com"),
+                    "user2": (
+                        "mailer1.example.com",
+                        "mailpolicy2.example.com",
+                        "mailbox.example.com",
+                    ),
+                },
+            ),
+            Scenario(
+                name="parallel-shared-route",
+                sender="sender-parallel-shared-route@sender.test",
+                recipients=("parallel@1.example.com",),
+                smtp_port=mx_port,
+                expected_routes={
+                    user: (
+                        "mx.example.com",
+                        *routes[1],
+                        "mx.example.com",
+                        *routes[2],
+                        "mailbox.example.com",
+                    )
+                    for user in ALL_USERS
+                },
+            ),
+            Scenario(
+                name="revisit-origin",
+                sender="sender-revisit-origin@sender.test",
+                recipients=("revisit-start@1.example.com",),
+                smtp_port=mx_port,
+                expected_routes={
+                    "user1": (
+                        "mx.example.com",
+                        *routes[1],
+                        "mx.example.com",
+                        *routes[2],
+                        "mx.example.com",
+                        *routes[1],
+                        "mailbox.example.com",
+                    )
+                },
+            ),
         )
+    )
     return scenarios
 
 
@@ -172,7 +246,7 @@ def send_scenarios(
         message_id = f"mailtrace-handoff-{run_id}-{scenario.name}@test.example"
         message = EmailMessage()
         message["From"] = scenario.sender
-        message["To"] = scenario.recipient
+        message["To"] = ", ".join(scenario.recipients)
         message["Subject"] = f"mailtrace handoff {scenario.name}"
         message["Message-ID"] = f"<{message_id}>"
         message["X-Mailtrace-Test-Case"] = scenario.name
@@ -184,7 +258,7 @@ def send_scenarios(
                 smtp.send_message(
                     message,
                     from_addr=scenario.sender,
-                    to_addrs=[scenario.recipient],
+                    to_addrs=list(scenario.recipients),
                 )
         except (OSError, smtplib.SMTPException) as exc:
             raise InfrastructureError(
@@ -574,7 +648,7 @@ def wait_for_logs(
     timeout: float,
     opensearch_port: int | None,
 ) -> tuple[list[RawLog], dict[str, list[Any]]]:
-    """Wait until raw and production queries contain all six messages."""
+    """Wait until raw and production queries contain every sent message."""
     message_ids = {item.message_id for item in sent}
     config = load_config(str(config_path))
     if opensearch_port is not None:
