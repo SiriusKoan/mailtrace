@@ -1,4 +1,4 @@
-"""Trace buffering and terminal-outcome decisions."""
+"""Trace buffering and export-boundary decisions."""
 
 from dataclasses import dataclass
 from math import ceil
@@ -9,12 +9,11 @@ from mailtrace.models import LogEntry
 
 @dataclass
 class PendingTrace:
-    """Logs buffered until a message reaches a terminal outcome."""
+    """Logs buffered until a message becomes quiet or reaches its age limit."""
 
     logs: list[LogEntry]
     first_seen_round: int
     last_seen_round: int
-    has_terminal_outcome: bool = False
 
     def merge(
         self,
@@ -28,9 +27,6 @@ class PendingTrace:
         self.logs.extend(additions)
         if additions:
             self.last_seen_round = current_round
-            self.has_terminal_outcome |= any(
-                log.is_terminal is True for log in additions
-            )
         return len(additions)
 
 
@@ -48,4 +44,4 @@ def should_export_trace(
 
     if age_rounds >= max_age_rounds:
         return True
-    return pending.has_terminal_outcome and quiet_rounds >= hold_rounds
+    return quiet_rounds >= hold_rounds

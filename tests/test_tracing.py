@@ -1502,7 +1502,6 @@ class LogEventParsingTest(unittest.TestCase):
             logs[2].delivery_status,
             DeliveryStatus.TEMPORARY_FAILURE,
         )
-        self.assertFalse(logs[2].is_terminal)
 
     def test_mail_status_precedes_conflicting_smtp_code(self) -> None:
         deferred = classify_log_entry(
@@ -1542,7 +1541,6 @@ class LogEventParsingTest(unittest.TestCase):
         self.assertEqual(
             rejected.delivery_status, DeliveryStatus.PERMANENT_FAILURE
         )
-        self.assertTrue(rejected.is_terminal)
 
     def test_delivery_status_distinguishes_forwarding_and_final_delivery(
         self,
@@ -1562,10 +1560,8 @@ class LogEventParsingTest(unittest.TestCase):
         self.assertEqual(forwarded.event_type, EventType.SMTP_DELIVERY)
         self.assertEqual(forwarded.delivery_status, DeliveryStatus.FORWARDED)
         self.assertEqual(forwarded.smtp_status_class, SmtpStatusClass.SUCCESS)
-        self.assertFalse(forwarded.is_terminal)
         self.assertEqual(delivered.event_type, EventType.LMTP_DELIVERY)
         self.assertEqual(delivered.delivery_status, DeliveryStatus.DELIVERED)
-        self.assertTrue(delivered.is_terminal)
 
     def test_structured_fields_are_ignored_when_mapping_is_unset(self) -> None:
         parser = OpensearchParser(
@@ -1601,7 +1597,6 @@ class TraceLifecycleTest(unittest.TestCase):
             logs=[log],
             first_seen_round=1,
             last_seen_round=1,
-            has_terminal_outcome=True,
         )
 
         self.assertEqual(
@@ -1610,26 +1605,26 @@ class TraceLifecycleTest(unittest.TestCase):
         )
         self.assertEqual(pending.last_seen_round, 1)
 
-    def test_temporary_failure_waits_until_max_age(self) -> None:
+    def test_trace_exports_after_hold_rounds_without_terminal_outcome(
+        self,
+    ) -> None:
         pending = PendingTrace(
             logs=[LogEntry("t", "host", "service", "Q1", "temporary")],
             first_seen_round=1,
             last_seen_round=1,
-            has_terminal_outcome=False,
         )
 
-        self.assertFalse(should_export_trace(pending, 13, 15, 12, 1800))
-        self.assertTrue(should_export_trace(pending, 121, 15, 12, 1800))
+        self.assertFalse(should_export_trace(pending, 12, 15, 12, 86400))
+        self.assertTrue(should_export_trace(pending, 13, 15, 12, 86400))
 
-    def test_terminal_failure_exports_after_hold_rounds(self) -> None:
+    def test_active_trace_exports_at_max_age(self) -> None:
         pending = PendingTrace(
             logs=[],
             first_seen_round=1,
-            last_seen_round=1,
-            has_terminal_outcome=True,
+            last_seen_round=1440,
         )
 
-        self.assertTrue(should_export_trace(pending, 13, 15, 12, 1800))
+        self.assertTrue(should_export_trace(pending, 1441, 60, 15, 86400))
 
 
 class OpenTelemetryResourceTest(unittest.TestCase):

@@ -76,5 +76,5 @@ tracing:
   sleep_seconds: 20
   hold_rounds: 5
   go_back_seconds: 10
-  max_trace_age_seconds: 1800
+  max_trace_age_seconds: 86400
   scroll_batch_size: 1000

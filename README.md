@@ -120,7 +120,7 @@ tracing:
   sleep_seconds: 60
   hold_rounds: 2
   go_back_seconds: 10
-  max_trace_age_seconds: 1800
+  max_trace_age_seconds: 86400
   scroll_batch_size: 1000
 ```
 
@@ -141,7 +141,7 @@ mailtrace tracing \
 
 4. View traces from the Tempo data source in Grafana Explore at `http://localhost:3000`
 
-The tracer will continuously fetch logs every `sleep_seconds` seconds. Logs for each message ID are buffered until a terminal outcome is observed and no new logs arrive for `hold_rounds` consecutive rounds. Messages without a terminal outcome are exported after `max_trace_age_seconds`. Each query also reaches `go_back_seconds` into the past to catch logs that arrived in OpenSearch later than their syslog timestamp.
+The tracer will continuously fetch logs every `sleep_seconds` seconds. Logs for each message ID are buffered until no new logs arrive for `hold_rounds` consecutive rounds. Traces are exported after `max_trace_age_seconds` even if new logs continue to arrive. Each query also reaches `go_back_seconds` into the past to catch logs that arrived in OpenSearch later than their syslog timestamp.
 
 ### Automatic Tracing with Graph Generation
 
@@ -501,16 +501,16 @@ tracing:
   sleep_seconds: 60
   hold_rounds: 2
   go_back_seconds: 10
-  max_trace_age_seconds: 1800
+  max_trace_age_seconds: 86400
   scroll_batch_size: 1000
 ```
 
 #### Tracing Parameters
 
 - `sleep_seconds`: How long to sleep between log-query iterations (default: `60`). Replaces the former `--interval` CLI flag.
-- `hold_rounds`: Number of quiet rounds required after a terminal outcome before buffered logs are exported (default: `2`). Non-terminal messages continue buffering until `max_trace_age_seconds`.
+- `hold_rounds`: Number of quiet rounds required after the last new log before buffered logs are exported (default: `2`).
 - `go_back_seconds`: How far back from the previous query boundary to extend the start of each new query window (default: `10`). This compensates for logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate entries captured by the overlap are automatically discarded. Set to `0` to disable the overlap.
-- `max_trace_age_seconds`: Maximum time to retain a message ID without a terminal outcome before exporting its buffered logs (default: `1800`).
+- `max_trace_age_seconds`: Maximum time to retain a message ID before exporting its buffered logs, even if new logs continue to arrive (default: `86400`).
 - `scroll_batch_size`: Number of OpenSearch hits requested per scroll page (default: `1000`). Increase this to reduce scroll requests for high-volume windows, at the cost of larger responses and higher memory use.
 
 ### Clusters Configuration

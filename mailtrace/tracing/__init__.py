@@ -104,7 +104,7 @@ class EmailTracesGenerator:
         self.timing = TimingMetrics()
         init_exporter(otel_endpoint)
 
-        # Buffer message logs until a terminal outcome or the age limit.
+        # Buffer message logs until a quiet period or the age limit.
         self._pending: dict[str, PendingTrace] = {}
         # Keep queue-to-message associations across query rounds.
         self._queue_id_to_message_id: dict[tuple[str, str], str] = {}
@@ -137,9 +137,6 @@ class EmailTracesGenerator:
                     logs=list(new_logs),
                     first_seen_round=self._current_round,
                     last_seen_round=self._current_round,
-                    has_terminal_outcome=any(
-                        log.is_terminal is True for log in new_logs
-                    ),
                 )
                 continue
 
@@ -153,8 +150,8 @@ class EmailTracesGenerator:
     def _collect_ready(self) -> Dict[str, list[LogEntry]]:
         """Return message IDs whose logs are ready to be exported.
 
-        A message ID is ready after a terminal outcome has been quiet for
-        ``hold_rounds`` rounds, or after the configured maximum trace age.
+        A message ID is ready after no new logs arrive for ``hold_rounds``
+        rounds, or after the configured maximum trace age.
 
         Ready entries are removed from the pending buffer.
         """

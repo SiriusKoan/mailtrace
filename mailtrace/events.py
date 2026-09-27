@@ -114,9 +114,7 @@ def _delivery_status(
 
     if re.search(r"\b(?:deferred|defer|greylist|soft reject)\b", message):
         return DeliveryStatus.TEMPORARY_FAILURE
-    if re.search(
-        r"\b(?:bounced|undeliverable|permanent failure)\b", message
-    ):
+    if re.search(r"\b(?:bounced|undeliverable|permanent failure)\b", message):
         return DeliveryStatus.PERMANENT_FAILURE
 
     if entry.event_type in {
@@ -135,7 +133,7 @@ def _delivery_status(
 
 
 def classify_log_entry(entry: LogEntry) -> LogEntry:
-    """Attach normalized event and lifecycle metadata to a parsed log entry."""
+    """Attach normalized event and delivery metadata to a parsed log entry."""
     entry.event_type = _event_type(entry)
     entry.mail_status = extract_mail_status(entry.message or "")
     entry.smtp_code, entry.smtp_enhanced_status_code = (
@@ -144,19 +142,5 @@ def classify_log_entry(entry: LogEntry) -> LogEntry:
     entry.smtp_status_class = extract_smtp_status_class(
         entry.message or "", entry.smtp_code
     )
-    entry.delivery_status = _delivery_status(
-        entry, entry.smtp_status_class
-    )
-    if entry.delivery_status in {
-        DeliveryStatus.DELIVERED,
-        DeliveryStatus.PERMANENT_FAILURE,
-    }:
-        entry.is_terminal = True
-    elif entry.delivery_status in {
-        DeliveryStatus.FORWARDED,
-        DeliveryStatus.TEMPORARY_FAILURE,
-    }:
-        entry.is_terminal = False
-    else:
-        entry.is_terminal = None
+    entry.delivery_status = _delivery_status(entry, entry.smtp_status_class)
     return entry
