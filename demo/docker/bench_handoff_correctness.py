@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import imaplib
 import json
+import math
 import re
 import smtplib
 import sys
 import time
 import uuid
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email import policy
@@ -51,9 +53,19 @@ POSTFIX_RELAY_RE = re.compile(r"\brelay=([^\s,\[]+)", re.IGNORECASE)
 EXIM_RELAY_RE = re.compile(r"\bH=([^\s\[]+)")
 RECEIVED_BY_RE = re.compile(r"\bby\s+([^\s(;]+)", re.IGNORECASE)
 RECEIVED_ID_RE = re.compile(r"\bid\s+([A-Za-z0-9-]+)", re.IGNORECASE)
+POSTFIX_DELAYS_RE = re.compile(r"\bdelays=([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)")
+EXIM_RT_RE = re.compile(r"\bRT=([\d.]+)s?")
+EXIM_QT_RE = re.compile(r"\bQT=([\d.]+)s?")
+EXIM_DT_RE = re.compile(r"\bDT=([\d.]+)s?")
+TRACE_MIN_DURATION_SECONDS = 2e-6
+SPAN_DURATION_TOLERANCE_SECONDS = 1e-6
 
 Hop = tuple[str, str]
 Edge = tuple[Hop, Hop]
+DelaySample = dict[str, float]
+RawDelays = dict[Hop, list[DelaySample]]
+TraceDelaySample = dict[str, dict[str, float]]
+TraceDelays = dict[Hop, list[TraceDelaySample]]
 
 
 class InfrastructureError(RuntimeError):
@@ -332,10 +344,10 @@ def relay_host(message: str) -> str | None:
     return normalize_host(match.group(1)) if match else None
 
 
-def build_raw_graphs(
+def correlate_raw_logs(
     logs: list[RawLog], message_ids: set[str]
-) -> dict[str, tuple[set[Hop], set[Edge]]]:
-    """Build queue handoff graphs with independent regular expressions."""
+) -> tuple[dict[Hop, str], list[Edge]]:
+    """Associate raw queue logs with Message-IDs and queue handoffs."""
     queue_to_message: dict[Hop, str] = {}
     parsed_edges: list[Edge] = []
     for log in logs:
@@ -359,6 +371,15 @@ def build_raw_graphs(
                 queue_to_message[target] = message_id
                 changed = True
 
+    return queue_to_message, parsed_edges
+
+
+def build_raw_graphs(
+    logs: list[RawLog], message_ids: set[str]
+) -> dict[str, tuple[set[Hop], set[Edge]]]:
+    """Build queue handoff graphs with independent regular expressions."""
+    queue_to_message, parsed_edges = correlate_raw_logs(logs, message_ids)
+
     graphs = {message_id: (set(), set()) for message_id in message_ids}
     for hop, message_id in queue_to_message.items():
         if message_id in graphs:
@@ -370,9 +391,90 @@ def build_raw_graphs(
     return graphs
 
 
+def build_raw_delays(
+    logs: list[RawLog], message_ids: set[str]
+) -> dict[str, RawDelays]:
+    """Parse delay records independently for each correlated queue hop."""
+    queue_to_message, _ = correlate_raw_logs(logs, message_ids)
+    logs_by_hop: dict[tuple[str, Hop], list[RawLog]] = defaultdict(list)
+    for log in logs:
+        if log.queue_id is None:
+            continue
+        hop = (log.hostname, log.queue_id)
+        message_id = queue_to_message.get(hop)
+        if message_id is not None:
+            logs_by_hop[(message_id, hop)].append(log)
+
+    delays: dict[str, RawDelays] = {
+        message_id: {} for message_id in message_ids
+    }
+    for (message_id, hop), hop_logs in logs_by_hop.items():
+        samples: list[DelaySample] = []
+        if any("exim" in log.service.lower() for log in hop_logs):
+            context = " ".join(log.message for log in hop_logs)
+            rt_match = EXIM_RT_RE.search(context)
+            qt_match = EXIM_QT_RE.search(context)
+            if rt_match and qt_match:
+                receive_time = float(rt_match.group(1))
+                queue_total = float(qt_match.group(1))
+                for log in hop_logs:
+                    dt_match = EXIM_DT_RE.search(log.message)
+                    if not dt_match:
+                        continue
+                    deliver_time = float(dt_match.group(1))
+                    samples.append(
+                        {
+                            "receive_time": receive_time,
+                            "queue_time": max(
+                                0.0,
+                                queue_total - receive_time - deliver_time,
+                            ),
+                            "deliver_time": deliver_time,
+                        }
+                    )
+        else:
+            for log in hop_logs:
+                match = POSTFIX_DELAYS_RE.search(log.message)
+                if match:
+                    samples.append(
+                        dict(
+                            zip(
+                                (
+                                    "before_qmgr",
+                                    "in_qmgr",
+                                    "conn_setup",
+                                    "transmission",
+                                ),
+                                (float(value) for value in match.groups()),
+                            )
+                        )
+                    )
+        if samples:
+            delays[message_id][hop] = samples
+    return delays
+
+
+def delay_evidence_complete(
+    graph: tuple[set[Hop], set[Edge]], delays: RawDelays
+) -> bool:
+    """Check that each queue hop has all expected delivery records."""
+    nodes, edges = graph
+    outgoing_counts = Counter(source for source, _ in edges)
+    return all(
+        len(delays.get(hop, [])) >= max(1, outgoing_counts[hop])
+        for hop in nodes
+    )
+
+
 def export_span_graphs(
     logs_by_message_id: dict[str, list[Any]],
-) -> tuple[int, dict[str, tuple[set[Hop], set[Edge], list[dict[str, Any]]]]]:
+) -> tuple[
+    int,
+    dict[
+        str,
+        tuple[set[Hop], set[Edge], list[dict[str, Any]], TraceDelays],
+    ],
+]:
     """Run export_traces and project finished spans into handoff graphs."""
     exporter = InMemorySpanExporter()
     otel._providers.clear()
@@ -423,7 +525,43 @@ def export_span_graphs(
                 parent = (
                     parent_span.parent if parent_span is not None else None
                 )
-        graphs[message_id] = (set(host_by_span_id.values()), edges, attributes)
+
+        delay_deliveries: dict[tuple[Hop, int], TraceDelaySample] = {}
+        for span in trace_spans:
+            delay_value = span.attributes.get("delay.duration_seconds")
+            if delay_value is None or span.parent is None:
+                continue
+            parent_span_id = span.parent.span_id
+            ancestor = span.parent
+            hop = None
+            while ancestor is not None:
+                hop = host_by_span_id.get(ancestor.span_id)
+                if hop is not None:
+                    break
+                ancestor_span = span_by_id.get(ancestor.span_id)
+                ancestor = (
+                    ancestor_span.parent if ancestor_span is not None else None
+                )
+            if hop is None:
+                continue
+            sample = delay_deliveries.setdefault(
+                (hop, parent_span_id),
+                {"stages": {}, "span_durations": {}},
+            )
+            sample["stages"][span.name] = float(delay_value)
+            sample["span_durations"][span.name] = (
+                span.end_time - span.start_time
+            ) / 1e9
+
+        trace_delays: TraceDelays = defaultdict(list)
+        for (hop, _), sample in delay_deliveries.items():
+            trace_delays[hop].append(sample)
+        graphs[message_id] = (
+            set(host_by_span_id.values()),
+            edges,
+            attributes,
+            dict(trace_delays),
+        )
     otel._providers.clear()
     otel._exporter = None
     return trace_count, graphs
@@ -459,6 +597,7 @@ def wait_for_logs(
                 if message_id in grouped
             }
             raw_graphs = build_raw_graphs(raw_logs, message_ids)
+            raw_delays = build_raw_delays(raw_logs, message_ids)
             observed_raw_hops = {
                 (log.hostname, log.queue_id)
                 for log in raw_logs
@@ -480,6 +619,10 @@ def wait_for_logs(
                 and raw_graphs[item.message_id][0] <= observed_raw_hops
                 and raw_graphs[item.message_id][0]
                 <= production_hops[item.message_id]
+                and delay_evidence_complete(
+                    raw_graphs[item.message_id],
+                    raw_delays[item.message_id],
+                )
                 for item in sent
             ):
                 return raw_logs, selected
@@ -496,11 +639,75 @@ def split_queue_ids(value: Any) -> set[str]:
     return {part for part in str(value or "").split(",") if part}
 
 
+def canonical_delay_sample(
+    sample: DelaySample,
+) -> tuple[tuple[str, float], ...]:
+    """Return a stable representation for delay multiset comparison."""
+    return tuple(
+        sorted((name, round(value, 9)) for name, value in sample.items())
+    )
+
+
+def delay_samples_match(
+    expected: RawDelays, actual: TraceDelays, hops: set[Hop]
+) -> bool:
+    """Compare every delivery delay record for the selected queue hops."""
+    for hop in hops:
+        expected_samples = Counter(
+            canonical_delay_sample(sample) for sample in expected.get(hop, [])
+        )
+        actual_samples = Counter(
+            canonical_delay_sample(sample["stages"])
+            for sample in actual.get(hop, [])
+        )
+        if expected_samples != actual_samples:
+            return False
+    return True
+
+
+def delay_span_durations_match(delays: TraceDelays, hops: set[Hop]) -> bool:
+    """Check that delay span durations represent their logged values."""
+    for hop in hops:
+        for sample in delays.get(hop, []):
+            if sample["stages"].keys() != sample["span_durations"].keys():
+                return False
+            for name, value in sample["stages"].items():
+                expected = max(value, TRACE_MIN_DURATION_SECONDS)
+                if not math.isclose(
+                    sample["span_durations"][name],
+                    expected,
+                    rel_tol=0.0,
+                    abs_tol=SPAN_DURATION_TOLERANCE_SECONDS,
+                ):
+                    return False
+    return True
+
+
+def serialize_delays(
+    message_id: str,
+    delays: RawDelays | TraceDelays,
+    hops: set[Hop],
+) -> list[dict[str, Any]]:
+    """Make tuple-keyed delay evidence JSON serializable."""
+    return [
+        {
+            "message_id": message_id,
+            "host": host,
+            "queue_id": queue_id,
+            "deliveries": delays.get((host, queue_id), []),
+        }
+        for host, queue_id in sorted(hops)
+    ]
+
+
 def evaluate_case(
     item: SentMessage,
     copies: dict[str, bytes],
     raw_graph: tuple[set[Hop], set[Edge]],
-    span_graph: tuple[set[Hop], set[Edge], list[dict[str, Any]]] | None,
+    raw_delays: RawDelays,
+    span_graph: (
+        tuple[set[Hop], set[Edge], list[dict[str, Any]], TraceDelays] | None
+    ),
 ) -> dict[str, Any]:
     """Compare the manifest, mailbox, raw logs, and exported spans."""
     received_by_user = {}
@@ -536,8 +743,9 @@ def evaluate_case(
         trace_nodes: set[Hop] = set()
         trace_edges: set[Edge] = set()
         attributes: list[dict[str, Any]] = []
+        trace_delays: TraceDelays = {}
     else:
-        trace_nodes, trace_edges, attributes = span_graph
+        trace_nodes, trace_edges, attributes, trace_delays = span_graph
 
     nodes_ok = trace_nodes == oracle_nodes
     edges_ok = trace_edges == oracle_edges
@@ -562,6 +770,14 @@ def evaluate_case(
         ):
             attributes_ok = False
 
+    raw_delay_logs_ok = delay_evidence_complete(
+        (oracle_nodes, oracle_edges), raw_delays
+    )
+    delay_values_ok = delay_samples_match(
+        raw_delays, trace_delays, oracle_nodes
+    )
+    delay_durations_ok = delay_span_durations_match(trace_delays, oracle_nodes)
+
     checks = {
         "received_parse": not parse_errors,
         "expected_route": route_ok,
@@ -571,6 +787,9 @@ def evaluate_case(
         "trace_edges": edges_ok,
         "trace_next_attributes": attributes_ok,
         "trace_handoff_attributes": handoff_ok,
+        "raw_delay_logs": raw_delay_logs_ok,
+        "trace_delay_values": delay_values_ok,
+        "trace_delay_durations": delay_durations_ok,
     }
     return {
         "scenario": item.scenario.name,
@@ -587,6 +806,12 @@ def evaluate_case(
         "trace_nodes": sorted(trace_nodes),
         "trace_edges": sorted(trace_edges),
         "trace_attributes": attributes,
+        "raw_delays": serialize_delays(
+            item.message_id, raw_delays, oracle_nodes
+        ),
+        "trace_delays": serialize_delays(
+            item.message_id, trace_delays, oracle_nodes
+        ),
         "parse_errors": parse_errors,
         "unexpected_users": unexpected_users,
         "checks": checks,
@@ -666,6 +891,9 @@ def main() -> int:
         raw_graphs = build_raw_graphs(
             raw_logs, {item.message_id for item in sent}
         )
+        raw_delays = build_raw_delays(
+            raw_logs, {item.message_id for item in sent}
+        )
         trace_count, span_graphs = export_span_graphs(production_groups)
     except InfrastructureError as exc:
         print(f"Infrastructure error: {exc}", file=sys.stderr)
@@ -682,6 +910,7 @@ def main() -> int:
             item,
             mailbox_messages[item.message_id],
             raw_graphs[item.message_id],
+            raw_delays[item.message_id],
             span_graphs.get(item.message_id),
         )
         for item in sent

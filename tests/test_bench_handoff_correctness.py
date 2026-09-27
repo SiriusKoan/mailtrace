@@ -2,6 +2,7 @@ import unittest
 
 from demo.docker.bench_handoff_correctness import (
     RawLog,
+    build_raw_delays,
     build_raw_graphs,
     build_scenarios,
     expected_graph_size,
@@ -183,6 +184,72 @@ class RawLogTest(unittest.TestCase):
                 ("mailer1.example.com", "1ABCDEF-123456-78"),
                 ("mailpolicy1.example.com", "BBB222"),
             },
+        )
+
+    def test_parses_postfix_and_split_exim_delay_logs(self) -> None:
+        message_id = "case@test.example"
+        logs = [
+            RawLog(
+                "mx.example.com",
+                "postfix/cleanup",
+                "AAA111: message-id=<case@test.example>",
+                "2026-01-01T00:00:00Z",
+                "AAA111",
+            ),
+            RawLog(
+                "mx.example.com",
+                "postfix/smtp",
+                "AAA111: relay=mailer1.example.com, status=sent "
+                "(250 OK id=1ABCDEF-123456-78), "
+                "delays=0.1/0.2/0.3/0.4",
+                "2026-01-01T00:00:01Z",
+                "AAA111",
+            ),
+            RawLog(
+                "mailer1.example.com",
+                "exim4",
+                "1ABCDEF-123456-78 <= sender@test.example RT=0.05s",
+                "2026-01-01T00:00:02Z",
+                "1ABCDEF-123456-78",
+            ),
+            RawLog(
+                "mailer1.example.com",
+                "exim4",
+                "1ABCDEF-123456-78 => user@test.example DT=0.20s",
+                "2026-01-01T00:00:03Z",
+                "1ABCDEF-123456-78",
+            ),
+            RawLog(
+                "mailer1.example.com",
+                "exim4",
+                "1ABCDEF-123456-78 Completed QT=0.50s",
+                "2026-01-01T00:00:04Z",
+                "1ABCDEF-123456-78",
+            ),
+        ]
+
+        delays = build_raw_delays(logs, {message_id})[message_id]
+
+        self.assertEqual(
+            delays[("mx.example.com", "AAA111")],
+            [
+                {
+                    "before_qmgr": 0.1,
+                    "in_qmgr": 0.2,
+                    "conn_setup": 0.3,
+                    "transmission": 0.4,
+                }
+            ],
+        )
+        self.assertEqual(
+            delays[("mailer1.example.com", "1ABCDEF-123456-78")],
+            [
+                {
+                    "receive_time": 0.05,
+                    "queue_time": 0.25,
+                    "deliver_time": 0.2,
+                }
+            ],
         )
 
 
