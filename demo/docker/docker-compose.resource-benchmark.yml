@@ -6,7 +6,7 @@ services:
         ipv4_address: 192.168.201.50
 
   opensearch:
-    environment:
+    environment: !override
       - cluster.name=mailtrace-resource-benchmark
       - node.name=opensearch
       - discovery.type=single-node
