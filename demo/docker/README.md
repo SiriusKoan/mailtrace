@@ -113,6 +113,140 @@ The override only changes the isolated network, host ports, health checks,
 Vector configuration, and the mailtrace daemon. `bench_resource_rates.py`
 automatically uses both Compose files.
 
+## Benchmark scripts
+
+Except for `bench_resource_rates.py`, which manages its own isolated Compose
+stack, these commands expect the Docker demo environment to be running.
+
+### Tracing performance and structure
+
+`bench_tracing.py` sends each configured batch of messages, queries the
+corresponding OpenSearch logs, builds and exports OTLP spans, and measures the
+query, span-building, flush, total, and per-trace times. It also compares the
+generated host/stage structure with the structure inferred from the complete
+log set, reporting exact, malformed, and missing traces.
+
+The following example uses the default batch sizes of 10, 50, 100, and 1,000
+messages and runs each size ten times:
+
+```shell
+uv run python demo/docker/bench_tracing.py --runs 10
+```
+
+### Random missing-log robustness
+
+`bench_random_missing_logs.py` builds a full-log baseline, randomly removes
+each configured fraction of log entries, and reconstructs traces from the
+remaining logs. Across repeated trials it reports exact, malformed, and
+missing trace percentages plus mean span, delay-stage, and edge recall.
+
+This example sends 100 messages per trial, runs ten trials, and includes a 0%
+control in addition to missing-log ratios from 10% through 70%:
+
+```shell
+uv run python demo/docker/bench_random_missing_logs.py \
+  --size 100 \
+  --trials 10 \
+  --missing-ratios 0 0.1 0.2 0.3 0.4 0.5 0.6 0.7
+```
+
+### Host-ablation robustness
+
+`bench_host_ablation.py` builds a full-log trace baseline and then removes all
+logs from one host at a time. It classifies each reconstructed trace as
+unchanged, missing only the removed host, changed on other hosts, or
+disappeared, and reports retained span, stage, and edge recall.
+
+This example sends 100 messages through the mailer-entrypoint team-alias path
+and evaluates every host found in the resulting logs:
+
+```shell
+uv run python demo/docker/bench_host_ablation.py \
+  --size 100 \
+  --traffic-path mailer-team
+```
+
+### Production daemon correctness
+
+`bench_daemon_correctness.py` starts the production tracing CLI for each
+polling-parameter set, sends test messages, derives expected traces from
+complete OpenSearch logs, reads generated traces from Tempo, and compares
+their structures. After each parameter set finishes, the script prints that
+set's mean and sample standard deviation. It prints the complete aggregate
+table again after all parameter sets finish.
+
+This example evaluates the full combination of the listed hold-round and
+look-back values, running each parameter set ten times:
+
+```shell
+uv run python demo/docker/bench_daemon_correctness.py \
+  --runs 10 \
+  --hold-values 0 1 2 3 4 5 10 \
+  --go-back-values 0 3 5 10 30
+```
+
+### Handoff correctness
+
+`bench_handoff_correctness.py` sends 16 fixed routing scenarios covering MX
+and mailer entrypoints, all three domains, aliases, shared routes, and repeated
+hosts. It cross-checks mailbox `Received` chains, independently parsed raw
+OpenSearch handoffs and delays, and spans produced by `export_traces`. The JSON
+report includes route, graph, handoff-attribute, delay-value, and span-duration
+checks. Failed correctness checks are recorded in the report but return status
+code `0`; infrastructure failures return a non-zero status.
+
+Run all scenarios with the default ports and timeout:
+
+```shell
+uv run python demo/docker/bench_handoff_correctness.py
+```
+
+### Timestamp-only handoff comparison
+
+`bench_handoff_timestamp.py` compares the current queue-handoff topology with
+a timestamp-only topology over its fixed one-day OpenSearch dataset. It
+replays production query windows and lifecycle behavior, then reports complete
+host-order and topology matches plus edge precision, recall, and F1. Synthetic
+topology and queue-mapping validation runs before the dataset comparison.
+
+Run the complete fixed-dataset comparison and write the default JSON result:
+
+```shell
+uv run python demo/docker/bench_handoff_timestamp.py
+```
+
+### Container resource sampler
+
+`bench_resources.py` resolves a Docker container's cgroup v2 path and samples
+CPU usage and current memory approximately once per second. It appends samples
+to CSV and writes a JSON summary to standard output when interrupted or when
+the container stops.
+
+This example monitors the Compose `mailtrace` service and writes samples to
+`/tmp/mailtrace-resources.csv`. Press Ctrl-C to stop it and print the summary:
+
+```shell
+uv run python demo/docker/bench_resources.py \
+  --container "$(docker compose -f demo/docker/docker-compose.yml ps -q mailtrace)" \
+  --output /tmp/mailtrace-resources.csv
+```
+
+### Resource usage by email rate
+
+`bench_resource_rates.py` cleans, builds, starts, and finally removes an
+isolated benchmark Compose stack. At each configured email rate it drives
+traffic, monitors the `mailtrace` container through `bench_resources.py`,
+waits for Postfix and Exim queues to drain, and verifies the generated trace
+count. Each run produces resource CSV and JSON files, an SVG CPU chart, and
+sender and trace logs.
+
+Run the default rates of 10, 20, 50, 100, 200, and 500 messages per second for
+600 seconds each:
+
+```shell
+uv run python demo/docker/bench_resource_rates.py
+```
+
 ## Additional traffic generators
 
 ```shell

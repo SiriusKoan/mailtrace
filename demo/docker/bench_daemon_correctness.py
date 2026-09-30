@@ -597,6 +597,53 @@ def aggregated_result_to_json(
     }
 
 
+def print_aggregated_table(results: list[AggregatedResult]) -> None:
+    """Print aggregate correctness results for completed parameter sets."""
+    headers = [
+        "sleep",
+        "hold",
+        "go_back",
+        "runs",
+        "expected_mean±std",
+        "generated_mean±std",
+        "exact_mean±std",
+        "malformed_mean±std",
+        "missing_mean±std",
+        "exact_pct_mean±std",
+    ]
+    rows = [
+        [
+            str(result.params.sleep_seconds),
+            str(result.params.hold_rounds),
+            str(result.params.go_back_seconds),
+            str(result.runs),
+            f"{result.expected_mean:.3f}±{result.expected_std:.3f}",
+            f"{result.generated_mean:.3f}±{result.generated_std:.3f}",
+            f"{result.exact_mean:.3f}±{result.exact_std:.3f}",
+            f"{result.malformed_mean:.3f}±{result.malformed_std:.3f}",
+            f"{result.missing_mean:.3f}±{result.missing_std:.3f}",
+            f"{result.exact_pct_mean:.3f}±{result.exact_pct_std:.3f}",
+        ]
+        for result in results
+    ]
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
+    print(
+        " | ".join(
+            header.rjust(widths[index]) for index, header in enumerate(headers)
+        )
+    )
+    print("-+-".join("-" * width for width in widths))
+    for row in rows:
+        print(
+            " | ".join(
+                cell.rjust(widths[index]) for index, cell in enumerate(row)
+            )
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build CLI parser."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -687,9 +734,13 @@ def main() -> int:
                 )
                 results.append(result)
                 repeated_results.append(result)
-            aggregated_results.append(
-                aggregate_results(params, repeated_results)
-            )
+            aggregated = aggregate_results(params, repeated_results)
+            aggregated_results.append(aggregated)
+            if not args.json:
+                print()
+                print("Completed parameter set:")
+                print_aggregated_table([aggregated])
+                print()
 
         print()
         if args.json:
@@ -711,7 +762,8 @@ def main() -> int:
                     )
                 )
         else:
-            print_table(results)
+            print("Complete results:")
+            print_aggregated_table(aggregated_results)
         return 0
     finally:
         if args.keep_temp:
