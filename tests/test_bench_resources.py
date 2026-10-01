@@ -99,20 +99,41 @@ class ParsingTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "escapes"):
                 bench_resources.resolve_cgroup_path(123, root, proc)
 
-    def test_parses_cpu_and_memory_values(self) -> None:
-        cpu = "usage_usec 12345\nuser_usec 10000\nsystem_usec 2345\n"
+    def test_parses_cpu_memory_process_and_event_values(self) -> None:
+        cpu = "\n".join(
+            (
+                "usage_usec 12345",
+                "user_usec 10000",
+                "system_usec 2345",
+                "nr_periods 20",
+                "nr_throttled 3",
+                "throttled_usec 456",
+            )
+        )
 
-        self.assertEqual(bench_resources.parse_cpu_usage_usec(cpu), 12345)
+        self.assertEqual(bench_resources.parse_cpu_stat(cpu), (12345, 3, 456))
         self.assertEqual(bench_resources.parse_memory_current("4096\n"), 4096)
+        self.assertEqual(
+            bench_resources.parse_nonnegative_integer("7\n", "pids.current"),
+            7,
+        )
+        self.assertEqual(
+            bench_resources.parse_memory_events(
+                "low 0\nhigh 0\nmax 2\noom 1\noom_kill 1\n"
+            ),
+            (1, 1),
+        )
         self.assertTrue(
             bench_resources.parse_cgroup_populated("populated 1\n")
         )
 
     def test_rejects_invalid_resource_values(self) -> None:
         with self.assertRaises(ValueError):
-            bench_resources.parse_cpu_usage_usec("usage_usec invalid\n")
+            bench_resources.parse_cpu_stat("usage_usec invalid\n")
         with self.assertRaises(ValueError):
             bench_resources.parse_memory_current("-1\n")
+        with self.assertRaises(ValueError):
+            bench_resources.parse_nonnegative_integer("-1\n", "pids.current")
 
     def test_calculates_single_core_cpu_percent(self) -> None:
         self.assertEqual(bench_resources.cpu_percent(2_500_000, 1.0), 250.0)
@@ -174,9 +195,9 @@ class CollectionTest(unittest.TestCase):
         reader = FakeReader(
             clock,
             [
-                bench_resources.ResourceSample(100, 1000),
-                bench_resources.ResourceSample(600, 2000),
-                bench_resources.ResourceSample(800, 3000),
+                bench_resources.ResourceSample(100, 1000, 2, 3, 30, 0, 0),
+                bench_resources.ResourceSample(600, 2000, 4, 5, 80, 1, 0),
+                bench_resources.ResourceSample(800, 3000, 3, 6, 100, 1, 1),
             ],
         )
 
@@ -194,6 +215,15 @@ class CollectionTest(unittest.TestCase):
         self.assertEqual(summary["memory_current_bytes_average"], 2000)
         self.assertEqual(summary["memory_current_bytes_min"], 1000)
         self.assertEqual(summary["memory_current_bytes_max"], 3000)
+        self.assertEqual(summary["pids_current_start"], 2)
+        self.assertEqual(summary["pids_current_end"], 3)
+        self.assertEqual(summary["pids_current_average"], 3)
+        self.assertEqual(summary["pids_current_min"], 2)
+        self.assertEqual(summary["pids_current_max"], 4)
+        self.assertEqual(summary["cpu_throttled_count_delta"], 3)
+        self.assertEqual(summary["cpu_throttled_usec_delta"], 70)
+        self.assertEqual(summary["memory_oom_count_delta"], 1)
+        self.assertEqual(summary["memory_oom_kill_count_delta"], 1)
         self.assertEqual(summary["stop_reason"], "signal")
 
     def test_ctrl_c_stops_with_signal_reason(self) -> None:
@@ -462,17 +492,34 @@ class RateBenchmarkTest(unittest.TestCase):
         self.assertEqual(report["error"], "experiment interrupted")
         self.assertEqual(cleanup.call_count, 2)
 
-    def test_sums_generated_trace_counts(self) -> None:
+    def test_counts_tracing_workload_from_log_output(self) -> None:
         log_output = "\n".join(
             [
+                "INFO - Found 120 log entries from index",
                 "INFO -   Traces generated 12",
                 "INFO - unrelated",
+                "INFO - Found 80 log entries from index",
                 "INFO -   Traces generated 8",
             ]
         )
 
         self.assertEqual(
             bench_resource_rates.count_generated_traces(log_output), 20
+        )
+        self.assertEqual(
+            bench_resource_rates.count_queried_log_entries(log_output),
+            (2, 200),
+        )
+
+    def test_parses_sender_completion_counts(self) -> None:
+        output = (
+            "Completed! Sent 29753 emails, failed 247, "
+            "in 601.71 seconds (49.45 emails/sec)"
+        )
+
+        self.assertEqual(
+            bench_resource_rates.parse_sender_completion(output),
+            (29753, 247, 601.71),
         )
 
     def test_waits_until_trace_count_reaches_expected_count(self) -> None:

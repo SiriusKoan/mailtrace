@@ -9,13 +9,18 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, TextIO, Tuple
+from typing import Any, Callable, Optional, TextIO, Tuple
 
 CSV_FIELDS = (
     "timestamp",
     "cpu_usage_usec_delta",
     "cpu_percent",
     "memory_current_bytes",
+    "pids_current",
+    "cpu_throttled_count_delta",
+    "cpu_throttled_usec_delta",
+    "memory_oom_count_delta",
+    "memory_oom_kill_count_delta",
 )
 SUMMARY_FIELDS = (
     "container",
@@ -26,11 +31,20 @@ SUMMARY_FIELDS = (
     "cpu_usage_usec_delta",
     "cpu_percent_average",
     "cpu_percent_max",
+    "cpu_throttled_count_delta",
+    "cpu_throttled_usec_delta",
     "memory_current_bytes_start",
     "memory_current_bytes_end",
     "memory_current_bytes_average",
     "memory_current_bytes_min",
     "memory_current_bytes_max",
+    "pids_current_start",
+    "pids_current_end",
+    "pids_current_average",
+    "pids_current_min",
+    "pids_current_max",
+    "memory_oom_count_delta",
+    "memory_oom_kill_count_delta",
     "stop_reason",
 )
 CGROUP_ROOT = Path("/sys/fs/cgroup")
@@ -43,6 +57,11 @@ POLL_INTERVAL_SECONDS = 0.1
 class ResourceSample:
     cpu_usage_usec: int
     memory_current_bytes: int
+    pids_current: int = 0
+    cpu_throttled_count: int = 0
+    cpu_throttled_usec: int = 0
+    memory_oom_count: int = 0
+    memory_oom_kill_count: int = 0
 
 
 def _parse_key_values(text: str, source: str) -> dict[str, int]:
@@ -77,12 +96,17 @@ def parse_cgroup_v2_path(text: str) -> str:
     return unified_path
 
 
-def parse_cpu_usage_usec(text: str) -> int:
+def parse_cpu_stat(text: str) -> tuple[int, int, int]:
+    """Return cumulative usage and throttling counters from cpu.stat."""
     values = _parse_key_values(text, "cpu.stat")
     try:
-        return values["usage_usec"]
+        return (
+            values["usage_usec"],
+            values["nr_throttled"],
+            values["throttled_usec"],
+        )
     except KeyError as exc:
-        raise ValueError("cpu.stat does not contain usage_usec") from exc
+        raise ValueError(f"cpu.stat does not contain {exc.args[0]}") from exc
 
 
 def parse_memory_current(text: str) -> int:
@@ -93,6 +117,28 @@ def parse_memory_current(text: str) -> int:
     if value < 0:
         raise ValueError("negative memory.current value")
     return value
+
+
+def parse_nonnegative_integer(text: str, source: str) -> int:
+    """Parse one non-negative cgroup integer."""
+    try:
+        value = int(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"invalid {source} data") from exc
+    if value < 0:
+        raise ValueError(f"negative {source} value")
+    return value
+
+
+def parse_memory_events(text: str) -> tuple[int, int]:
+    """Return cumulative OOM and OOM-kill counters from memory.events."""
+    values = _parse_key_values(text, "memory.events")
+    try:
+        return values["oom"], values["oom_kill"]
+    except KeyError as exc:
+        raise ValueError(
+            f"memory.events does not contain {exc.args[0]}"
+        ) from exc
 
 
 def parse_cgroup_populated(text: str) -> bool:
@@ -178,13 +224,28 @@ class CgroupReader:
         )
 
     def read_sample(self) -> ResourceSample:
-        cpu = parse_cpu_usage_usec(
+        cpu, throttled_count, throttled_usec = parse_cpu_stat(
             (self.cgroup_path / "cpu.stat").read_text(encoding="utf-8")
         )
         memory = parse_memory_current(
             (self.cgroup_path / "memory.current").read_text(encoding="utf-8")
         )
-        return ResourceSample(cpu, memory)
+        pids = parse_nonnegative_integer(
+            (self.cgroup_path / "pids.current").read_text(encoding="utf-8"),
+            "pids.current",
+        )
+        oom_count, oom_kill_count = parse_memory_events(
+            (self.cgroup_path / "memory.events").read_text(encoding="utf-8")
+        )
+        return ResourceSample(
+            cpu,
+            memory,
+            pids,
+            throttled_count,
+            throttled_usec,
+            oom_count,
+            oom_kill_count,
+        )
 
     def is_active(self) -> bool:
         try:
@@ -203,7 +264,7 @@ class CgroupReader:
         )
 
 
-def open_output_csv(path: Path) -> Tuple[TextIO, csv.writer]:
+def open_output_csv(path: Path) -> Tuple[TextIO, Any]:
     output = path.open("a+", encoding="utf-8", newline="")
     try:
         output.seek(0)
@@ -224,6 +285,13 @@ def open_output_csv(path: Path) -> Tuple[TextIO, csv.writer]:
         raise
 
 
+def _counter_delta(first: int, last: int, name: str) -> int:
+    delta = last - first
+    if delta < 0:
+        raise ValueError(f"{name} counter moved backwards")
+    return delta
+
+
 def _summary(
     container: str,
     started_wall: float,
@@ -234,13 +302,14 @@ def _summary(
     first: ResourceSample,
     last: ResourceSample,
     memories: list[int],
+    pids: list[int],
     interval_percentages: list[float],
     stop_reason: str,
 ) -> dict[str, object]:
     wall_time = max(0.0, ended_mono - started_mono)
-    cpu_delta = last.cpu_usage_usec - first.cpu_usage_usec
-    if cpu_delta < 0:
-        raise ValueError("CPU usage counter moved backwards")
+    cpu_delta = _counter_delta(
+        first.cpu_usage_usec, last.cpu_usage_usec, "CPU usage"
+    )
     average = cpu_percent(cpu_delta, wall_time) if wall_time else 0.0
     return {
         "container": container,
@@ -251,11 +320,34 @@ def _summary(
         "cpu_usage_usec_delta": cpu_delta,
         "cpu_percent_average": average,
         "cpu_percent_max": max(interval_percentages, default=0.0),
+        "cpu_throttled_count_delta": _counter_delta(
+            first.cpu_throttled_count,
+            last.cpu_throttled_count,
+            "CPU throttled",
+        ),
+        "cpu_throttled_usec_delta": _counter_delta(
+            first.cpu_throttled_usec,
+            last.cpu_throttled_usec,
+            "CPU throttled time",
+        ),
         "memory_current_bytes_start": first.memory_current_bytes,
         "memory_current_bytes_end": last.memory_current_bytes,
         "memory_current_bytes_average": sum(memories) / len(memories),
         "memory_current_bytes_min": min(memories),
         "memory_current_bytes_max": max(memories),
+        "pids_current_start": first.pids_current,
+        "pids_current_end": last.pids_current,
+        "pids_current_average": sum(pids) / len(pids),
+        "pids_current_min": min(pids),
+        "pids_current_max": max(pids),
+        "memory_oom_count_delta": _counter_delta(
+            first.memory_oom_count, last.memory_oom_count, "memory OOM"
+        ),
+        "memory_oom_kill_count_delta": _counter_delta(
+            first.memory_oom_kill_count,
+            last.memory_oom_kill_count,
+            "memory OOM kill",
+        ),
         "stop_reason": stop_reason,
     }
 
@@ -278,6 +370,7 @@ def collect_resources(
         last = first
         last_mono = started_mono
         memories = [first.memory_current_bytes]
+        pids = [first.pids_current]
         percentages: list[float] = []
         sample_count = 0
         next_deadline = started_mono + SAMPLE_INTERVAL_SECONDS
@@ -298,7 +391,11 @@ def collect_resources(
                         break
                     current = reader.read_sample()
                     current_mono = monotonic()
-                    delta = current.cpu_usage_usec - last.cpu_usage_usec
+                    delta = _counter_delta(
+                        last.cpu_usage_usec,
+                        current.cpu_usage_usec,
+                        "CPU usage",
+                    )
                     percent = cpu_percent(delta, current_mono - last_mono)
                     writer.writerow(
                         (
@@ -306,11 +403,33 @@ def collect_resources(
                             delta,
                             percent,
                             current.memory_current_bytes,
+                            current.pids_current,
+                            _counter_delta(
+                                last.cpu_throttled_count,
+                                current.cpu_throttled_count,
+                                "CPU throttled",
+                            ),
+                            _counter_delta(
+                                last.cpu_throttled_usec,
+                                current.cpu_throttled_usec,
+                                "CPU throttled time",
+                            ),
+                            _counter_delta(
+                                last.memory_oom_count,
+                                current.memory_oom_count,
+                                "memory OOM",
+                            ),
+                            _counter_delta(
+                                last.memory_oom_kill_count,
+                                current.memory_oom_kill_count,
+                                "memory OOM kill",
+                            ),
                         )
                     )
                     output.flush()
                     sample_count += 1
                     memories.append(current.memory_current_bytes)
+                    pids.append(current.pids_current)
                     percentages.append(percent)
                     last = current
                     last_mono = current_mono
@@ -337,6 +456,7 @@ def collect_resources(
                         cpu_percent(final_delta, final_mono - last_mono)
                     )
                 memories.append(final.memory_current_bytes)
+                pids.append(final.pids_current)
                 last = final
             except ValueError as exc:
                 stop_reason = "read_error"
@@ -361,6 +481,7 @@ def collect_resources(
                 first,
                 last,
                 memories,
+                pids,
                 percentages,
                 stop_reason,
             )
@@ -376,6 +497,7 @@ def collect_resources(
                 first,
                 first,
                 [first.memory_current_bytes],
+                [first.pids_current],
                 [],
                 "read_error",
             )
@@ -394,11 +516,20 @@ def empty_error_summary(container: str, now: float) -> dict[str, object]:
         "cpu_usage_usec_delta": 0,
         "cpu_percent_average": 0.0,
         "cpu_percent_max": 0.0,
+        "cpu_throttled_count_delta": 0,
+        "cpu_throttled_usec_delta": 0,
         "memory_current_bytes_start": None,
         "memory_current_bytes_end": None,
         "memory_current_bytes_average": None,
         "memory_current_bytes_min": None,
         "memory_current_bytes_max": None,
+        "pids_current_start": None,
+        "pids_current_end": None,
+        "pids_current_average": None,
+        "pids_current_min": None,
+        "pids_current_max": None,
+        "memory_oom_count_delta": 0,
+        "memory_oom_kill_count_delta": 0,
         "stop_reason": "read_error",
     }
 

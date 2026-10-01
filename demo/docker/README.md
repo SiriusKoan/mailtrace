@@ -218,9 +218,10 @@ uv run python demo/docker/bench_handoff_timestamp.py
 ### Container resource sampler
 
 `bench_resources.py` resolves a Docker container's cgroup v2 path and samples
-CPU usage and current memory approximately once per second. It appends samples
-to CSV and writes a JSON summary to standard output when interrupted or when
-the container stops.
+CPU usage, CPU throttling, current memory, process count, and OOM events
+approximately once per second. It appends samples to CSV and writes a JSON
+summary, including cumulative counter deltas and process-count extrema, to
+standard output when interrupted or when the container stops.
 
 This example monitors the Compose `mailtrace` service and writes samples to
 `/tmp/mailtrace-resources.csv`. Press Ctrl-C to stop it and print the summary:
@@ -237,8 +238,12 @@ uv run python demo/docker/bench_resources.py \
 isolated benchmark Compose stack. At each configured email rate it drives
 traffic, monitors the `mailtrace` container through `bench_resources.py`,
 waits for Postfix and Exim queues to drain, and verifies the generated trace
-count. Each run produces resource CSV and JSON files, an SVG CPU chart, and
-sender and trace logs.
+count. Its report records submitted, sent, and failed email counts; generated
+trace and trace-batch counts; OpenSearch query count; and the total number of
+log entries returned across query windows. The queried-log-entry total measures
+work performed and can count an entry more than once when query windows
+overlap. Each run also produces resource CSV and JSON files, an SVG CPU chart,
+and sender and trace logs.
 
 Run the default rates of 10, 20, 50, 100, 200, and 500 messages per second for
 600 seconds each:

@@ -39,6 +39,13 @@ MONITOR_STOP_TIMEOUT_SECONDS = 60.0
 DOCKER_COMMAND_TIMEOUT_SECONDS = 300.0
 DEFAULT_TRACE_POLL_INTERVAL_SECONDS = 120.0
 TRACE_COUNT_PATTERN = re.compile(r"Traces generated\s+(\d+)\s*$", re.MULTILINE)
+LOG_ENTRY_COUNT_PATTERN = re.compile(
+    r"Found\s+(\d+)\s+log entries from index\s*$", re.MULTILINE
+)
+SENDER_COMPLETION_PATTERN = re.compile(
+    r"Completed! Sent\s+(\d+)\s+emails, failed\s+(\d+), "
+    r"in\s+([0-9]+(?:\.[0-9]+)?)\s+seconds"
+)
 
 
 def default_output_dir() -> Path:
@@ -278,11 +285,34 @@ def count_generated_traces(log_output: str) -> int:
     )
 
 
+def count_queried_log_entries(log_output: str) -> tuple[int, int]:
+    """Return query count and total entries returned across query windows."""
+    query_count = 0
+    log_entry_count = 0
+    for match in LOG_ENTRY_COUNT_PATTERN.finditer(log_output):
+        query_count += 1
+        log_entry_count += int(match.group(1))
+    return query_count, log_entry_count
+
+
+def parse_sender_completion(
+    log_output: str,
+) -> Optional[tuple[int, int, float]]:
+    """Return the sender's successful, failed, and elapsed totals."""
+    match = SENDER_COMPLETION_PATTERN.search(log_output)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2)), float(match.group(3))
+
+
 class TraceLogFollower:
     """Stream container logs and count generated traces without rereading history."""
 
     def __init__(self, container: str, since: str, output_path: Path) -> None:
         self._trace_count = 0
+        self._trace_batch_count = 0
+        self._log_query_count = 0
+        self._queried_log_entry_count = 0
         self._lock = threading.Lock()
         self._output = output_path.open("w", encoding="utf-8")
         self._process = subprocess.Popen(
@@ -300,10 +330,18 @@ class TraceLogFollower:
         for line in self._process.stdout:
             self._output.write(line)
             self._output.flush()
-            increment = count_generated_traces(line)
-            if increment:
+            trace_count = 0
+            trace_batch_count = 0
+            for match in TRACE_COUNT_PATTERN.finditer(line):
+                trace_count += int(match.group(1))
+                trace_batch_count += 1
+            query_count, log_entry_count = count_queried_log_entries(line)
+            if trace_batch_count or query_count:
                 with self._lock:
-                    self._trace_count += increment
+                    self._trace_count += trace_count
+                    self._trace_batch_count += trace_batch_count
+                    self._log_query_count += query_count
+                    self._queried_log_entry_count += log_entry_count
 
     def trace_count(self) -> int:
         """Return the trace total observed by the log stream."""
@@ -314,6 +352,16 @@ class TraceLogFollower:
             )
         with self._lock:
             return self._trace_count
+
+    def metrics(self) -> dict[str, int]:
+        """Return an atomic snapshot of observed tracing workload counts."""
+        with self._lock:
+            return {
+                "trace_count": self._trace_count,
+                "trace_batch_count": self._trace_batch_count,
+                "log_query_count": self._log_query_count,
+                "queried_log_entry_count": self._queried_log_entry_count,
+            }
 
     def close(self) -> None:
         """Stop the Docker log stream and close its output file."""
@@ -473,6 +521,10 @@ def run_rate(
     run_error: Optional[str] = None
     submitted_email_count = int(rate * duration)
     trace_count: Optional[int] = None
+    sent_email_count: Optional[int] = None
+    failed_email_count: Optional[int] = None
+    sender_elapsed_seconds: Optional[float] = None
+    trace_metrics: Optional[dict[str, int]] = None
     case_started_at: Optional[str] = None
     postfix_containers = queue_containers or []
 
@@ -530,9 +582,24 @@ def run_rate(
         finally:
             if trace_follower is not None:
                 trace_follower.close()
+                trace_metrics = trace_follower.metrics()
+                trace_count = trace_metrics["trace_count"]
             if monitor is not None:
                 monitor_status = stop_monitor(monitor)
 
+    try:
+        sender_completion = parse_sender_completion(
+            sender_log_path.read_text(encoding="utf-8")
+        )
+    except OSError as exc:
+        run_error = run_error or f"could not read sender log: {exc}"
+    else:
+        if sender_completion is not None:
+            (
+                sent_email_count,
+                failed_email_count,
+                sender_elapsed_seconds,
+            ) = sender_completion
     resource_summary: Optional[dict[str, object]] = None
     try:
         resource_summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -566,7 +633,19 @@ def run_rate(
         "trace_log": str(trace_log_path) if trace_container else None,
         "started_at": case_started_at,
         "submitted_email_count": submitted_email_count,
+        "sent_email_count": sent_email_count,
+        "failed_email_count": failed_email_count,
+        "sender_elapsed_seconds": sender_elapsed_seconds,
         "trace_count": trace_count,
+        "trace_batch_count": (
+            trace_metrics["trace_batch_count"] if trace_metrics else None
+        ),
+        "log_query_count": (
+            trace_metrics["log_query_count"] if trace_metrics else None
+        ),
+        "queried_log_entry_count": (
+            trace_metrics["queried_log_entry_count"] if trace_metrics else None
+        ),
         "trace_count_matches": (
             trace_requirement_met if trace_container is not None else None
         ),
