@@ -237,8 +237,9 @@ uv run python demo/docker/bench_resources.py \
 `bench_resource_rates.py` cleans, builds, starts, and finally removes an
 isolated benchmark Compose stack. At each configured email rate it drives
 traffic, monitors the `mailtrace` container through `bench_resources.py`,
-waits for Postfix and Exim queues to drain, and verifies the generated trace
-count. Its report records submitted, sent, and failed email counts; generated
+waits for the generated trace count to reach the submitted email count, and
+then reports any remaining Postfix and Exim queues. Its report records
+submitted, sent, and failed email counts; generated
 trace and trace-batch counts; OpenSearch query count; and the total number of
 log entries returned across query windows. The queried-log-entry total measures
 work performed and can count an entry more than once when query windows
@@ -250,6 +251,17 @@ Run the default rates of 10, 20, 50, 100, 200, and 500 messages per second for
 
 ```shell
 uv run python demo/docker/bench_resource_rates.py
+```
+
+Trace completion progress is printed to stderr immediately when sending starts
+and every `--trace-poll-interval` seconds while sending and waiting for traces
+(default: 120 seconds). Sending-phase progress is marked `(sending emails)`;
+reaching the trace target does not stop the sender early. Sender and trace log
+paths are printed at the start of each rate; sender output stays in its log file.
+For progress every 10 seconds:
+
+```shell
+uv run python demo/docker/bench_resource_rates.py --trace-poll-interval 10
 ```
 
 ## Additional traffic generators

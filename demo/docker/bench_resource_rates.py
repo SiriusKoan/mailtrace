@@ -434,6 +434,28 @@ def exim_queue_is_empty(container: str) -> bool:
         ) from exc
 
 
+def wait_for_sender(
+    process: subprocess.Popen[str],
+    trace_follower: Optional[TraceLogFollower],
+    expected_trace_count: int,
+    poll_interval: float,
+) -> int:
+    """Report trace progress while waiting for email submission to finish."""
+    if trace_follower is None:
+        return process.wait()
+    while True:
+        print(
+            f"Trace completion: {trace_follower.trace_count()}/"
+            f"{expected_trace_count} (sending emails)",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            return process.wait(timeout=poll_interval)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def wait_for_trace_completion(
     trace_follower: TraceLogFollower,
     queue_containers: list[str],
@@ -513,8 +535,12 @@ def run_rate(
         file=sys.stderr,
         flush=True,
     )
+    print(f"Sender log: {sender_log_path}", file=sys.stderr, flush=True)
+    if trace_container is not None:
+        print(f"Trace log: {trace_log_path}", file=sys.stderr, flush=True)
 
     monitor: Optional[subprocess.Popen[str]] = None
+    sender: Optional[subprocess.Popen[str]] = None
     trace_follower: Optional[TraceLogFollower] = None
     sender_status = 1
     monitor_status = 1
@@ -553,7 +579,7 @@ def run_rate(
                 trace_follower = TraceLogFollower(
                     trace_container, case_started_at, trace_log_path
                 )
-            sender_status = subprocess.run(
+            sender = subprocess.Popen(
                 [
                     sys.executable,
                     str(SENDER_SCRIPT),
@@ -567,8 +593,13 @@ def run_rate(
                 stdout=sender_log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
-                check=False,
-            ).returncode
+            )
+            sender_status = wait_for_sender(
+                sender,
+                trace_follower,
+                submitted_email_count,
+                trace_poll_interval,
+            )
             if sender_status == 0 and trace_follower is not None:
                 trace_count = wait_for_trace_completion(
                     trace_follower,
@@ -580,6 +611,13 @@ def run_rate(
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             run_error = str(exc)
         finally:
+            if sender is not None and sender.poll() is None:
+                sender.terminate()
+                try:
+                    sender.wait(timeout=DOCKER_COMMAND_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    sender.kill()
+                    sender.wait()
             if trace_follower is not None:
                 trace_follower.close()
                 trace_metrics = trace_follower.metrics()
@@ -801,6 +839,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=float,
         default=DEFAULT_TRACE_POLL_INTERVAL_SECONDS,
         metavar="SECONDS",
+        help=(
+            "trace progress interval while sending and waiting "
+            "(default: %(default)s seconds)"
+        ),
     )
     args = parser.parse_args(argv)
     if any(rate <= 0 for rate in args.rates):

@@ -2,7 +2,9 @@ import csv
 import io
 import json
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -521,6 +523,43 @@ class RateBenchmarkTest(unittest.TestCase):
             bench_resource_rates.parse_sender_completion(output),
             (29753, 247, 601.71),
         )
+
+    def test_reports_progress_before_sender_exits_even_when_traces_are_ready(
+        self,
+    ) -> None:
+        trace_follower = Mock()
+        trace_follower.trace_count.return_value = 20
+        with subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.readline(); sys.exit(7)"],
+            stdin=subprocess.PIPE,
+            text=True,
+        ) as sender:
+            running_updates = []
+
+            class ProgressOutput(io.StringIO):
+                def write(self, text: str) -> int:
+                    if text == "\n":
+                        running_updates.append(sender.poll() is None)
+                        if len(running_updates) == 2:
+                            assert sender.stdin is not None
+                            sender.stdin.write("finish\n")
+                            sender.stdin.flush()
+                    return super().write(text)
+
+            watchdog = threading.Timer(10.0, sender.kill)
+            watchdog.start()
+            try:
+                with redirect_stderr(ProgressOutput()):
+                    status = bench_resource_rates.wait_for_sender(
+                        sender, trace_follower, 20, 0.01
+                    )
+                self.assertEqual(status, 7)
+                self.assertEqual(running_updates[:2], [True, True])
+            finally:
+                watchdog.cancel()
+                watchdog.join()
+                if sender.poll() is None:
+                    sender.kill()
 
     def test_waits_until_trace_count_reaches_expected_count(self) -> None:
         trace_follower = Mock()
