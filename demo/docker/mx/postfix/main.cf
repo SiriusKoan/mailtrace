@@ -89,3 +89,6 @@ smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated reject_un
 myhostname = mx.example.com
 inet_interfaces = all
 relay_domains = 1.example.com, 2.example.com, 3.example.com
+
+# Leave headroom for the benchmark sender's 64 concurrent workers.
+smtpd_client_connection_count_limit = 100

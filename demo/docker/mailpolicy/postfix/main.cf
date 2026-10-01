@@ -93,3 +93,6 @@ relay_domains = 1.example.com, 2.example.com, 3.example.com, delivery.example.co
 smtpd_sasl_auth_enable = yes
 smtpd_sasl_type = dovecot
 smtpd_sasl_path = inet:mailbox.example.com:12345
+
+# Keep relay fan-out below an explicit, host-independent ceiling.
+smtpd_client_connection_count_limit = 100

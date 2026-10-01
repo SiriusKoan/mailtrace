@@ -83,8 +83,14 @@ def send_message(conf):
             msg["Message-ID"],
         )
         return True
-    except Exception as e:
-        logger.error(f"Error: {e}")
+    except Exception as exc:
+        logger.error(
+            "SMTP %s:%s to %s failed: %s",
+            conf["server"],
+            conf["port"],
+            ", ".join(conf["to"]),
+            exc,
+        )
         return False
 
 

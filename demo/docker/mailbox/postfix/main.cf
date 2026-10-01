@@ -91,3 +91,6 @@ inet_interfaces = all
 smtpd_sasl_auth_enable = yes
 smtpd_sasl_type = dovecot
 smtpd_sasl_path = inet:127.0.0.1:12345
+
+# Keep relay fan-out below an explicit, host-independent ceiling.
+smtpd_client_connection_count_limit = 100
