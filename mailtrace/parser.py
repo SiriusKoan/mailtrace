@@ -21,7 +21,10 @@ _POSTFIX_QUEUE_ID_RE = re.compile(
 # Regex patterns for parsing Postfix log messages
 _SMTP_CODE_RE = re.compile(r"([0-9]{3})\s")
 _QUEUED_AS_RE = re.compile(
-    r"(?:(?:queued as|forwarded as)\s+|id=)(?P<id>[0-9A-Za-z\-]+)"
+    r"(?:queued as|forwarded as)\s+(?P<id>[0-9A-Za-z\-]+)"
+)
+_POSTFIX_STATUS_ID_RE = re.compile(
+    r"\bstatus=sent\s+\([^)]*\bid=(?P<id>[0-9A-Za-z\-]+)"
 )
 _RELAY_RE = re.compile(
     r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
@@ -57,12 +60,20 @@ def check_mail_id_valid(mail_id: str) -> bool:
 
 
 def extract_next_mail_id(log_entry: "LogEntry") -> str | None:
-    """Extract the next mail ID from a log entry (structured field or message)."""
+    """Extract the next queue ID from explicit handoff evidence."""
     if log_entry.queued_as:
         return log_entry.queued_as
 
     queued_match = _QUEUED_AS_RE.search(log_entry.message)
-    return queued_match.group("id") if queued_match else None
+    if queued_match:
+        return queued_match.group("id")
+
+    service = (log_entry.service or "").lower()
+    if service not in ("postfix/smtp", "postfix/lmtp"):
+        return None
+
+    status_match = _POSTFIX_STATUS_ID_RE.search(log_entry.message)
+    return status_match.group("id") if status_match else None
 
 
 def parse_postfix_relay_info(log_entry: "LogEntry") -> RelayResult | None:
