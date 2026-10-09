@@ -53,6 +53,10 @@ POSTFIX_MESSAGE_ID_FIELD_RE = re.compile(
     r"(?<![\w-])message-id=<[^>]+>", re.IGNORECASE
 )
 EXIM_MESSAGE_ID_FIELD_RE = re.compile(r"(?<![\w-])id=<?[^>\s]+@[^>\s]+>?")
+HANDOFF_QUEUE_TOKEN_RE = re.compile(
+    r"\b(?:queued as|forwarded as)\s+[A-Za-z0-9_-]+", re.IGNORECASE
+)
+SMTP_REPLY_QUEUE_ID_RE = re.compile(r"(?<![\w-])id=[A-Za-z0-9_-]+(?![\w@.-])")
 NEXT_QUEUE_ID_RE = re.compile(
     r"(?:queued as\s+|\bOK id=)([A-Za-z0-9-]+)", re.IGNORECASE
 )
@@ -940,6 +944,123 @@ def handoff_records(logs: list[LogEntry]) -> Counter:
     )
 
 
+def strip_handoff_evidence(log: LogEntry) -> LogEntry:
+    """移除原始與已解析的下游 queue ID，保留本 hop 與 Message-ID。"""
+    message = HANDOFF_QUEUE_TOKEN_RE.sub("", log.message)
+    service = (log.service or "").lower()
+    if service in ("postfix/smtp", "postfix/lmtp") or (
+        service in ("exim", "exim4")
+        and re.search(r"(?:^|\s)(?:=>|->)\s", message)
+    ):
+        message = SMTP_REPLY_QUEUE_ID_RE.sub("", message)
+    return classify_log_entry(replace(log, message=message, queued_as=None))
+
+
+def message_id_records(logs: list[LogEntry]) -> Counter:
+    """逐 hop 比較 Message-ID 欄位原文及紀錄數量。"""
+    records = Counter()
+    for log in logs:
+        patterns = [POSTFIX_MESSAGE_ID_FIELD_RE]
+        if (log.service or "").lower() in ("exim", "exim4") and re.search(
+            r"(?:^|\s)<=\s", log.message
+        ):
+            patterns.append(EXIM_MESSAGE_ID_FIELD_RE)
+        for pattern in patterns:
+            for token in pattern.findall(log.message):
+                records[
+                    (normalize_host(log.hostname), log.mail_id, token)
+                ] += 1
+    return records
+
+
+def benchmark_handoff_ablation(
+    sent: list[SentMessage],
+    mailbox_messages: dict[str, dict[str, bytes]],
+    raw_graphs: dict[str, tuple[set[Hop], set[Edge]]],
+    raw_delays: dict[str, RawDelays],
+    production_groups: dict[str, list[LogEntry]],
+) -> dict[str, Any]:
+    """保留每個 hop 的 Message-ID，驗證移除交接證據後沒有交接邊。"""
+    expected_groups = {
+        message_id: [strip_handoff_evidence(log) for log in group]
+        for message_id, group in production_groups.items()
+    }
+    original_logs = [
+        log for group in production_groups.values() for log in group
+    ]
+    logs = [log for group in expected_groups.values() for log in group]
+    logs.sort(key=lambda log: log.datetime)
+    grouped = group_logs_by_message_id(logs)
+    trace_count, span_graphs = export_span_graphs(grouped)
+    evidence = message_id_records(logs)
+    oracle_nodes = {
+        hop
+        for copies in mailbox_messages.values()
+        for raw_message in copies.values()
+        for hop in received_hops(raw_message)[0]
+    }
+    original_handoff_count = sum(handoff_records(original_logs).values())
+    remaining_handoff_count = sum(handoff_records(logs).values())
+    input_checks = {
+        "log_count_preserved": len(logs) == len(original_logs),
+        "message_id_evidence_preserved": evidence
+        == message_id_records(original_logs),
+        "message_id_at_every_hop": {
+            (host, queue_id) for host, queue_id, _ in evidence
+        }
+        == oracle_nodes,
+        "handoff_tokens_removed": original_handoff_count > 0
+        and remaining_handoff_count == 0,
+        "group_ids": set(grouped) == set(production_groups),
+        "trace_count": trace_count == len(sent),
+    }
+    results = []
+    for item in sent:
+        result = evaluate_case(
+            item,
+            mailbox_messages[item.message_id],
+            raw_graphs[item.message_id],
+            raw_delays[item.message_id],
+            span_graphs.get(item.message_id),
+        )
+        result["expected_trace_edges"] = []
+        # 原始 oracle 保持完整；消融後只接受沒有交接邊的 trace。
+        result["checks"]["trace_edges"] = not result["trace_edges"]
+        result["checks"]["trace_next_attributes"] = all(
+            not row.get("email.next_queue_id")
+            for row in result["trace_attributes"]
+        )
+        result["checks"]["trace_handoff_attributes"] = all(
+            row.get("email.handoff") in ("none", "implicit")
+            for row in result["trace_attributes"]
+        )
+        result["checks"]["log_membership"] = Counter(
+            id(log) for log in grouped.get(item.message_id, [])
+        ) == Counter(id(log) for log in expected_groups[item.message_id])
+        result["passed"] = all(result["checks"].values())
+        results.append(result)
+    return {
+        "mode": "no-handoff-tokens",
+        "input_log_count": len(logs),
+        "message_id_log_count": sum(evidence.values()),
+        "message_id_hop_count": len({record[:2] for record in evidence}),
+        "removed_handoff_record_count": original_handoff_count
+        - remaining_handoff_count,
+        "remaining_handoff_record_count": remaining_handoff_count,
+        "grouped_log_count": sum(len(group) for group in grouped.values()),
+        "expected_trace_count": len(sent),
+        "generated_trace_count": trace_count,
+        "expected_edge_count": 0,
+        "generated_edge_count": sum(
+            len(result["trace_edges"]) for result in results
+        ),
+        "checks": input_checks,
+        "results": results,
+        "passed": all(input_checks.values())
+        and all(result["passed"] for result in results),
+    }
+
+
 def ablate_message_ids(
     groups: dict[str, list[LogEntry]],
     entry_hops: set[Hop],
@@ -1144,6 +1265,9 @@ def main() -> int:
         membership = benchmark_membership(
             sent, mailbox_messages, raw_graphs, raw_delays, production_groups
         )
+        handoff_ablation = benchmark_handoff_ablation(
+            sent, mailbox_messages, raw_graphs, raw_delays, production_groups
+        )
     except InfrastructureError as exc:
         print(f"Infrastructure error: {exc}", file=sys.stderr)
         return 1
@@ -1169,9 +1293,11 @@ def main() -> int:
         "generated_trace_count": trace_count,
         "expected_trace_count": len(sent),
         "passed": all(result["passed"] for result in results)
-        and membership["passed"],
+        and membership["passed"]
+        and handoff_ablation["passed"],
         "results": results,
         "membership_ablation": membership,
+        "handoff_ablation": handoff_ablation,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -1196,6 +1322,23 @@ def main() -> int:
             print(f"failed_checks={','.join(failed)}")
         if variant["results"]:
             print_results(variant["results"])
+    print(
+        f"\nhandoff_mode={handoff_ablation['mode']} "
+        f"result={'PASS' if handoff_ablation['passed'] else 'FAIL'} "
+        f"traces={handoff_ablation['generated_trace_count']}/"
+        f"{handoff_ablation['expected_trace_count']} "
+        f"message_id_logs={handoff_ablation['message_id_log_count']} "
+        f"handoffs_removed={handoff_ablation['removed_handoff_record_count']} "
+        f"edges={handoff_ablation['generated_edge_count']}/0"
+    )
+    failed = [
+        name
+        for name, passed in handoff_ablation["checks"].items()
+        if not passed
+    ]
+    if failed:
+        print(f"failed_checks={','.join(failed)}")
+    print_results(handoff_ablation["results"])
     print(f"result_file={output_path}")
     return 0
 

@@ -7,14 +7,18 @@ from demo.docker.bench_handoff_correctness import (
     build_raw_graphs,
     build_scenarios,
     expected_graph_size,
+    export_span_graphs,
     handoff_records,
+    message_id_records,
     normalize_host,
     queue_id_from_message,
     received_hops,
+    strip_handoff_evidence,
     strip_message_id_evidence,
 )
 
 from mailtrace.models import EventType, LogEntry
+from mailtrace.parser import extract_next_mail_id
 from mailtrace.tracing.query import group_logs_by_message_id
 
 
@@ -481,6 +485,101 @@ class MembershipAblationTest(unittest.TestCase):
         mixed_logs = [log for logs in expected.values() for log in logs]
 
         self.assertEqual(group_logs_by_message_id(mixed_logs), {})
+
+    def test_removes_postfix_handoff_tokens_and_cached_queue_id(self) -> None:
+        for service, token in (
+            ("postfix/smtp", "250 OK id=1ABCDE-000001-01"),
+            ("postfix/smtp", "250 Ok: queued as BBB222"),
+            ("postfix/local", "forwarded as CCC333"),
+        ):
+            with self.subTest(service=service, token=token):
+                message = (
+                    "to=<user@test.example>, delays=0.1/0.2/0.3/0.4, "
+                    f"status=sent ({token})"
+                )
+                original = LogEntry(
+                    "2026-01-01T00:00:00Z",
+                    "mx",
+                    service,
+                    "AAA111",
+                    message,
+                    queued_as="BBB222",
+                    relay_host="mailer1.example.com",
+                )
+
+                stripped = strip_handoff_evidence(original)
+
+                self.assertIsNone(stripped.queued_as)
+                self.assertIsNone(extract_next_mail_id(stripped))
+                self.assertIn("to=<user@test.example>", stripped.message)
+                self.assertIn("delays=0.1/0.2/0.3/0.4", stripped.message)
+                self.assertEqual(stripped.mail_id, "AAA111")
+                self.assertEqual(stripped.datetime, original.datetime)
+                self.assertEqual(stripped.relay_host, original.relay_host)
+                self.assertEqual(original.queued_as, "BBB222")
+                self.assertEqual(original.message, message)
+
+    def test_removes_exim_reply_id_and_preserves_acceptance_id(self) -> None:
+        acceptance = self.groups["case-1@test.example"][2]
+        delivery = LogEntry(
+            acceptance.datetime,
+            acceptance.hostname,
+            "exim4",
+            acceptance.mail_id,
+            '=> user@test.example C="250 OK id=AAA111" DT=0.02s QT=0.20s',
+            queued_as="AAA111",
+        )
+
+        stripped_acceptance = strip_handoff_evidence(acceptance)
+        stripped_delivery = strip_handoff_evidence(delivery)
+
+        self.assertEqual(stripped_acceptance.message, acceptance.message)
+        self.assertNotIn("id=AAA111", stripped_delivery.message)
+        self.assertIn("DT=0.02s QT=0.20s", stripped_delivery.message)
+        self.assertIsNone(extract_next_mail_id(stripped_delivery))
+
+    def test_handoff_ablation_preserves_message_ids_at_every_hop(self) -> None:
+        original = [log for group in self.groups.values() for log in group]
+
+        stripped = [strip_handoff_evidence(log) for log in original]
+
+        self.assertEqual(
+            message_id_records(stripped), message_id_records(original)
+        )
+        self.assertEqual(sum(message_id_records(stripped).values()), 8)
+        self.assertEqual(handoff_records(stripped), {})
+        self.assertEqual(len(stripped), len(original))
+
+    def test_handoff_ablation_keeps_membership_and_nodes_without_edges(
+        self,
+    ) -> None:
+        expected = {
+            message_id: [strip_handoff_evidence(log) for log in group]
+            for message_id, group in self.groups.items()
+        }
+        mixed_logs = [log for group in expected.values() for log in group][
+            ::-1
+        ]
+
+        grouped = group_logs_by_message_id(mixed_logs)
+        trace_count, graphs = export_span_graphs(grouped)
+
+        self.assertEqual(trace_count, 2)
+        self.assertEqual(set(grouped), set(expected))
+        for message_id, group in expected.items():
+            self.assertCountEqual(grouped[message_id], group)
+            nodes, edges, attributes, _ = graphs[message_id]
+            self.assertEqual(
+                nodes,
+                {(normalize_host(log.hostname), log.mail_id) for log in group},
+            )
+            self.assertEqual(edges, set())
+            self.assertTrue(
+                all(not row.get("email.next_queue_id") for row in attributes)
+            )
+            self.assertTrue(
+                all(row["email.handoff"] != "explicit" for row in attributes)
+            )
 
 
 if __name__ == "__main__":

@@ -117,6 +117,17 @@ records 與延遲欄位，只移除 Postfix `message-id=<...>` 和 Exim 接收�
 驗證節點、交接邊、span 屬性、延遲值及期間。消融流程只用原始分組選取
 本次測試資料；正式重新分組時不傳入原始分組或下游 queue mapping。
 
+`handoff_ablation` 記錄另一個 `no-handoff-tokens` 消融模式：保留每個
+queue hop 的 Message-ID，移除 `queued as QUEUEID`、`forwarded as QUEUEID`
+及 SMTP 回覆中的 `id=QUEUEID`，同時清除解析後的 `queued_as`。本 hop
+的 queue ID、relay 資訊、日誌筆數與延遲紀錄維持完整。
+
+這個模式預期逐筆日誌歸屬與全部節點保留，但交接邊為零，span 不應含有
+`email.next_queue_id` 或 `email.handoff=explicit`。原始信箱與 raw-log
+oracle 保持完整，JSON 另列空白的 `expected_trace_edges`，明確區分原始
+交接圖與消融後預期結果。相同 host 重訪可能標示 `implicit`，但仍不得
+建立任何 hop 之間的邊。
+
 ## Resource benchmark
 
 The resource benchmark Compose file is an override for the main Compose file:
