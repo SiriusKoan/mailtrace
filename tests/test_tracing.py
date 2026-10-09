@@ -586,7 +586,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             and span.attributes.get("email.queue_id") == "SOURCE1"
         }
         deliveries = {
-            span.attributes.get("email.recipient"): span
+            span.attributes.get("email.recipients"): span
             for span in finished
             if span.name == "delivery" and span.attributes
         }
@@ -1193,7 +1193,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self.assertTrue(all(not span.links for span in host_spans))
 
         delivery_recipients = {
-            span.attributes.get("email.recipient")
+            span.attributes.get("email.recipients")
             for span in finished
             if span.name == "delivery" and span.attributes
         }
@@ -1812,7 +1812,7 @@ class OpenTelemetryResourceTest(unittest.TestCase):
                 "mailpolicy",
                 start_time,
                 Context(),
-                recipient="recipient@example.com",
+                recipients=["recipient@example.com"],
                 transport="postfix/smtp",
             )
             span.end(end_time=dt_to_ns(start_time))

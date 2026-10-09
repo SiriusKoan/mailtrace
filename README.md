@@ -82,6 +82,17 @@ mailtrace tracing \
 - **Terminal-aware log buffering**: Logs for each message ID remain buffered until a terminal delivery outcome has been observed and the configured quiet period (`tracing.hold_rounds`) has elapsed. `tracing.max_trace_age_seconds` bounds non-terminal messages
 - **Late-arrival compensation**: Each query window extends slightly into the past (`tracing.go_back_seconds`) to catch logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate log entries introduced by this overlap are automatically deduplicated
 
+#### 收件者 attributes
+
+根 span（`email.delivery`）分別記錄原始收件者與整段 trace 的展開地址：
+
+| Attribute | 內容 |
+| --- | --- |
+| `email.recipients` | 入口佇列的原始收件者或別名；優先使用 `orig_to`，缺少入口地址時從其餘日誌提取 |
+| `email.expanded_recipients` | 後續出現的所有展開地址，包含中間別名，排除原始收件者 |
+
+主機與 `delivery` span 則記錄當前佇列的 `orig_to` 與展開後的 `to`；缺少 `orig_to` 時以 `to` 作為原始地址。兩個 attribute 都使用逗號分隔，移除重複地址並保留首次出現的順序。沒有展開地址時，`email.expanded_recipients` 為空字串；缺少收件者資訊時省略兩個 attribute。投遞 span 的收件者欄位統一使用 `email.recipients`。
+
 #### Parameters
 
 - `-c, --config-path`: Path to configuration file

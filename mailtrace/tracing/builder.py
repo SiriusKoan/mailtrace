@@ -107,7 +107,7 @@ def _extract_sender_recipients(
             if from_match:
                 sender = from_match.group(1)
 
-        to_match = re.search(r"to=<([^>]*)>", log.message)
+        to_match = re.search(r"\bto=<([^>]*)>", log.message)
         if to_match:
             recipient = to_match.group(1)
             if recipient not in seen_recipients:
@@ -122,6 +122,38 @@ def _extract_sender_recipients(
                 seen_recipients.add(recipient)
 
     return sender, recipients if recipients else None
+
+
+def _extract_recipient_attributes(
+    logs: Iterable[LogEntry],
+) -> tuple[Optional[list[str]], Optional[list[str]]]:
+    """依 orig_to 區分原始收件者與展開地址，保留首次出現的順序。"""
+    recipients: list[str] = []
+    expanded_recipients: list[str] = []
+    for log in logs:
+        _, addresses = _extract_sender_recipients([log])
+        original_match = re.search(r"\borig_to=<([^>]*)>", log.message)
+        if original_match:
+            original = original_match.group(1)
+            recipients.append(original)
+            expanded_recipients.extend(
+                address for address in addresses or [] if address != original
+            )
+        else:
+            recipients.extend(addresses or [])
+
+    expanded_recipients = list(dict.fromkeys(expanded_recipients))
+    recipients = list(
+        dict.fromkeys(
+            address
+            for address in recipients
+            if address not in expanded_recipients
+        )
+    )
+    return (
+        recipients or None,
+        expanded_recipients if recipients or expanded_recipients else None,
+    )
 
 
 def _prepare_hops(
@@ -389,10 +421,28 @@ def _emit_trace(
     """Create and finish every span for one email message."""
     root_start = min(bounds[0] for bounds in hop_bounds.values())
     root_end = max(bounds[1] for bounds in hop_bounds.values())
-    sender, recipients = _extract_sender_recipients(message_logs)
+    sender, addresses = _extract_sender_recipients(message_logs)
+    source_logs = [
+        log
+        for hop in ordered_hops
+        if hop_placements[hop].explicit_handoff is None
+        for log in prepared_hops[hop].logs
+    ]
+    recipients, _ = _extract_recipient_attributes(source_logs)
+    if recipients is None:
+        recipients, _ = _extract_recipient_attributes(message_logs)
+    expanded_recipients = (
+        [address for address in addresses or [] if address not in recipients]
+        if recipients is not None
+        else None
+    )
 
     root_span = create_root_span(
-        message_id, root_start, sender=sender, recipients=recipients
+        message_id,
+        root_start,
+        sender=sender,
+        recipients=recipients,
+        expanded_recipients=expanded_recipients,
     )
     if any(
         log.delivery_status is DeliveryStatus.PERMANENT_FAILURE
@@ -413,9 +463,7 @@ def _emit_trace(
         records_by_recipient = _group_delivery_records(
             prepared.delivery_records
         )
-        host_sender, all_host_recipients = _extract_sender_recipients(
-            prepared.logs
-        )
+        host_sender, _ = _extract_sender_recipients(prepared.logs)
         delivery_log_ids = {
             id(record.log) for record in prepared.delivery_records
         }
@@ -450,8 +498,12 @@ def _emit_trace(
                 if len(records_by_recipient) > 1
                 else prepared.logs
             )
-            host_recipients = (
-                [recipient] if recipient is not None else all_host_recipients
+            host_recipients, host_expanded_recipients = (
+                _extract_recipient_attributes(
+                    [record.log for record in branch_records]
+                    if branch_records
+                    else prepared.logs
+                )
             )
             host_next_queue_id = _join_unique(
                 log.queued_as for log in branch_logs
@@ -479,6 +531,7 @@ def _emit_trace(
                 message_id=message_id,
                 sender=host_sender,
                 recipients=host_recipients,
+                expanded_recipients=host_expanded_recipients,
                 queue_id=host_queue_id,
                 next_host=host_next_host,
                 explicit_handoff=placement.explicit_handoff,
@@ -498,11 +551,15 @@ def _emit_trace(
 
             for record in branch_records:
                 delay_start = record.start_time + hop_offsets[hop]
+                delivery_recipients, delivery_expanded_recipients = (
+                    _extract_recipient_attributes([record.log])
+                )
                 delivery_span = create_delivery_span(
                     host,
                     delay_start,
                     host_ctx,
-                    recipient=record.recipient,
+                    recipients=delivery_recipients,
+                    expanded_recipients=delivery_expanded_recipients,
                     transport=record.log.service,
                 )
                 if record.log.delivery_status in {

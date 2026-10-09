@@ -107,6 +107,7 @@ def create_root_span(
     start_time: datetime,
     sender: Optional[str] = None,
     recipients: Optional[list[str]] = None,
+    expanded_recipients: Optional[list[str]] = None,
 ) -> trace.Span:
     """Create and start the root span for one email delivery trace.
 
@@ -117,7 +118,8 @@ def create_root_span(
         message_id: The RFC 2822 ``Message-ID`` header value.
         start_time: Absolute start time for the span.
         sender: The email sender address (optional).
-        recipients: List of email recipient addresses (optional).
+        recipients: 展開前的收件者地址（可選）。
+        expanded_recipients: 展開後的收件者地址（可選）。
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
@@ -128,6 +130,8 @@ def create_root_span(
         attributes["email.sender"] = sender
     if recipients is not None:
         attributes["email.recipients"] = ",".join(recipients)
+    if expanded_recipients is not None:
+        attributes["email.expanded_recipients"] = ",".join(expanded_recipients)
     return tracer.start_span(
         name="email.delivery",
         start_time=dt_to_ns(start_time),
@@ -150,6 +154,7 @@ def create_host_span(
     relay_ip: Optional[str] = None,
     relay_port: Optional[int] = None,
     smtp_response_code: Optional[int] = None,
+    expanded_recipients: Optional[list[str]] = None,
 ) -> trace.Span:
     """Create and start a host span as a child of *parent_context*.
 
@@ -168,7 +173,7 @@ def create_host_span(
             ``trace.set_span_in_context(parent_span)``).
         message_id: The RFC 2822 ``Message-ID`` header value (optional).
         sender: The email sender address (optional).
-        recipients: List of email recipient addresses (optional).
+        recipients: 展開前的收件者地址（可選）。
         queue_id: Queue ID for this host (optional).
         next_host: Next host this host relays the message to (optional).
         explicit_handoff: Incoming queue handoff classification: ``True`` is
@@ -178,6 +183,7 @@ def create_host_span(
         relay_ip: Relay IP address (optional).
         relay_port: Relay port (optional).
         smtp_response_code: SMTP response code (optional).
+        expanded_recipients: 展開後的收件者地址（可選）。
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
@@ -190,6 +196,8 @@ def create_host_span(
         attributes["email.sender"] = sender
     if recipients is not None:
         attributes["email.recipients"] = ",".join(recipients)
+    if expanded_recipients is not None:
+        attributes["email.expanded_recipients"] = ",".join(expanded_recipients)
     if queue_id is not None:
         attributes["email.queue_id"] = queue_id
     if next_host is not None:
@@ -221,14 +229,17 @@ def create_delivery_span(
     hostname: str,
     start_time: datetime,
     parent_context: Any,
-    recipient: Optional[str] = None,
+    recipients: Optional[list[str]] = None,
     transport: Optional[str] = None,
+    expanded_recipients: Optional[list[str]] = None,
 ) -> trace.Span:
-    """Create a delivery wrapper that groups one recipient's delay stages."""
+    """建立投遞 span，分別記錄原始收件者與展開地址。"""
     tracer = _get_tracer(hostname, host_name=hostname)
     attributes = {}
-    if recipient is not None:
-        attributes["email.recipient"] = recipient
+    if recipients is not None:
+        attributes["email.recipients"] = ",".join(recipients)
+    if expanded_recipients is not None:
+        attributes["email.expanded_recipients"] = ",".join(expanded_recipients)
     if transport is not None:
         attributes["email.transport"] = transport
     return tracer.start_span(
