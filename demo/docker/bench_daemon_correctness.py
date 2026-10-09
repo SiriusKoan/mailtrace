@@ -352,6 +352,7 @@ def build_generated_signatures(
         spans = trace_spans(trace_obj)
         host_spans: dict[str, dict[str, Any]] = {}
         child_spans: dict[str, list[dict[str, Any]]] = {}
+        delays_by_host: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
         for span in spans:
             attributes = attribute_map(span)
@@ -368,16 +369,27 @@ def build_generated_signatures(
             if message_id not in expected_message_ids:
                 continue
             host = str(attributes["server.address"])
-            delay_spans = []
+            delay_spans = delays_by_host.setdefault((message_id, host), [])
             for child in child_spans.get(span_id, []):
-                child_attributes = attribute_map(child)
-                if "delay.duration_seconds" in child_attributes:
-                    delay_spans.append(child)
+                # Only expand delivery wrappers to exclude downstream host stages.
+                candidates = (
+                    child_spans.get(child["spanId"], [])
+                    if child["name"] == "delivery"
+                    else [child]
+                )
+                for candidate in candidates:
+                    if "delay.duration_seconds" in attribute_map(candidate):
+                        delay_spans.append(candidate)
+
+        for (message_id, host), delay_spans in delays_by_host.items():
             delay_spans.sort(
                 key=lambda span: int(span.get("startTimeUnixNano", 0))
             )
+            # The baseline records unique stage names per host, not delivery counts.
             signatures.setdefault(message_id, {})[host] = HostSignature(
-                stages=tuple(span["name"] for span in delay_spans)
+                stages=tuple(
+                    dict.fromkeys(span["name"] for span in delay_spans)
+                )
             )
 
     return signatures
@@ -419,6 +431,7 @@ def run_one(
     tempo_url: str,
     otel_endpoint: str,
     params: ParamSet,
+    artifact_dir: Path | None = None,
 ) -> RunResult:
     """Run one sidecar correctness experiment."""
     config_path = write_temp_config(base_config_path, params, temp_dir)
@@ -426,6 +439,9 @@ def run_one(
         f"daemon_sleep{params.sleep_seconds}_hold{params.hold_rounds}_"
         f"goback{params.go_back_seconds}.log"
     )
+    if artifact_dir is not None:
+        artifact_dir.mkdir(parents=True, exist_ok=False)
+        log_path = artifact_dir / "daemon.log"
 
     proc = start_production_daemon(config_path, otel_endpoint, log_path)
     run_start = time.perf_counter()
@@ -466,7 +482,7 @@ def run_one(
         )
         correctness = compare_signatures(expected, generated)
 
-        return RunResult(
+        result = RunResult(
             params=params,
             expected=correctness.expected,
             generated=correctness.generated,
@@ -476,8 +492,65 @@ def run_one(
             exact_rate=correctness.exact_rate,
             duration=time.perf_counter() - run_start,
         )
+        if artifact_dir is not None:
+            write_json(
+                artifact_dir / "signatures.json",
+                {
+                    "expected": signatures_to_json(expected),
+                    "generated": signatures_to_json(generated),
+                    "mismatched_message_ids": [
+                        message_id
+                        for message_id, signature in expected.items()
+                        if generated.get(message_id) != signature
+                    ],
+                },
+            )
+            write_json(
+                artifact_dir / "tempo_traces.json",
+                [
+                    trace_obj
+                    for trace_obj in traces
+                    if any(
+                        attribute_map(span).get("message.id") in expected
+                        for span in trace_spans(trace_obj)
+                    )
+                ],
+            )
+            write_json(artifact_dir / "logs.json", [vars(log) for log in logs])
+            write_json(
+                artifact_dir / "result.json",
+                {
+                    **result_to_json(result),
+                    "sleep_seconds": params.sleep_seconds,
+                    "duration_seconds": result.duration,
+                    "traffic_start": traffic_start.isoformat(),
+                    "traffic_end": traffic_end.isoformat(),
+                    "result_end": result_end.isoformat(),
+                    "expected_end": expected_end.isoformat(),
+                },
+            )
+        return result
     finally:
         stop_process(proc)
+
+
+def signatures_to_json(signatures: TraceSignatures) -> dict[str, Any]:
+    """Serialize host and stage names for direct comparison."""
+    return {
+        message_id: {
+            host: {"stages": list(signature.stages)}
+            for host, signature in hosts.items()
+        }
+        for message_id, hosts in signatures.items()
+    }
+
+
+def write_json(path: Path, value: Any) -> None:
+    """Save each completed run so interruptions retain earlier results."""
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
 
 
 def print_table(results: list[RunResult]) -> None:
@@ -656,6 +729,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--daemon-start-wait", type=int, default=5)
     parser.add_argument("--keep-temp", action="store_true")
+    parser.add_argument(
+        "--output-dir",
+        help="Save per-run signatures, Tempo traces, logs, and aggregate results",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--sleep-seconds", type=int, default=DEFAULT_SLEEP_SECONDS
@@ -698,6 +775,9 @@ def main() -> int:
 
     config_path = resolve_path(args.config)
     script_path = resolve_path(args.script)
+    output_dir = resolve_path(args.output_dir) if args.output_dir else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix="mailtrace-daemon-bench-"))
     param_sets = args.params or build_param_grid(
         sleep_seconds=args.sleep_seconds,
@@ -731,11 +811,30 @@ def main() -> int:
                     tempo_url=args.tempo_url,
                     otel_endpoint=args.otel_endpoint,
                     params=params,
+                    artifact_dir=(
+                        output_dir
+                        / (
+                            f"sleep{params.sleep_seconds}_"
+                            f"hold{params.hold_rounds}_"
+                            f"goback{params.go_back_seconds}"
+                        )
+                        / f"run-{run_index:02d}"
+                        if output_dir is not None
+                        else None
+                    ),
                 )
                 results.append(result)
                 repeated_results.append(result)
             aggregated = aggregate_results(params, repeated_results)
             aggregated_results.append(aggregated)
+            if output_dir is not None:
+                write_json(
+                    output_dir / "aggregate.json",
+                    [
+                        aggregated_result_to_json(result)
+                        for result in aggregated_results
+                    ],
+                )
             if not args.json:
                 print()
                 print("Completed parameter set:")
