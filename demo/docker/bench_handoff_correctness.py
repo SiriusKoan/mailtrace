@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate export_traces handoffs using mailbox and raw OpenSearch data."""
+"""以信箱與原始日誌驗證 handoff，以及缺少 Message-ID 時的分組行為。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from email import policy
 from email.message import EmailMessage, Message
@@ -31,6 +31,9 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from mailtrace.config import load_config  # noqa: E402
+from mailtrace.events import classify_log_entry  # noqa: E402
+from mailtrace.models import LogEntry  # noqa: E402
+from mailtrace.parser import extract_next_mail_id  # noqa: E402
 from mailtrace.tracing import otel  # noqa: E402
 from mailtrace.tracing.builder import export_traces  # noqa: E402
 from mailtrace.tracing.query import (  # noqa: E402
@@ -46,6 +49,10 @@ EXIM_QUEUE_ID_RE = re.compile(
     r"(?:^|\s)([A-Za-z0-9]{6,}-[A-Za-z0-9]{6,}-[A-Za-z0-9]{2})(?=\s)"
 )
 MESSAGE_ID_RE = re.compile(r"(?:message-id|\bid)=<?([^>\s]+)>?", re.IGNORECASE)
+POSTFIX_MESSAGE_ID_FIELD_RE = re.compile(
+    r"(?<![\w-])message-id=<[^>]+>", re.IGNORECASE
+)
+EXIM_MESSAGE_ID_FIELD_RE = re.compile(r"(?<![\w-])id=<?[^>\s]+@[^>\s]+>?")
 NEXT_QUEUE_ID_RE = re.compile(
     r"(?:queued as\s+|\bOK id=)([A-Za-z0-9-]+)", re.IGNORECASE
 )
@@ -908,6 +915,171 @@ def print_results(results: list[dict[str, Any]]) -> None:
         )
 
 
+def strip_message_id_evidence(log: LogEntry) -> LogEntry:
+    """僅移除 Message-ID 欄位，保留 queue ID、handoff 與 RT/QT/DT。"""
+    message = POSTFIX_MESSAGE_ID_FIELD_RE.sub("", log.message)
+    if (log.service or "").lower() in ("exim", "exim4") and re.search(
+        r"(?:^|\s)<=\s", message
+    ):
+        message = EXIM_MESSAGE_ID_FIELD_RE.sub("", message)
+    return classify_log_entry(replace(log, message=message))
+
+
+def handoff_records(logs: list[LogEntry]) -> Counter:
+    """比較每筆交接的來源、目的與原始 SMTP 回覆，包含重複紀錄。"""
+    return Counter(
+        (
+            normalize_host(log.hostname),
+            log.mail_id,
+            log.relay_host,
+            extract_next_mail_id(log),
+            log.message,
+        )
+        for log in logs
+        if extract_next_mail_id(log)
+    )
+
+
+def ablate_message_ids(
+    groups: dict[str, list[LogEntry]],
+    entry_hops: set[Hop],
+    keep_entrypoint: bool,
+) -> tuple[dict[str, list[LogEntry]], list[LogEntry]]:
+    """建立獨立消融輸入；入口種子只包含原本具有 Message-ID 的紀錄。"""
+    expected = {}
+    seeds = []
+    for message_id, logs in groups.items():
+        expected[message_id] = []
+        for log in logs:
+            stripped = strip_message_id_evidence(log)
+            is_seed = (
+                normalize_host(log.hostname),
+                log.mail_id,
+            ) in entry_hops and stripped.message != log.message
+            if is_seed:
+                seeds.append(log)
+            expected[message_id].append(
+                replace(log) if keep_entrypoint and is_seed else stripped
+            )
+    return expected, seeds
+
+
+def benchmark_membership(
+    sent: list[SentMessage],
+    mailbox_messages: dict[str, dict[str, bytes]],
+    raw_graphs: dict[str, tuple[set[Hop], set[Edge]]],
+    raw_delays: dict[str, RawDelays],
+    production_groups: dict[str, list[LogEntry]],
+) -> dict[str, Any]:
+    """重新分組混合日誌，驗證入口傳播、跨批次 mapping 與無種子對照。"""
+    entry_hops = {
+        received_hops(raw_message)[0][0]
+        for copies in mailbox_messages.values()
+        for raw_message in copies.values()
+        if received_hops(raw_message)[0]
+    }
+    original_logs = [
+        log for logs in production_groups.values() for log in logs
+    ]
+    variants = []
+    for mode in (
+        "entrypoint-only",
+        "entrypoint-only-reversed",
+        "cached-entrypoint",
+        "no-seed-control",
+    ):
+        keep_entrypoint = mode.startswith("entrypoint-only")
+        expected_groups, seeds = ablate_message_ids(
+            production_groups, entry_hops, keep_entrypoint
+        )
+        logs = [log for group in expected_groups.values() for log in group]
+        # 反向輸入要求分組程式完成多輪傳播，不能依賴日誌順序。
+        logs.sort(key=lambda log: log.datetime)
+        if mode == "entrypoint-only-reversed":
+            logs.reverse()
+        queue_mapping = {}
+        seed_groups = {}
+        if mode == "cached-entrypoint":
+            # 第一批次只讀取入口 Message-ID，不預先建立下游 mapping。
+            seed_groups = group_logs_by_message_id(seeds, queue_mapping)
+        initial_mapping_count = len(queue_mapping)
+        grouped = group_logs_by_message_id(logs, queue_mapping)
+        trace_count, span_graphs = export_span_graphs(grouped)
+        remaining_evidence = sum(
+            strip_message_id_evidence(log).message != log.message
+            for log in logs
+        )
+        original_evidence = sum(
+            strip_message_id_evidence(log).message != log.message
+            for log in original_logs
+        )
+        is_control = mode == "no-seed-control"
+        input_checks = {
+            "log_count_preserved": len(logs) == len(original_logs),
+            "handoff_records_preserved": handoff_records(logs)
+            == handoff_records(original_logs),
+            "message_id_evidence_removed": remaining_evidence
+            == (len(seeds) if keep_entrypoint else 0)
+            and original_evidence > len(seeds),
+            "seed_setup": len(seeds) == len(sent)
+            and (
+                mode != "cached-entrypoint"
+                or (
+                    set(seed_groups) == set(production_groups)
+                    and initial_mapping_count == len(entry_hops)
+                )
+            ),
+            "group_ids": set(grouped)
+            == (set() if is_control else set(production_groups)),
+            "trace_count": trace_count == (0 if is_control else len(sent)),
+        }
+        results = []
+        if not is_control:
+            for item in sent:
+                result = evaluate_case(
+                    item,
+                    mailbox_messages[item.message_id],
+                    raw_graphs[item.message_id],
+                    raw_delays[item.message_id],
+                    span_graphs.get(item.message_id),
+                )
+                # 同時驗證每筆紀錄的歸屬，避免拓樸相同卻混入其他郵件。
+                result["checks"]["log_membership"] = Counter(
+                    id(log) for log in grouped.get(item.message_id, [])
+                ) == Counter(
+                    id(log) for log in expected_groups[item.message_id]
+                )
+                result["passed"] = all(result["checks"].values())
+                results.append(result)
+        variants.append(
+            {
+                "mode": mode,
+                "input_log_count": len(logs),
+                "handoff_record_count": sum(handoff_records(logs).values()),
+                "removed_message_id_log_count": original_evidence
+                - remaining_evidence,
+                "remaining_message_id_log_count": remaining_evidence,
+                "seed_log_count": (
+                    len(seeds) if mode != "no-seed-control" else 0
+                ),
+                "initial_queue_mapping_count": initial_mapping_count,
+                "expected_trace_count": 0 if is_control else len(sent),
+                "generated_trace_count": trace_count,
+                "grouped_log_count": sum(
+                    len(group) for group in grouped.values()
+                ),
+                "checks": input_checks,
+                "results": results,
+                "passed": all(input_checks.values())
+                and all(result["passed"] for result in results),
+            }
+        )
+    return {
+        "passed": all(variant["passed"] for variant in variants),
+        "variants": variants,
+    }
+
+
 def resolve_path(value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else _PROJECT_ROOT / path
@@ -969,6 +1141,9 @@ def main() -> int:
             raw_logs, {item.message_id for item in sent}
         )
         trace_count, span_graphs = export_span_graphs(production_groups)
+        membership = benchmark_membership(
+            sent, mailbox_messages, raw_graphs, raw_delays, production_groups
+        )
     except InfrastructureError as exc:
         print(f"Infrastructure error: {exc}", file=sys.stderr)
         return 1
@@ -993,8 +1168,10 @@ def main() -> int:
         "run_id": run_id,
         "generated_trace_count": trace_count,
         "expected_trace_count": len(sent),
-        "passed": all(result["passed"] for result in results),
+        "passed": all(result["passed"] for result in results)
+        and membership["passed"],
         "results": results,
+        "membership_ablation": membership,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
@@ -1002,6 +1179,23 @@ def main() -> int:
         encoding="utf-8",
     )
     print_results(results)
+    for variant in membership["variants"]:
+        print(
+            f"\nmembership_mode={variant['mode']} "
+            f"result={'PASS' if variant['passed'] else 'FAIL'} "
+            f"traces={variant['generated_trace_count']}/"
+            f"{variant['expected_trace_count']} "
+            f"message_id_logs={variant['remaining_message_id_log_count']} "
+            f"removed={variant['removed_message_id_log_count']} "
+            f"handoffs={variant['handoff_record_count']}"
+        )
+        failed = [
+            name for name, passed in variant["checks"].items() if not passed
+        ]
+        if failed:
+            print(f"failed_checks={','.join(failed)}")
+        if variant["results"]:
+            print_results(variant["results"])
     print(f"result_file={output_path}")
     return 0
 

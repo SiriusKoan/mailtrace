@@ -20,7 +20,7 @@ SCROLL_KEEPALIVE = "2m"
 
 
 def _normalize_hostname(hostname: str) -> str:
-    """Return the short, case-insensitive hostname used for hop matching."""
+    """統一短名稱與 FQDN 的比對鍵；queue ID 仍依 host 區分。"""
     return hostname.rstrip(".").split(".", 1)[0].lower()
 
 

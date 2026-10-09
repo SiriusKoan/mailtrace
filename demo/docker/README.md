@@ -98,6 +98,25 @@ The script records failed correctness checks but returns status code `0`.
 Infrastructure failures such as SMTP, IMAP, OpenSearch, or configuration errors
 return a non-zero status code.
 
+同一次執行亦會驗證 Message-ID evidence 消融，結果記錄於 JSON 的
+`membership_ablation`。所有模式保留完整日誌筆數、queue ID、handoff
+records 與延遲欄位，只移除 Postfix `message-id=<...>` 和 Exim 接收紀錄
+中的 `id=...@...`，不移除 SMTP 回覆中的 queue ID。
+
+- `entrypoint-only`：每封郵件只保留入口 queue 的 Message-ID 種子，將混合
+  日誌重新交由正式分組程式處理，驗證下游 membership propagation。
+- `entrypoint-only-reversed`：使用相同消融資料並反轉時間順序，驗證多輪
+  傳播不依賴輸入順序。
+- `cached-entrypoint`：第一批次只處理入口 Message-ID 紀錄；第二批次移除
+  全部 Message-ID evidence，沿用第一批次建立的 queue mapping，驗證
+  跨批次 fallback 與下游傳播。
+- `no-seed-control`：移除全部 Message-ID evidence，使用空白 mapping；
+  預期無法識別郵件，分組數與 trace 數皆為零。
+
+前三種模式逐封比對日誌歸屬，並沿用信箱 `Received` 與原始日誌 oracle
+驗證節點、交接邊、span 屬性、延遲值及期間。消融流程只用原始分組選取
+本次測試資料；正式重新分組時不傳入原始分組或下游 queue mapping。
+
 ## Resource benchmark
 
 The resource benchmark Compose file is an override for the main Compose file:

@@ -261,6 +261,92 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         self.assertEqual(grouped[message_id], later_batch)
 
+    def test_message_grouping_matches_short_and_fqdn_hostnames(self) -> None:
+        for relay_host, hostname in (
+            ("destination.example.com", "destination"),
+            ("destination", "destination.example.com"),
+            ("DESTINATION.EXAMPLE.COM.", "destination"),
+            ("destination.example.com", "destination.example.com"),
+        ):
+            with self.subTest(relay_host=relay_host, hostname=hostname):
+                message_id = "hostname-alias@example.com"
+                timestamp = "2026-08-01T03:26:09+00:00"
+                seed = LogEntry(
+                    timestamp,
+                    "source",
+                    "postfix/cleanup",
+                    "SRC1",
+                    f"message-id=<{message_id}>",
+                )
+                handoff = LogEntry(
+                    timestamp,
+                    "source",
+                    "postfix/smtp",
+                    "SRC1",
+                    "status=sent (queued as DST1)",
+                    queued_as="DST1",
+                    relay_host=relay_host,
+                )
+                downstream = LogEntry(
+                    timestamp,
+                    hostname,
+                    "postfix/qmgr",
+                    "DST1",
+                    "from=<sender@example.com>, queue active",
+                )
+                unrelated = LogEntry(
+                    timestamp,
+                    "other-host",
+                    "postfix/qmgr",
+                    "DST1",
+                    "from=<other@example.com>, queue active",
+                )
+                mixed_logs = [downstream, unrelated, handoff, seed]
+
+                self.assertEqual(
+                    query.group_logs_by_message_id(mixed_logs),
+                    {message_id: [downstream, handoff, seed]},
+                )
+                queue_mapping = {}
+                query.group_logs_by_message_id([seed, handoff], queue_mapping)
+                self.assertEqual(
+                    query.group_logs_by_message_id(
+                        [downstream, unrelated], queue_mapping
+                    ),
+                    {message_id: [downstream]},
+                )
+
+    def test_hop_parent_matching_matches_short_and_fqdn_hostnames(
+        self,
+    ) -> None:
+        for relay_host, hostname in (
+            ("destination.example.com", "destination"),
+            ("destination", "destination.example.com"),
+            ("DESTINATION.EXAMPLE.COM.", "destination"),
+            ("destination.example.com", "destination.example.com"),
+        ):
+            with self.subTest(relay_host=relay_host, hostname=hostname):
+                source = ("source", "SRC1")
+                destination = (hostname, "DST1")
+                hops = {
+                    source: [
+                        LogEntry(
+                            "2026-08-01T03:26:09+00:00",
+                            source[0],
+                            "postfix/smtp",
+                            source[1],
+                            "status=sent (queued as DST1)",
+                            queued_as="DST1",
+                            relay_host=relay_host,
+                        )
+                    ],
+                    destination: [],
+                }
+
+                self.assertEqual(
+                    query.build_hop_parents(hops), {destination: source}
+                )
+
     def test_accumulator_merges_late_queue_only_log(self) -> None:
         message_id = "late-accumulation@example.com"
         queue_id = "MAILER3Q"

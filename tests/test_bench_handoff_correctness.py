@@ -2,14 +2,20 @@ import unittest
 
 from demo.docker.bench_handoff_correctness import (
     RawLog,
+    ablate_message_ids,
     build_raw_delays,
     build_raw_graphs,
     build_scenarios,
     expected_graph_size,
+    handoff_records,
     normalize_host,
     queue_id_from_message,
     received_hops,
+    strip_message_id_evidence,
 )
+
+from mailtrace.models import EventType, LogEntry
+from mailtrace.tracing.query import group_logs_by_message_id
 
 
 class ScenarioTest(unittest.TestCase):
@@ -328,6 +334,153 @@ class RawLogTest(unittest.TestCase):
                 }
             ],
         )
+
+
+class MembershipAblationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        timestamp = "2026-01-01T00:00:00Z"
+        self.groups = {}
+        self.entry_hops = set()
+        for number in (1, 2):
+            message_id = f"case-{number}@test.example"
+            # 相同 queue ID 在不同 host 上屬於不同郵件。
+            host = f"mx{number}.example.com"
+            exim_host = f"mailer{number}.example.com"
+            exim_queue = f"1ABCDE-00000{number}-01"
+            self.entry_hops.add((host, "AAA111"))
+            self.groups[message_id] = [
+                LogEntry(
+                    timestamp,
+                    host,
+                    "postfix/cleanup",
+                    "AAA111",
+                    f"message-id=<{message_id}>",
+                    event_type=EventType.MESSAGE_ID,
+                ),
+                LogEntry(
+                    timestamp,
+                    host,
+                    "postfix/smtp",
+                    "AAA111",
+                    f"status=sent (250 OK id={exim_queue})",
+                    queued_as=exim_queue,
+                    relay_host=exim_host,
+                ),
+                LogEntry(
+                    timestamp,
+                    exim_host,
+                    "exim4",
+                    exim_queue,
+                    f"<= sender@test.example id={message_id} RT=0.05s",
+                ),
+                *(
+                    LogEntry(
+                        timestamp,
+                        exim_host,
+                        "exim4",
+                        exim_queue,
+                        f'=> user@test.example C="250 queued as {queue_id}" DT=0.02s',
+                        queued_as=queue_id,
+                        relay_host=host,
+                    )
+                    for queue_id in ("BBB222", "CCC333")
+                ),
+                *(
+                    LogEntry(
+                        timestamp,
+                        host,
+                        "postfix/cleanup",
+                        queue_id,
+                        f"message-id=<{message_id}>",
+                    )
+                    for queue_id in ("BBB222", "CCC333")
+                ),
+            ]
+
+    def test_removes_postfix_evidence_without_mutating_original(self) -> None:
+        original = self.groups["case-1@test.example"][0]
+
+        stripped = strip_message_id_evidence(original)
+
+        self.assertEqual(stripped.message, "")
+        self.assertEqual(stripped.mail_id, "AAA111")
+        self.assertEqual(stripped.event_type, EventType.UNKNOWN)
+        self.assertEqual(original.message, "message-id=<case-1@test.example>")
+        self.assertEqual(original.event_type, EventType.MESSAGE_ID)
+
+    def test_removes_exim_id_but_preserves_receive_time(self) -> None:
+        original = self.groups["case-1@test.example"][2]
+
+        stripped = strip_message_id_evidence(original)
+
+        self.assertNotIn("id=", stripped.message)
+        self.assertIn("<= sender@test.example", stripped.message)
+        self.assertIn("RT=0.05s", stripped.message)
+        self.assertEqual(stripped.mail_id, original.mail_id)
+
+    def test_preserves_smtp_reply_ids_and_handoff_records(self) -> None:
+        original = [log for logs in self.groups.values() for log in logs]
+
+        stripped = [strip_message_id_evidence(log) for log in original]
+
+        self.assertEqual(handoff_records(stripped), handoff_records(original))
+        self.assertIn("250 OK id=1ABCDE-000001-01", stripped[1].message)
+        self.assertEqual(len(stripped), len(original))
+
+    def test_entrypoint_seed_resolves_reversed_branches_and_revisited_host(
+        self,
+    ) -> None:
+        expected, seeds = ablate_message_ids(
+            self.groups, self.entry_hops, keep_entrypoint=True
+        )
+        mixed_logs = [log for logs in expected.values() for log in logs][::-1]
+
+        actual = group_logs_by_message_id(mixed_logs)
+
+        self.assertEqual(len(seeds), 2)
+        self.assertEqual(set(actual), set(expected))
+        for message_id in expected:
+            self.assertCountEqual(actual[message_id], expected[message_id])
+        self.assertEqual(
+            sum(
+                strip_message_id_evidence(log).message != log.message
+                for log in mixed_logs
+            ),
+            2,
+        )
+
+    def test_cached_mapping_starts_with_only_entrypoints(self) -> None:
+        expected, seeds = ablate_message_ids(
+            self.groups, self.entry_hops, keep_entrypoint=False
+        )
+        queue_mapping = {}
+        group_logs_by_message_id(seeds, queue_mapping)
+        self.assertEqual(
+            set(queue_mapping), {("mx1", "AAA111"), ("mx2", "AAA111")}
+        )
+        mixed_logs = [log for logs in expected.values() for log in logs][::-1]
+
+        actual = group_logs_by_message_id(mixed_logs, queue_mapping)
+
+        for message_id in expected:
+            self.assertCountEqual(actual[message_id], expected[message_id])
+        self.assertEqual(len(queue_mapping), 8)
+        self.assertTrue(
+            all(
+                strip_message_id_evidence(log).message == log.message
+                for log in mixed_logs
+            )
+        )
+
+    def test_all_evidence_removed_without_mapping_remains_unresolved(
+        self,
+    ) -> None:
+        expected, _ = ablate_message_ids(
+            self.groups, self.entry_hops, keep_entrypoint=False
+        )
+        mixed_logs = [log for logs in expected.values() for log in logs]
+
+        self.assertEqual(group_logs_by_message_id(mixed_logs), {})
 
 
 if __name__ == "__main__":
