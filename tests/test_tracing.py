@@ -1312,7 +1312,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         self,
     ) -> None:
         source = ("source", "SRC1")
-        destination = ("destination", "DST1")
+        destination = ("destination.example.com", "DST1")
         hops = {
             source: [
                 LogEntry(
@@ -1328,7 +1328,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             destination: [
                 LogEntry(
                     datetime="2026-07-30T15:00:02+00:00",
-                    hostname="destination",
+                    hostname="destination.example.com",
                     service="postfix/cleanup",
                     mail_id="DST1",
                     message="message-id=<alias@example.com>",

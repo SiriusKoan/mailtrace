@@ -63,7 +63,7 @@ class TraceBuilderTest(unittest.TestCase):
         start = datetime.fromisoformat("2026-01-08T12:00:00+00:00")
         parent_hop = ("mail-a", "QUEUE-A")
         child_hop = ("mail-b.example.com", "QUEUE-B")
-        inferred_hop = ("mail-b", "QUEUE-C")
+        inferred_hop = ("mail-b.example.com", "QUEUE-C")
         handoff_log = LogEntry(
             datetime=start.isoformat(),
             hostname=parent_hop[0],
@@ -71,7 +71,7 @@ class TraceBuilderTest(unittest.TestCase):
             mail_id=parent_hop[1],
             message="status=sent",
             queued_as=child_hop[1],
-            relay_host="mail-b",
+            relay_host="mail-b.example.com",
         )
         prepared = {
             parent_hop: PreparedHop(

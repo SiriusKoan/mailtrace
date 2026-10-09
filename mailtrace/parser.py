@@ -24,7 +24,7 @@ _QUEUED_AS_RE = re.compile(
     r"(?:queued as|forwarded as)\s+(?P<id>[0-9A-Za-z\-]+)"
 )
 _POSTFIX_STATUS_ID_RE = re.compile(
-    r"\bstatus=sent\s+\([^)]*\bid=(?P<id>[0-9A-Za-z\-]+)"
+    r"\bstatus=sent\s+\([^)]*(?<![\w-])id=(?P<id>[0-9A-Za-z\-]+)"
 )
 _RELAY_RE = re.compile(
     r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
@@ -393,11 +393,9 @@ class OpensearchParser(LogParser):
                 return queue_id
 
         # Try Exim format in status message: id=QUEUEID)
-        exim_match = re.search(
-            r"status=sent \([^)]*\bid=([A-Za-z0-9_-]+)\)", message_content
-        )
+        exim_match = _POSTFIX_STATUS_ID_RE.search(message_content)
         if exim_match:
-            queue_id = exim_match.group(1)
+            queue_id = exim_match.group("id")
             if check_mail_id_valid(queue_id):
                 return queue_id
 

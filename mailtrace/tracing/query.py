@@ -183,8 +183,16 @@ def _extract_message_id_from_log(log: LogEntry) -> str | None:
     if msg_id_match:
         return msg_id_match.group(1)
 
-    # Try Exim format: id=id@domain (without angle brackets)
-    exim_id_match = re.search(r"\bid=([\w\d.@-]+@[\w\d.-]+)", log.message)
+    service = (log.service or "").lower()
+    if service not in ("exim", "exim4"):
+        return None
+    if not re.search(r"(?:^|\s)<=\s", log.message):
+        return None
+
+    # Exim acceptance records use id=id@domain without angle brackets.
+    exim_id_match = re.search(
+        r"(?<![\w-])id=([\w\d.@-]+@[\w\d.-]+)", log.message
+    )
     if exim_id_match:
         return exim_id_match.group(1)
 

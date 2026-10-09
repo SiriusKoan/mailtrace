@@ -13,7 +13,8 @@ _ENHANCED_STATUS_RE = re.compile(r"(?<!\w)([245]\.\d+\.\d+)(?!\w)")
 _SMTP_REPLY_RE = re.compile(r"(?<![\d.])([245]\d{2})(?=\s)")
 _MAIL_STATUS_RE = re.compile(r"\bstatus=([a-z][a-z0-9_-]*)\b", re.IGNORECASE)
 _NEXT_QUEUE_RE = re.compile(
-    r"(?:queued as|forwarded as)\s+([A-Za-z0-9_-]+)|\bid=([A-Za-z0-9_-]+)"
+    r"(?:queued as|forwarded as)\s+([A-Za-z0-9_-]+)"
+    r"|(?<![\w-])id=([A-Za-z0-9_-]+)"
 )
 
 

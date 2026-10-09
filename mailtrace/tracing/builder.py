@@ -252,7 +252,7 @@ def _plan_hops(
     hop_placements: dict[HopKey, HopPlacement] = {}
     hops_by_host: dict[str, list[HopKey]] = {}
     for hop in prepared_hops:
-        normalized_host = hop[0].rstrip(".").split(".", 1)[0].lower()
+        normalized_host = hop[0].rstrip(".").lower()
         hops_by_host.setdefault(normalized_host, []).append(hop)
 
     for host_hops in hops_by_host.values():
