@@ -26,6 +26,9 @@ _QUEUED_AS_RE = re.compile(
 _POSTFIX_STATUS_ID_RE = re.compile(
     r"\bstatus=sent\s+\([^)]*(?<![\w-])id=(?P<id>[0-9A-Za-z\-]+)"
 )
+_POSTFIX_BOUNCE_ID_RE = re.compile(
+    r"\bsender non-delivery notification:\s+(?P<id>[0-9A-Za-z\-]+)\b"
+)
 _RELAY_RE = re.compile(
     r"relay=(?P<host>[^\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>[0-9]+)"
 )
@@ -69,6 +72,9 @@ def extract_next_mail_id(log_entry: "LogEntry") -> str | None:
         return queued_match.group("id")
 
     service = (log_entry.service or "").lower()
+    if service == "postfix/bounce":
+        bounce_match = _POSTFIX_BOUNCE_ID_RE.search(log_entry.message)
+        return bounce_match.group("id") if bounce_match else None
     if service not in ("postfix/smtp", "postfix/lmtp"):
         return None
 

@@ -27,6 +27,7 @@ from mailtrace.tracing.otel import (
 )
 from mailtrace.tracing.query import (
     HopKey,
+    _extract_message_id_from_log,
     build_hop_handoffs,
     group_logs_by_hops,
 )
@@ -127,7 +128,10 @@ def _extract_sender_recipients(
 def _extract_recipient_attributes(
     logs: Iterable[LogEntry],
 ) -> tuple[Optional[list[str]], Optional[list[str]]]:
-    """依 orig_to 區分原始收件者與展開地址，保留首次出現的順序。"""
+    """Separate original and expanded addresses using orig_to.
+
+    Preserve the order in which addresses first appear.
+    """
     recipients: list[str] = []
     expanded_recipients: list[str] = []
     for log in logs:
@@ -421,7 +425,22 @@ def _emit_trace(
     """Create and finish every span for one email message."""
     root_start = min(bounds[0] for bounds in hop_bounds.values())
     root_end = max(bounds[1] for bounds in hop_bounds.values())
-    sender, addresses = _extract_sender_recipients(message_logs)
+    bounce_hops: set[HopKey] = set()
+    for hop in ordered_hops:
+        if any(
+            parent_hop in bounce_hops
+            or (log.service or "").lower() == "postfix/bounce"
+            for parent_hop, log in hop_placements[hop].handoffs
+        ):
+            bounce_hops.add(hop)
+    # Keep the original sender and recipients on the root span.
+    # Exclude addresses used to return the bounce notification.
+    original_logs = [
+        log
+        for log in message_logs
+        if (log.hostname, log.mail_id) not in bounce_hops
+    ]
+    sender, addresses = _extract_sender_recipients(original_logs)
     source_logs = [
         log
         for hop in ordered_hops
@@ -430,7 +449,7 @@ def _emit_trace(
     ]
     recipients, _ = _extract_recipient_attributes(source_logs)
     if recipients is None:
-        recipients, _ = _extract_recipient_attributes(message_logs)
+        recipients, _ = _extract_recipient_attributes(original_logs)
     expanded_recipients = (
         [address for address in addresses or [] if address not in recipients]
         if recipients is not None
@@ -464,6 +483,14 @@ def _emit_trace(
             prepared.delivery_records
         )
         host_sender, _ = _extract_sender_recipients(prepared.logs)
+        host_message_id = next(
+            (
+                log_message_id
+                for log in prepared.logs
+                if (log_message_id := _extract_message_id_from_log(log))
+            ),
+            message_id,
+        )
         delivery_log_ids = {
             id(record.log) for record in prepared.delivery_records
         }
@@ -528,7 +555,7 @@ def _emit_trace(
                 host,
                 host_start,
                 parent_context,
-                message_id=message_id,
+                message_id=host_message_id,
                 sender=host_sender,
                 recipients=host_recipients,
                 expanded_recipients=host_expanded_recipients,

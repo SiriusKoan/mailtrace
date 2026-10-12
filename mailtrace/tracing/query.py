@@ -20,7 +20,7 @@ SCROLL_KEEPALIVE = "2m"
 
 
 def _normalize_hostname(hostname: str) -> str:
-    """統一短名稱與 FQDN 的比對鍵；queue ID 仍依 host 區分。"""
+    """Match short hostnames to FQDNs while keeping queue IDs host-specific."""
     return hostname.rstrip(".").split(".", 1)[0].lower()
 
 
@@ -220,6 +220,7 @@ def group_logs_by_message_id(
     queue_mapping = (
         queue_id_to_msg_id_map if queue_id_to_msg_id_map is not None else {}
     )
+    resolved_message_ids: dict[int, str] = {}
 
     def register_queue_mappings(log: LogEntry, message_id: str) -> None:
         if log.mail_id:
@@ -228,16 +229,36 @@ def group_logs_by_message_id(
             )
 
         if log.relay_host and log.queued_as:
-            queue_mapping[
-                (_normalize_hostname(log.relay_host), log.queued_as)
-            ] = message_id
-
-    resolved_message_ids: dict[int, str] = {}
+            next_host, next_queue_id = log.relay_host, log.queued_as
+        elif (log.service or "").lower() == "postfix/bounce":
+            next_host, next_queue_id = log.hostname, extract_next_mail_id(log)
+        else:
+            return
+        if not next_queue_id:
+            return
+        next_key = (_normalize_hostname(next_host), next_queue_id)
+        next_message_id = queue_mapping.get(next_key)
+        if next_message_id and next_message_id != message_id:
+            # Explicit queue handoffs take precedence over Message-IDs.
+            # Keep bounce notifications and subsequent relays in one trace.
+            for queue_key, mapped_id in list(queue_mapping.items()):
+                if mapped_id == next_message_id:
+                    queue_mapping[queue_key] = message_id
+            for index, mapped_id in resolved_message_ids.items():
+                if mapped_id == next_message_id:
+                    resolved_message_ids[index] = message_id
+        queue_mapping[next_key] = message_id
 
     # Seed mappings from every explicit message-id before resolving queue-only logs.
     for index, log in enumerate(logs):
         message_id = _extract_message_id_from_log(log)
         if message_id:
+            if log.mail_id:
+                # Preserve known bounce links when query windows overlap.
+                message_id = queue_mapping.get(
+                    (_normalize_hostname(log.hostname), log.mail_id),
+                    message_id,
+                )
             resolved_message_ids[index] = message_id
             register_queue_mappings(log, message_id)
 

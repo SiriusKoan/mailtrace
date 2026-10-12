@@ -9,6 +9,7 @@ from mailtrace.tracing.builder import export_traces
 from mailtrace.tracing.lifecycle import PendingTrace, should_export_trace
 from mailtrace.tracing.otel import flush_traces, init_exporter
 from mailtrace.tracing.query import (
+    _normalize_hostname,
     group_logs_by_message_id,
     query_all_logs,
 )
@@ -130,6 +131,40 @@ class EmailTracesGenerator:
         already buffered and refresh the observation round only for new logs.
         Duplicates arise naturally from the go_back_seconds overlap.
         """
+        # A bounce cleanup can precede its notification. Merge buffered traces.
+        for message_id, pending in list(self._pending.items()):
+            linked_message_id = next(
+                (
+                    mapped_id
+                    for log in pending.logs
+                    if log.mail_id
+                    if (
+                        mapped_id := self._queue_id_to_message_id.get(
+                            (_normalize_hostname(log.hostname), log.mail_id)
+                        )
+                    )
+                    is not None
+                ),
+                message_id,
+            )
+            if linked_message_id == message_id:
+                continue
+            del self._pending[message_id]
+            linked_pending = self._pending.get(linked_message_id)
+            if linked_pending is None:
+                self._pending[linked_message_id] = pending
+            else:
+                linked_pending.merge(
+                    pending.logs,
+                    max(
+                        linked_pending.last_seen_round, pending.last_seen_round
+                    ),
+                    self._log_key,
+                )
+                linked_pending.first_seen_round = min(
+                    linked_pending.first_seen_round, pending.first_seen_round
+                )
+
         for message_id, new_logs in logs_by_message_id.items():
             pending = self._pending.get(message_id)
             if pending is None:
