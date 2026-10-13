@@ -3,14 +3,14 @@
 Performance benchmark for the mailtrace.tracing module.
 
 Sends N emails via send_bulk_emails.sh, waits for OpenSearch indexing,
-then runs one tracing cycle — identical to the EmailTracesGenerator loop —
+then runs one batch through the production trace builder,
 measuring the three phases:
 
   - query_logs:    fetch log entries from OpenSearch
   - create_spans:  parse delays and build OTLP span tree
   - flush_traces:  export spans to the OTLP collector
 
-It also compares the trace structure generated from the full log window
+Outside the measured phases, it compares spans recorded during export
 against the structure expected from the same complete log set:
 
   - exact_match:   generated trace has the expected host/stage spans
@@ -26,7 +26,7 @@ Quick start (demo stack must be running):
     python demo/docker/bench_tracing.py \\
         --config   demo/docker/config.yaml \\
         --script   demo/docker/send_bulk_emails.sh \\
-        --endpoint http://localhost:4317 \\
+        --endpoint http://localhost:14317 \\
         --wait     15
 
 Use --skip-send to benchmark against data already in OpenSearch:
@@ -42,10 +42,11 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
 # Make the package importable regardless of the working directory.
@@ -53,21 +54,23 @@ from typing import NamedTuple, Optional
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from opentelemetry import trace  # noqa: E402  (needs sys.path fix above)
+from opentelemetry.sdk.trace import ReadableSpan  # noqa: E402
+from opentelemetry.sdk.trace.export import (  # noqa: E402
+    SpanExporter,
+    SpanExportResult,
+)
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E402
+    InMemorySpanExporter,
+)
 
 from mailtrace.config import load_config  # noqa: E402
+from mailtrace.tracing import otel  # noqa: E402
+from mailtrace.tracing.builder import export_traces  # noqa: E402
 from mailtrace.tracing.delay_parser import (  # noqa: E402
-    DelayInfo,
     EXIM_DELAY_STAGES,
     POSTFIX_DELAY_STAGES,
-    detect_mta_from_entries,
-    get_parser_for_mta,
 )
 from mailtrace.tracing.otel import (  # noqa: E402
-    create_delay_spans,
-    create_host_span,
-    create_root_span,
-    dt_to_ns,
     flush_traces,
     init_exporter,
 )
@@ -83,14 +86,11 @@ from mailtrace.tracing.query import (  # noqa: E402
 DEFAULT_SIZES: list[int] = [10, 50, 100, 1000]
 DEFAULT_CONFIG = "demo/docker/config.yaml"
 DEFAULT_SCRIPT = "demo/docker/send_bulk_emails.sh"
-DEFAULT_ENDPOINT = "http://localhost:4317"
+DEFAULT_ENDPOINT = "http://localhost:14317"
 DEFAULT_WAIT = 15  # seconds to wait for OpenSearch indexing
 DEFAULT_RUNS = 1  # measurement repetitions per size
 DEFAULT_SKIP_WINDOW = 60  # minutes to look back when --skip-send is used
 DEFAULT_MAX_RETRIES = 3  # max re-send attempts for incomplete full-log windows
-_EXIM_DELIVERY_RECIPIENT_RE = re.compile(
-    r"\s(?:=>|->|\*\*)\s+([^\s<>:]+@[^\s<>:]+)"
-)
 
 # Silence mailtrace's own loggers so benchmark output stays clean.
 logging.getLogger("mailtrace").setLevel(logging.WARNING)
@@ -165,45 +165,88 @@ def send_emails(script: Path, n: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Core benchmark logic  (mirrors EmailTracesGenerator.run() exactly)
+# Core benchmark logic
 # ---------------------------------------------------------------------------
-def _extract_sender_recipient(
-    logs,
-) -> tuple[Optional[str], Optional[list[str]]]:
-    """Extract sender and recipients from email logs.
+class _RecordingExporter(SpanExporter):
+    """Record exported spans without replacing the production OTLP path."""
 
-    Args:
-        logs: List of log entries for an email trace.
+    def __init__(self, delegate: SpanExporter) -> None:
+        self.delegate = delegate
+        self.recording = InMemorySpanExporter()
 
-    Returns:
-        Tuple of (sender, recipients), sender may be None.
-    """
-    sender: Optional[str] = None
-    recipients: list[str] = []
-    seen_recipients = set()
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        self.recording.export(spans)
+        return self.delegate.export(spans)
 
-    for log in logs:
-        if not sender:
-            from_match = re.search(r"from=<([^>]*)>", log.message)
-            if from_match:
-                sender = from_match.group(1)
+    def shutdown(self) -> None:
+        self.recording.shutdown()
+        self.delegate.shutdown()
 
-        # Extract all recipients from this log
-        to_match = re.search(r"to=<([^>]*)>", log.message)
-        if to_match:
-            recipient = to_match.group(1)
-            if recipient not in seen_recipients:
-                recipients.append(recipient)
-                seen_recipients.add(recipient)
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self.delegate.force_flush(timeout_millis)
 
-        exim_delivery_match = _EXIM_DELIVERY_RECIPIENT_RE.search(log.message)
-        if exim_delivery_match:
-            recipient = exim_delivery_match.group(1)
-            if recipient not in seen_recipients:
-                recipients.append(recipient)
-                seen_recipients.add(recipient)
 
-    return sender, recipients if recipients else None
+def _build_generated_signatures(
+    spans: Sequence[ReadableSpan],
+) -> TraceSignatures:
+    """Read host/stage presence from actual spans, including delivery wrappers."""
+    spans_by_trace: dict[int, list[ReadableSpan]] = {}
+    for span in spans:
+        spans_by_trace.setdefault(span.context.trace_id, []).append(span)
+
+    signatures: TraceSignatures = {}
+    stage_order = {
+        stage: index
+        for index, stage in enumerate(POSTFIX_DELAY_STAGES + EXIM_DELAY_STAGES)
+    }
+    for trace_spans in spans_by_trace.values():
+        root = next(
+            (
+                span
+                for span in trace_spans
+                if span.name == "email.delivery"
+                and span.parent is None
+                and "message.id" in (span.attributes or {})
+            ),
+            None,
+        )
+        if root is None:
+            continue
+        by_id = {span.context.span_id: span for span in trace_spans}
+        hosts = {
+            span.context.span_id: str(span.attributes["server.address"])
+            for span in trace_spans
+            if "server.address" in (span.attributes or {})
+        }
+        host_stages: dict[str, set[str]] = {
+            host: set() for host in hosts.values()
+        }
+        for span in trace_spans:
+            if "delay.duration_seconds" not in (span.attributes or {}):
+                continue
+            parent = span.parent
+            while parent is not None:
+                host = hosts.get(parent.span_id)
+                if host is not None:
+                    host_stages[host].add(span.name)
+                    break
+                ancestor = by_id.get(parent.span_id)
+                parent = ancestor.parent if ancestor is not None else None
+        signatures[str(root.attributes["message.id"])] = {
+            host: HostSignature(
+                tuple(
+                    sorted(
+                        stages,
+                        key=lambda stage: (
+                            stage_order.get(stage, len(stage_order)),
+                            stage,
+                        ),
+                    )
+                )
+            )
+            for host, stages in host_stages.items()
+        }
+    return signatures
 
 
 def _expected_stages_from_logs(logs) -> tuple[str, ...]:
@@ -274,127 +317,46 @@ def _compare_trace_signatures(
 
 
 def _run_tracing_cycle(
-    config, start_dt: datetime, end_dt: datetime
+    config,
+    start_dt: datetime,
+    end_dt: datetime,
+    recording_exporter: _RecordingExporter,
 ) -> RunResult | None:
-    """Execute one full tracing cycle and return per-phase timings.
-
-    The implementation deliberately mirrors ``EmailTracesGenerator.run()``
-    step-for-step so that the measured times are representative of the
-    real workload.
+    """Measure production batch tracing; compare structure outside the timers.
 
     Returns None if OpenSearch returned no log entries for the window.
     """
-    # ------------------------------------------------------------------
-    # Phase 1 — query logs
-    # ------------------------------------------------------------------
+    recording_exporter.recording.clear()
+
     t0 = perf_counter()
     logs = query_all_logs(config, start_dt, end_dt)
     t1 = perf_counter()
     query_time = t1 - t0
-
     if not logs:
         return None
 
-    # ------------------------------------------------------------------
-    # Phase 2 — group, parse delays, create OTLP spans
-    # ------------------------------------------------------------------
     t2 = perf_counter()
-    trace_count = 0
-
     logs_by_message_id = group_logs_by_message_id(logs)
-    expected_signatures = _build_expected_signatures(logs_by_message_id)
-    generated_signatures: TraceSignatures = {}
-
-    for message_id, message_id_logs in logs_by_message_id.items():
-        hosts_logs = group_logs_by_hosts(message_id_logs)
-
-        host_info: dict[str, tuple[DelayInfo, datetime, datetime]] = {}
-        generated_hosts: TraceSignature = {}
-
-        for host, host_logs in hosts_logs.items():
-            mta = detect_mta_from_entries(host_logs)
-            parser = get_parser_for_mta(mta)
-            delay_info = DelayInfo()
-            for log in host_logs:
-                delay_info |= parser.parse(log.message)
-            delay_values = delay_info.get_delay_values()
-            generated_hosts[host] = HostSignature(
-                stages=tuple(delay_values.keys())
-            )
-
-            host_start = min(
-                datetime.fromisoformat(log.datetime.replace("Z", "+00:00"))
-                for log in host_logs
-            )
-            host_end = host_start + timedelta(seconds=delay_info.total_delay)
-            host_info[host] = (delay_info, host_start, host_end)
-
-        if not host_info:
-            continue
-
-        trace_count += 1
-        generated_signatures[message_id] = generated_hosts
-
-        root_start = min(info[1] for info in host_info.values())
-        root_end = max(info[2] for info in host_info.values())
-
-        # Extract sender and recipients from logs
-        sender, recipients = _extract_sender_recipient(message_id_logs)
-
-        # Create root span with sender and recipients attributes
-        root_span = create_root_span(
-            message_id, root_start, sender=sender, recipients=recipients
-        )
-        root_ctx = trace.set_span_in_context(root_span)
-
-        for host, (delays, host_start, host_end) in host_info.items():
-            # Extract sender and recipients specific to this host
-            host_sender, host_recipients = _extract_sender_recipient(
-                hosts_logs[host]
-            )
-            # Extract the first queue ID for this host from the logs
-            host_queue_id = next(
-                (log.mail_id for log in hosts_logs[host] if log.mail_id), None
-            )
-            host_next_host = next(
-                (log.relay_host for log in hosts_logs[host] if log.relay_host),
-                None,
-            )
-            host_span = create_host_span(
-                host,
-                host_start,
-                root_ctx,
-                message_id=message_id,
-                sender=host_sender,
-                recipients=host_recipients,
-                queue_id=host_queue_id,
-                next_host=host_next_host,
-            )
-            host_ctx = trace.set_span_in_context(host_span)
-            create_delay_spans(delays, host, host_start, host_ctx)
-            host_span.end(end_time=dt_to_ns(host_end))
-
-        root_span.end(end_time=int(root_end.timestamp() * 1e9))
-
+    trace_count = export_traces(logs_by_message_id)
     t3 = perf_counter()
     spans_time = t3 - t2
-    correctness = _compare_trace_signatures(
-        expected_signatures, generated_signatures
-    )
 
-    # ------------------------------------------------------------------
-    # Phase 3 — flush traces to OTLP collector
-    # ------------------------------------------------------------------
     t4 = perf_counter()
     flush_traces()
     t5 = perf_counter()
     flush_time = t5 - t4
 
+    expected_signatures = _build_expected_signatures(logs_by_message_id)
+    generated_signatures = _build_generated_signatures(
+        recording_exporter.recording.get_finished_spans()
+    )
+    correctness = _compare_trace_signatures(
+        expected_signatures, generated_signatures
+    )
     total = query_time + spans_time + flush_time
     avg = total / trace_count if trace_count > 0 else 0.0
-
     return RunResult(
-        n_emails=0,  # filled in by the caller
+        n_emails=0,  # Filled in by the caller.
         n_expected=correctness.expected,
         n_traces=trace_count,
         exact_matches=correctness.exact,
@@ -588,7 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=(
             f"Number of measurement repetitions per size; "
-            f"the median is reported (default: {DEFAULT_RUNS})"
+            f"the mean is reported (default: {DEFAULT_RUNS})"
         ),
     )
     p.add_argument(
@@ -682,6 +644,9 @@ def main() -> int:  # noqa: C901
 
     print(f"Initialising OTLP exporter -> {args.endpoint} ...", flush=True)
     init_exporter(args.endpoint)
+    assert otel._exporter is not None
+    recording_exporter = _RecordingExporter(otel._exporter)
+    otel._exporter = recording_exporter
 
     # ------------------------------------------------------------------
     # Main benchmark loop
@@ -738,7 +703,9 @@ def main() -> int:  # noqa: C901
 
                 # ---- run the tracing cycle ---------------------------
                 print("  Running tracing cycle ...", flush=True)
-                candidate = _run_tracing_cycle(config, start_dt, end_dt)
+                candidate = _run_tracing_cycle(
+                    config, start_dt, end_dt, recording_exporter
+                )
 
                 if candidate is None:
                     print(

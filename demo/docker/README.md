@@ -155,8 +155,16 @@ stack, these commands expect the Docker demo environment to be running.
 `bench_tracing.py` sends each configured batch of messages, queries the
 corresponding OpenSearch logs, builds and exports OTLP spans, and measures the
 query, span-building, flush, total, and per-trace times. It also compares the
-generated host/stage structure with the structure inferred from the complete
-log set, reporting exact, malformed, and missing traces.
+host/stage presence in actual exported spans with the structure inferred from
+the complete log set, reporting exact, malformed, and missing traces. Span
+generation uses production `export_traces`, including queue hops, delivery
+wrappers, and Exim delay fields split across log records. Repeated stages on a
+host are counted once; these checks do not measure complete handoff topology.
+
+Correctness comparison, email sending, and indexing waits are outside the
+reported phase times. Local span recording is included in export work. The
+default OTLP endpoint is `http://localhost:14317`, matching the Docker demo's
+published gRPC port. Repeated runs report the mean.
 
 The following example uses the default batch sizes of 10, 50, 100, and 1,000
 messages and runs each size ten times:
