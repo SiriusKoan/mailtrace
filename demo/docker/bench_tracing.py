@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import statistics
 import subprocess
@@ -47,6 +48,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
 from typing import NamedTuple
+from uuid import uuid4
 
 # ---------------------------------------------------------------------------
 # Make the package importable regardless of the working directory.
@@ -90,7 +92,7 @@ DEFAULT_ENDPOINT = "http://localhost:14317"
 DEFAULT_WAIT = 15  # seconds to wait for OpenSearch indexing
 DEFAULT_RUNS = 1  # measurement repetitions per size
 DEFAULT_SKIP_WINDOW = 60  # minutes to look back when --skip-send is used
-DEFAULT_MAX_RETRIES = 3  # max re-send attempts for incomplete full-log windows
+DEFAULT_MAX_RETRIES = 3  # Maximum query attempts for incomplete log windows.
 
 # Silence mailtrace's own loggers so benchmark output stays clean.
 logging.getLogger("mailtrace").setLevel(logging.WARNING)
@@ -154,6 +156,9 @@ def send_emails(script: Path, n: int) -> bool:
         ["bash", str(script), str(n)],
         capture_output=True,
         text=True,
+        env=dict(
+            os.environ, MAILTRACE_RUN_PREFIX=f"mailtrace-bench-{uuid4().hex}"
+        ),
     )
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-600:].strip()
@@ -559,8 +564,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_RETRIES,
         metavar="N",
         help=(
-            "Maximum number of times to re-send emails and re-run the "
-            "tracing cycle when the observed expected trace count does not match "
+            "Maximum number of tracing attempts on the same email batch, "
+            "waiting --wait seconds before each attempt, when the observed "
+            "expected trace count does not match "
             f"the expected count (default: {DEFAULT_MAX_RETRIES})"
         ),
     )
@@ -665,41 +671,37 @@ def main() -> int:  # noqa: C901
             if args.runs > 1:
                 print(f"\n  -- Run {run_idx}/{args.runs} --")
 
-            # ---- retry loop: re-send + re-trace until complete logs are present ----
+            # Send once per run; wait for the same batch if indexing is delayed.
+            if args.skip_send:
+                end_dt = datetime.now(UTC)
+                start_dt = end_dt - timedelta(minutes=args.skip_window)
+                print(
+                    f"  [skip-send] window: "
+                    f"{start_dt.strftime('%H:%M:%S')} -> "
+                    f"{end_dt.strftime('%H:%M:%S')} UTC",
+                    flush=True,
+                )
+            else:
+                start_dt = datetime.now(UTC)
+                if not send_emails(script_path, n):
+                    print(f"  WARNING: Send errors. Skipping run {run_idx}.")
+                    continue
+
             result: RunResult | None = None
 
             for attempt in range(1, args.max_retries + 1):
                 if attempt > 1:
                     print(f"  -- Retry {attempt}/{args.max_retries} --")
 
-                # ---- determine time window ----------------------------
-                if args.skip_send:
-                    end_dt = datetime.now(UTC)
-                    start_dt = end_dt - timedelta(minutes=args.skip_window)
-                    print(
-                        f"  [skip-send] window: "
-                        f"{start_dt.strftime('%H:%M:%S')} -> "
-                        f"{end_dt.strftime('%H:%M:%S')} UTC",
-                        flush=True,
-                    )
-                else:
-                    start_dt = datetime.now(UTC)
-                    ok = send_emails(script_path, n)
-                    if not ok:
-                        print(
-                            f"  WARNING: Send errors on attempt {attempt}; retrying."
-                        )
-                        continue
-                    send_end_dt = datetime.now(UTC)
-
+                if not args.skip_send:
                     print(
                         f"  Waiting {args.wait}s for OpenSearch indexing ...",
                         flush=True,
                     )
                     time.sleep(args.wait)
 
-                    # Add a generous buffer so all log entries land in the window.
-                    end_dt = send_end_dt + timedelta(seconds=args.wait + 5)
+                    # Keep the original start and include later delivery logs.
+                    end_dt = datetime.now(UTC) + timedelta(seconds=5)
 
                 # ---- run the tracing cycle ---------------------------
                 print("  Running tracing cycle ...", flush=True)
@@ -713,7 +715,7 @@ def main() -> int:  # noqa: C901
                         "Check that the demo stack is running and logs are being "
                         "shipped to OpenSearch."
                         + (
-                            " Skipping (--skip-send prevents re-sending)."
+                            " Skipping (--skip-send)."
                             if args.skip_send
                             else " Retrying."
                         )
@@ -726,7 +728,7 @@ def main() -> int:  # noqa: C901
                     print(
                         f"  WARNING: Expected {n} trace(s) but got "
                         f"{candidate.n_expected} expected trace(s) from full "
-                        f"logs on attempt {attempt}. Retrying."
+                        f"logs on attempt {attempt}. Waiting for the same batch."
                     )
                     continue
 

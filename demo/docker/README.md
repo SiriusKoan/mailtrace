@@ -166,6 +166,11 @@ reported phase times. Local span recording is included in export work. The
 default OTLP endpoint is `http://localhost:14317`, matching the Docker demo's
 published gRPC port. Repeated runs report the mean.
 
+Each batch uses a unique Message-ID prefix. If logs are incomplete, the script
+waits `--wait` seconds before querying the same batch again, up to
+`--max-retries` attempts, without resending emails. Once the expected count is
+complete, malformed and missing traces remain part of the reported results.
+
 The following example uses the default batch sizes of 10, 50, 100, and 1,000
 messages and runs each size ten times:
 
