@@ -57,6 +57,63 @@ def generated_signature(spans):
     return build_generated_signatures([trace_obj], {"message@test"})
 
 
+class ExpectedSignatureTest(unittest.TestCase):
+    def test_baseline_uses_exported_hosts_without_changing_tracing_state(self):
+        no_queue_log = LogEntry(
+            datetime="2026-10-08T12:00:00+08:00",
+            hostname="mail-b",
+            service="postfix/cleanup",
+            mail_id="",
+            message="message-id=<message@test>",
+        )
+        logs = {
+            "message@test": [
+                LogEntry(
+                    datetime="2026-10-08T12:00:00+08:00",
+                    hostname="mail-a",
+                    service="postfix/smtp",
+                    mail_id="QUEUE-A",
+                    message="status=sent, delays=0.1/0.2/0.3/0.4",
+                ),
+                no_queue_log,
+            ],
+            "no-queue@test": [no_queue_log],
+        }
+        previous_exporter = InMemorySpanExporter()
+        previous_providers = {"existing": object()}
+        with (
+            patch.object(otel, "_exporter", previous_exporter),
+            patch.object(otel, "_providers", previous_providers),
+        ):
+            self.assertEqual(
+                build_expected_signatures(logs),
+                {
+                    "message@test": {
+                        "mail-a": HostSignature(tuple(POSTFIX_DELAY_STAGES))
+                    }
+                },
+            )
+            self.assertIs(otel._exporter, previous_exporter)
+            self.assertIs(otel._providers, previous_providers)
+            self.assertEqual(previous_exporter.get_finished_spans(), ())
+
+    def test_baseline_restores_tracing_state_when_export_fails(self):
+        previous_exporter = InMemorySpanExporter()
+        previous_providers = {"existing": object()}
+        with (
+            patch.object(otel, "_exporter", previous_exporter),
+            patch.object(otel, "_providers", previous_providers),
+            patch(
+                "demo.docker.bench_daemon_correctness.export_traces",
+                side_effect=RuntimeError("export failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "export failed"):
+                build_expected_signatures({})
+            self.assertIs(otel._exporter, previous_exporter)
+            self.assertIs(otel._providers, previous_providers)
+
+
 class GeneratedSignatureTest(unittest.TestCase):
     def test_actual_exporter_with_delivery_wrapper_matches_complete_logs(self):
         logs = {

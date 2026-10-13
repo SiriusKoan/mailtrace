@@ -229,11 +229,13 @@ uv run python demo/docker/bench_host_ablation.py \
 ### Production daemon correctness
 
 `bench_daemon_correctness.py` starts the production tracing CLI for each
-polling-parameter set, sends test messages, derives expected traces from
-complete OpenSearch logs, reads generated traces from Tempo, and compares
-their structures. After each parameter set finishes, the script prints that
-set's mean and sample standard deviation. It prints the complete aggregate
-table again after all parameter sets finish.
+polling-parameter set, sends test messages, and builds baseline traces from
+complete OpenSearch logs in one production `export_traces` call. Baseline spans
+are kept in memory and are not written to Tempo. The script reads daemon traces
+from Tempo and compares host sets and delay-stage names and order. After each
+parameter set finishes, it prints the exact-match rate's mean and sample
+standard deviation, then prints the complete aggregate table after all sets
+finish.
 
 This example evaluates the full combination of the listed hold-round and
 look-back values, running each parameter set ten times:

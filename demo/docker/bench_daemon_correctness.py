@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Sidecar correctness benchmark for the production tracing daemon.
+Correctness benchmark for the production tracing daemon.
 
-This script does not call daemon internals.  For each parameter set, it starts
-the normal CLI daemon, sends test emails, reads expected traces from complete
-OpenSearch logs, reads generated traces from Tempo, and compares structures.
+Each parameter set starts the production CLI daemon and sends test emails.
+Complete OpenSearch logs are passed to export_traces in one call to build
+baseline traces, kept in memory for comparison with daemon traces from Tempo.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 import shutil
 import signal
 import statistics
@@ -27,17 +26,19 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import yaml
+from google.protobuf.json_format import MessageToDict
+from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from mailtrace.config import load_config  # noqa: E402
-from mailtrace.tracing.delay_parser import (  # noqa: E402
-    EXIM_DELAY_STAGES,
-    POSTFIX_DELAY_STAGES,
-)
+from mailtrace.tracing import otel  # noqa: E402
+from mailtrace.tracing.builder import export_traces  # noqa: E402
 from mailtrace.tracing.query import (  # noqa: E402
-    group_logs_by_hosts,
     group_logs_by_message_id,
     query_all_logs,
 )
@@ -237,41 +238,24 @@ def send_emails(script: Path, n: int) -> None:
         raise RuntimeError(f"{script.name} exited {proc.returncode}\n{tail}")
 
 
-def expected_stages_from_logs(logs) -> tuple[str, ...]:
-    """Infer expected delay span names from raw log signals."""
-    postfix_delay_pattern = (
-        r"\bdelays=\d+(?:\.\d+)?/\d+(?:\.\d+)?/" r"\d+(?:\.\d+)?/\d+(?:\.\d+)?"
-    )
-    if any(re.search(postfix_delay_pattern, log.message) for log in logs):
-        return tuple(POSTFIX_DELAY_STAGES)
-
-    has_qt = any(
-        re.search(r"\bQT=\d+(?:\.\d+)?s?", log.message) for log in logs
-    )
-    has_rt = any(
-        re.search(r"\bRT=\d+(?:\.\d+)?s?", log.message) for log in logs
-    )
-    has_dt = any(
-        re.search(r"\bDT=\d+(?:\.\d+)?s?", log.message) for log in logs
-    )
-    if has_qt and has_rt and has_dt:
-        return tuple(EXIM_DELAY_STAGES)
-
-    return ()
-
-
 def build_expected_signatures(logs_by_message_id) -> TraceSignatures:
-    """Build expected trace structures from complete OpenSearch logs."""
-    signatures: TraceSignatures = {}
-    for message_id, message_id_logs in logs_by_message_id.items():
-        host_signatures: TraceSignature = {}
-        for host, host_logs in group_logs_by_hosts(message_id_logs).items():
-            host_signatures[host] = HostSignature(
-                stages=expected_stages_from_logs(host_logs)
-            )
-        if host_signatures:
-            signatures[message_id] = host_signatures
-    return signatures
+    """Build a baseline through production export without writing to Tempo."""
+    exporter = InMemorySpanExporter()
+    previous_exporter = otel._exporter
+    previous_providers = otel._providers
+    otel._exporter = exporter
+    otel._providers = {}
+    try:
+        export_traces(logs_by_message_id)
+        otel.flush_traces()
+        trace_obj = MessageToDict(encode_spans(exporter.get_finished_spans()))
+        return build_generated_signatures([trace_obj], set(logs_by_message_id))
+    finally:
+        providers = otel._providers
+        otel._exporter = previous_exporter
+        otel._providers = previous_providers
+        for provider in providers.values():
+            provider.shutdown()
 
 
 def attribute_value(attribute: dict[str, Any]) -> Any:
