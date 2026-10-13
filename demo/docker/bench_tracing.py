@@ -89,10 +89,9 @@ DEFAULT_SIZES: list[int] = [10, 50, 100, 1000]
 DEFAULT_CONFIG = "demo/docker/config.yaml"
 DEFAULT_SCRIPT = "demo/docker/send_bulk_emails.sh"
 DEFAULT_ENDPOINT = "http://localhost:14317"
-DEFAULT_WAIT = 15  # seconds to wait for OpenSearch indexing
+DEFAULT_WAIT = 15  # Maximum seconds to wait for OpenSearch indexing.
 DEFAULT_RUNS = 1  # measurement repetitions per size
 DEFAULT_SKIP_WINDOW = 60  # minutes to look back when --skip-send is used
-DEFAULT_MAX_RETRIES = 3  # Maximum query attempts for incomplete log windows.
 
 # Silence mailtrace's own loggers so benchmark output stays clean.
 logging.getLogger("mailtrace").setLevel(logging.WARNING)
@@ -326,10 +325,11 @@ def _run_tracing_cycle(
     start_dt: datetime,
     end_dt: datetime,
     recording_exporter: _RecordingExporter,
+    expected_count: int | None = None,
 ) -> RunResult | None:
     """Measure production batch tracing; compare structure outside the timers.
 
-    Returns None if OpenSearch returned no log entries for the window.
+    Returns None if logs are empty or the indexed message count is incomplete.
     """
     recording_exporter.recording.clear()
 
@@ -342,6 +342,15 @@ def _run_tracing_cycle(
 
     t2 = perf_counter()
     logs_by_message_id = group_logs_by_message_id(logs)
+    if (
+        expected_count is not None
+        and len(logs_by_message_id) != expected_count
+    ):
+        print(
+            f"  Indexed messages: {len(logs_by_message_id)}/{expected_count}",
+            flush=True,
+        )
+        return None
     trace_count = export_traces(logs_by_message_id)
     t3 = perf_counter()
     spans_time = t3 - t2
@@ -536,8 +545,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WAIT,
         metavar="SEC",
         help=(
-            f"Seconds to wait after sending for OpenSearch to finish "
-            f"indexing the logs (default: {DEFAULT_WAIT})"
+            "Maximum seconds to wait for indexed messages, checking again "
+            f"every second until ready (default: {DEFAULT_WAIT})"
         ),
     )
     p.add_argument(
@@ -561,14 +570,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-retries",
         type=int,
-        default=DEFAULT_MAX_RETRIES,
         metavar="N",
-        help=(
-            "Maximum number of tracing attempts on the same email batch, "
-            "waiting --wait seconds before each attempt, when the observed "
-            "expected trace count does not match "
-            f"the expected count (default: {DEFAULT_MAX_RETRIES})"
-        ),
+        help=("Deprecated and ignored; --wait now bounds indexing retries."),
     )
     p.add_argument(
         "--skip-send",
@@ -599,6 +602,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:  # noqa: C901
     args = build_parser().parse_args()
+    if args.wait < 0:
+        print("ERROR: --wait must be non-negative", file=sys.stderr)
+        return 1
+    if args.max_retries is not None:
+        print(
+            "WARNING: --max-retries is ignored; polling is bounded by --wait."
+        )
 
     if args.verbose:
         logging.basicConfig(
@@ -637,7 +647,7 @@ def main() -> int:  # noqa: C901
     print(f"OTLP endpoint: {args.endpoint}")
     if not args.skip_send:
         print(f"Send script:   {script_path}")
-        print(f"Index wait:    {args.wait}s")
+        print(f"Index timeout: {args.wait}s (checks every second)")
     print(f"Sizes:         {args.sizes}")
     print(f"Runs/size:     {args.runs}")
 
@@ -688,60 +698,50 @@ def main() -> int:  # noqa: C901
                     continue
 
             result: RunResult | None = None
+            deadline = time.monotonic() + args.wait
+            if not args.skip_send:
+                print(
+                    f"  Waiting up to {args.wait}s for indexed messages ...",
+                    flush=True,
+                )
 
-            for attempt in range(1, args.max_retries + 1):
-                if attempt > 1:
-                    print(f"  -- Retry {attempt}/{args.max_retries} --")
-
+            while True:
                 if not args.skip_send:
-                    print(
-                        f"  Waiting {args.wait}s for OpenSearch indexing ...",
-                        flush=True,
-                    )
-                    time.sleep(args.wait)
-
                     # Keep the original start and include later delivery logs.
                     end_dt = datetime.now(UTC) + timedelta(seconds=5)
 
                 # ---- run the tracing cycle ---------------------------
-                print("  Running tracing cycle ...", flush=True)
                 candidate = _run_tracing_cycle(
-                    config, start_dt, end_dt, recording_exporter
+                    config,
+                    start_dt,
+                    end_dt,
+                    recording_exporter,
+                    expected_count=None if args.skip_send else n,
                 )
 
-                if candidate is None:
+                if candidate is not None:
+                    # Preserve generated trace errors once the input count is ready.
+                    result = candidate._replace(n_emails=n)
+                    break
+
+                if args.skip_send:
                     print(
-                        f"  WARNING: No log entries returned on attempt {attempt}. "
-                        "Check that the demo stack is running and logs are being "
-                        "shipped to OpenSearch."
-                        + (
-                            " Skipping (--skip-send)."
-                            if args.skip_send
-                            else " Retrying."
-                        )
+                        "  WARNING: No log entries returned. Skipping (--skip-send)."
                     )
-                    if args.skip_send:
-                        break
-                    continue
+                    break
 
-                if not args.skip_send and candidate.n_expected != n:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     print(
-                        f"  WARNING: Expected {n} trace(s) but got "
-                        f"{candidate.n_expected} expected trace(s) from full "
-                        f"logs on attempt {attempt}. Waiting for the same batch."
+                        f"  WARNING: Timed out after {args.wait}s waiting for "
+                        f"{n} indexed messages. Skipping run {run_idx}."
                     )
-                    continue
-
-                # Full logs are present; preserve generated trace errors in metrics.
-                result = candidate._replace(n_emails=n)
-                break
-
-            else:
-                # Exhausted all retry attempts without a complete full-log set.
+                    break
                 print(
-                    f"  WARNING: Could not obtain exactly {n} expected trace(s) after "
-                    f"{args.max_retries} attempt(s). Skipping run {run_idx}."
+                    "  Logs are incomplete; checking again in 1s ...",
+                    flush=True,
                 )
+                time.sleep(min(1, remaining))
 
             if result is None:
                 continue

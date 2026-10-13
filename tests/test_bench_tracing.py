@@ -4,7 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from demo.docker import bench_tracing as benchmark
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -282,19 +282,30 @@ class TracingBenchmarkTest(unittest.TestCase):
         with (
             patch(
                 "sys.argv",
-                ["bench_tracing.py", "--sizes", "1000", "--wait", "30"],
+                [
+                    "bench_tracing.py",
+                    "--sizes",
+                    "1000",
+                    "--wait",
+                    "30",
+                    "--max-retries",
+                    "3",
+                ],
             ),
             patch.object(benchmark, "load_config"),
             patch.object(benchmark, "init_exporter"),
             patch.object(benchmark, "send_emails", return_value=True) as send,
             patch.object(benchmark.time, "sleep") as sleep,
+            patch.object(benchmark.time, "monotonic", return_value=0),
             patch.object(benchmark, "datetime") as clock,
             patch.object(
                 benchmark,
                 "_run_tracing_cycle",
                 side_effect=[
                     None,
-                    complete._replace(n_expected=999),
+                    None,
+                    None,
+                    None,
                     complete,
                 ],
             ) as cycle,
@@ -302,21 +313,84 @@ class TracingBenchmarkTest(unittest.TestCase):
         ):
             clock.now.side_effect = [
                 self.start + timedelta(seconds=seconds)
-                for seconds in (0, 30, 60, 90)
+                for seconds in (0, 0, 1, 2, 3, 4)
             ]
             self.assertEqual(benchmark.main(), 0)
 
         send.assert_called_once()
-        self.assertEqual(sleep.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [call(1)] * 4)
         windows = [call.args[1:3] for call in cycle.call_args_list]
         self.assertEqual(len({start for start, _ in windows}), 1)
         self.assertEqual(
             [end for _, end in windows],
             [
                 self.start + timedelta(seconds=seconds)
-                for seconds in (35, 65, 95)
+                for seconds in (5, 6, 7, 8, 9)
             ],
         )
+
+    def test_cli_ready_batch_does_not_sleep(self) -> None:
+        complete = benchmark.RunResult(
+            0, 1000, 1000, 1000, 0, 0, 1.0, 1, 1, 1, 3, 0.003
+        )
+        with (
+            patch("sys.argv", ["bench_tracing.py", "--sizes", "1000"]),
+            patch.object(benchmark, "load_config"),
+            patch.object(benchmark, "init_exporter"),
+            patch.object(benchmark, "send_emails", return_value=True),
+            patch.object(benchmark.time, "sleep") as sleep,
+            patch.object(
+                benchmark, "_run_tracing_cycle", return_value=complete
+            ) as cycle,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(benchmark.main(), 0)
+
+        sleep.assert_not_called()
+        cycle.assert_called_once()
+
+    def test_cli_stops_polling_at_wait_deadline(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "sys.argv",
+                ["bench_tracing.py", "--sizes", "1000", "--wait", "2"],
+            ),
+            patch.object(benchmark, "load_config"),
+            patch.object(benchmark, "init_exporter"),
+            patch.object(benchmark, "send_emails", return_value=True) as send,
+            patch.object(benchmark.time, "sleep") as sleep,
+            patch.object(
+                benchmark.time, "monotonic", side_effect=[0, 0, 1, 2]
+            ),
+            patch.object(
+                benchmark, "_run_tracing_cycle", return_value=None
+            ) as cycle,
+            redirect_stdout(output),
+            patch("sys.stderr", new=io.StringIO()),
+        ):
+            self.assertEqual(benchmark.main(), 1)
+
+        send.assert_called_once()
+        self.assertEqual(cycle.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertIn("Timed out", output.getvalue())
+
+    def test_incomplete_indexed_batch_skips_export(self) -> None:
+        with (
+            patch.object(benchmark, "query_all_logs", return_value=self.logs),
+            patch.object(benchmark, "export_traces") as export,
+        ):
+            result = benchmark._run_tracing_cycle(
+                object(),
+                self.start,
+                self.start + timedelta(minutes=1),
+                self.exporter,
+                expected_count=2,
+            )
+
+        self.assertIsNone(result)
+        export.assert_not_called()
 
     def test_cli_keeps_trace_errors_when_expected_count_is_complete(
         self,
