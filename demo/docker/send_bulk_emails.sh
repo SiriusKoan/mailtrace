@@ -39,10 +39,16 @@ for ((i=1; i<=NUM_EMAILS; i++)); do
     port=${PORTS[$scenario]}
     recipient=${RECIPIENTS[$scenario]}
     name=${NAMES[$scenario]}
+    # Replace the default header to keep one Message-ID per test message.
+    message_id_args=()
+    if [ -n "${MAILTRACE_RUN_PREFIX:-}" ]; then
+        message_id_args=(--h-Message-Id "<${MAILTRACE_RUN_PREFIX}-${i}@daemon-benchmark.test>")
+    fi
     printf '[%d/%d] %s -> %s ... ' "$i" "$NUM_EMAILS" "$name" "$recipient"
     if swaks \
         --to "$recipient" \
         --from "sender-${name}@sender.test" \
+        "${message_id_args[@]}" \
         --helo sender.test \
         --server 127.0.0.1 \
         --port "$port" \

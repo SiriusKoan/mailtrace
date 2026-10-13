@@ -98,35 +98,37 @@ The script records failed correctness checks but returns status code `0`.
 Infrastructure failures such as SMTP, IMAP, OpenSearch, or configuration errors
 return a non-zero status code.
 
-同一次執行亦會驗證 Message-ID evidence 消融，結果記錄於 JSON 的
-`membership_ablation`。所有模式保留完整日誌筆數、queue ID、handoff
-records 與延遲欄位，只移除 Postfix `message-id=<...>` 和 Exim 接收紀錄
-中的 `id=...@...`，不移除 SMTP 回覆中的 queue ID。
+The same run also tests Message-ID evidence ablation, recorded in the JSON
+`membership_ablation` section. Every mode preserves log count, queue IDs, handoff
+records, and delays. Only Postfix `message-id=<...>` and Exim acceptance
+`id=...@...` fields are removed; queue IDs in SMTP replies remain intact.
 
-- `entrypoint-only`：每封郵件只保留入口 queue 的 Message-ID 種子，將混合
-  日誌重新交由正式分組程式處理，驗證下游 membership propagation。
-- `entrypoint-only-reversed`：使用相同消融資料並反轉時間順序，驗證多輪
-  傳播不依賴輸入順序。
-- `cached-entrypoint`：第一批次只處理入口 Message-ID 紀錄；第二批次移除
-  全部 Message-ID evidence，沿用第一批次建立的 queue mapping，驗證
-  跨批次 fallback 與下游傳播。
-- `no-seed-control`：移除全部 Message-ID evidence，使用空白 mapping；
-  預期無法識別郵件，分組數與 trace 數皆為零。
+- `entrypoint-only` retains one entry queue Message-ID seed per message and
+  regroups mixed logs through production code to test downstream propagation.
+- `entrypoint-only-reversed` reverses the same ablated input to test propagation
+  across multiple passes independently of input order.
+- `cached-entrypoint` processes only entry Message-ID records in the first batch,
+  then removes all Message-ID evidence in the second batch while retaining the
+  first batch's queue mappings to test cross-batch fallback and propagation.
+- `no-seed-control` removes all Message-ID evidence and uses empty mappings;
+  message groups and generated traces are expected to be empty.
 
-前三種模式逐封比對日誌歸屬，並沿用信箱 `Received` 與原始日誌 oracle
-驗證節點、交接邊、span 屬性、延遲值及期間。消融流程只用原始分組選取
-本次測試資料；正式重新分組時不傳入原始分組或下游 queue mapping。
+The first three modes compare per-message log membership and use mailbox Received
+chains and raw-log oracles to verify nodes, edges, span attributes, delays, and
+durations. Original groups only select the run's input. Production regrouping
+receives neither those original groups nor precomputed downstream mappings.
 
-`handoff_ablation` 記錄另一個 `no-handoff-tokens` 消融模式：保留每個
-queue hop 的 Message-ID，移除 `queued as QUEUEID`、`forwarded as QUEUEID`
-及 SMTP 回覆中的 `id=QUEUEID`，同時清除解析後的 `queued_as`。本 hop
-的 queue ID、relay 資訊、日誌筆數與延遲紀錄維持完整。
+The `handoff_ablation` section records a separate `no-handoff-tokens` mode. It
+retains Message-ID evidence at every queue hop while removing `queued as QUEUEID`,
+`forwarded as QUEUEID`, and SMTP reply `id=QUEUEID` tokens, and clearing parsed
+`queued_as` fields. Each hop's own queue ID, relay information, log count, and
+delay records remain intact.
 
-這個模式預期逐筆日誌歸屬與全部節點保留，但交接邊為零，span 不應含有
-`email.next_queue_id` 或 `email.handoff=explicit`。原始信箱與 raw-log
-oracle 保持完整，JSON 另列空白的 `expected_trace_edges`，明確區分原始
-交接圖與消融後預期結果。相同 host 重訪可能標示 `implicit`，但仍不得
-建立任何 hop 之間的邊。
+This mode expects all log membership and nodes to remain, with zero handoff edges
+and no `email.next_queue_id` or `email.handoff=explicit` span attributes. Mailbox
+and raw-log oracles remain complete; an empty `expected_trace_edges` field
+separately records the ablated expectation. Repeated hosts may have `implicit`
+handoff attributes but must still produce no edges between hops.
 
 ## Resource benchmark
 
@@ -170,6 +172,14 @@ each configured fraction of log entries, and reconstructs traces from the
 remaining logs. Across repeated trials it reports exact, malformed, and
 missing trace percentages plus mean span, delay-stage, and edge recall.
 
+`handoff_edge_recall` measures directed handoff edges from production tracing
+spans, with nodes identified by `(hostname, queue ID)`. Each trial divides the
+number of retained baseline edges across all messages by the total baseline
+edge count, then results are averaged across trials. Missing traces keep their
+baseline edges in the denominator. A baseline with no edges has recall `1.0`.
+The JSON field is `handoff_edge_recall_mean`; the existing `edge_recall` measures
+root-to-host and host-to-delay-stage structural edges.
+
 This example sends 100 messages per trial, runs ten trials, and includes a 0%
 control in addition to missing-log ratios from 10% through 70%:
 
@@ -186,6 +196,13 @@ uv run python demo/docker/bench_random_missing_logs.py \
 logs from one host at a time. It classifies each reconstructed trace as
 unchanged, missing only the removed host, changed on other hosts, or
 disappeared, and reports retained span, stage, and edge recall.
+
+`handoff_edge_recall` also uses directed handoff edges from production spans.
+It excludes baseline edges incident to the removed host, then divides retained
+baseline edges across all messages by the remaining baseline edge count.
+Missing traces keep their remaining baseline edges in the denominator. A
+remaining baseline with no edges has recall `1.0`. The JSON field is
+`retained_handoff_edge_recall_mean`.
 
 This example sends 100 messages through the mailer-entrypoint team-alias path
 and evaluates every host found in the resulting logs:
@@ -231,19 +248,41 @@ Run all scenarios with the default ports and timeout:
 uv run python demo/docker/bench_handoff_correctness.py
 ```
 
-### Timestamp-only handoff comparison
+### Timestamp and mailtrace accuracy against a Received oracle
 
-`bench_handoff_timestamp.py` compares the current queue-handoff topology with
-a timestamp-only topology over its fixed one-day OpenSearch dataset. It
-replays production query windows and lifecycle behavior, then reports complete
-host-order and topology matches plus edge precision, recall, and F1. Synthetic
-topology and queue-mapping validation runs before the dataset comparison.
+`bench_handoff_timestamp.py` reuses the 16 routing scenarios, SMTP/IMAP/OpenSearch
+collection routines, and Received header parser from `bench_handoff_correctness.py`.
+The union of recipient Received chains provides an independent oracle. Both methods
+are scored against it; mailtrace accuracy is calculated from its actual output.
 
-Run the complete fixed-dataset comparison and write the default JSON result:
+Both methods receive the same logs grouped by Message-ID and queue ID handoffs.
+Mailtrace runs production `export_traces` and reconstructs topology from exported
+spans. Timestamp ordering builds a linear topology from each queue hop's earliest
+raw log timestamp, breaking ties by hostname and queue ID without using handoff
+evidence to determine order. This comparison measures topology reconstruction on
+shared message groups; it does not compare message grouping algorithms.
+
+Nodes are `(hostname, queue ID)` pairs, preserving branches and repeated hosts.
+Complete topology accuracy requires both nodes and edges to exactly match the
+oracle. Edge precision, recall, and F1 use micro-averaged TP/FP/FN across all
+scenarios. Every sent message remains in the denominator, including missing traces,
+branches, and ambiguous handoffs. Invalid Received headers, missing mailbox copies,
+or routes that differ from the scenario manifest fail as infrastructure errors.
+The JSON includes missing and extra nodes and edges for each method. Percentage
+point differences are timestamp minus mailtrace.
+
+Run after starting the Docker demo above. The default output is
+`demo/docker/bench_handoff_timestamp_result.json`. Accuracy differences do not
+change the exit code; infrastructure or oracle failures return a non-zero status:
 
 ```shell
 uv run python demo/docker/bench_handoff_timestamp.py
 ```
+
+Connection options match the correctness benchmark. Additional options are
+`--result` (or `--output`), `--print-result`, and `--self-test`, which requires no
+Docker services. Legacy fixed-dataset results lack a Received oracle and must be
+regenerated before using the new summary format.
 
 ### Container resource sampler
 

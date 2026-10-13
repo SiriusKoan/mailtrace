@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""以信箱與原始日誌驗證 handoff，以及缺少 Message-ID 時的分組行為。"""
+"""Verify handoffs and grouping without Message-ID using mailboxes and raw logs."""
 
 from __future__ import annotations
 
@@ -647,6 +647,8 @@ def export_span_graphs(
             attributes,
             dict(trace_delays),
         )
+    for provider in otel._providers.values():
+        provider.shutdown()
     otel._providers.clear()
     otel._exporter = None
     return trace_count, graphs
@@ -920,7 +922,7 @@ def print_results(results: list[dict[str, Any]]) -> None:
 
 
 def strip_message_id_evidence(log: LogEntry) -> LogEntry:
-    """僅移除 Message-ID 欄位，保留 queue ID、handoff 與 RT/QT/DT。"""
+    """Remove only Message-ID fields, preserving queue IDs, handoffs, and RT/QT/DT."""
     message = POSTFIX_MESSAGE_ID_FIELD_RE.sub("", log.message)
     if (log.service or "").lower() in ("exim", "exim4") and re.search(
         r"(?:^|\s)<=\s", message
@@ -930,7 +932,7 @@ def strip_message_id_evidence(log: LogEntry) -> LogEntry:
 
 
 def handoff_records(logs: list[LogEntry]) -> Counter:
-    """比較每筆交接的來源、目的與原始 SMTP 回覆，包含重複紀錄。"""
+    """Compare handoff sources, targets, and raw SMTP replies, including duplicates."""
     return Counter(
         (
             normalize_host(log.hostname),
@@ -945,7 +947,7 @@ def handoff_records(logs: list[LogEntry]) -> Counter:
 
 
 def strip_handoff_evidence(log: LogEntry) -> LogEntry:
-    """移除原始與已解析的下游 queue ID，保留本 hop 與 Message-ID。"""
+    """Remove raw and parsed downstream queue IDs, preserving this hop and Message-ID."""
     message = HANDOFF_QUEUE_TOKEN_RE.sub("", log.message)
     service = (log.service or "").lower()
     if service in ("postfix/smtp", "postfix/lmtp") or (
@@ -957,7 +959,7 @@ def strip_handoff_evidence(log: LogEntry) -> LogEntry:
 
 
 def message_id_records(logs: list[LogEntry]) -> Counter:
-    """逐 hop 比較 Message-ID 欄位原文及紀錄數量。"""
+    """Compare raw Message-ID fields and record counts for each hop."""
     records = Counter()
     for log in logs:
         patterns = [POSTFIX_MESSAGE_ID_FIELD_RE]
@@ -980,7 +982,7 @@ def benchmark_handoff_ablation(
     raw_delays: dict[str, RawDelays],
     production_groups: dict[str, list[LogEntry]],
 ) -> dict[str, Any]:
-    """保留每個 hop 的 Message-ID，驗證移除交接證據後沒有交接邊。"""
+    """Retain each hop's Message-ID and verify no edges remain without handoff evidence."""
     expected_groups = {
         message_id: [strip_handoff_evidence(log) for log in group]
         for message_id, group in production_groups.items()
@@ -1024,7 +1026,7 @@ def benchmark_handoff_ablation(
             span_graphs.get(item.message_id),
         )
         result["expected_trace_edges"] = []
-        # 原始 oracle 保持完整；消融後只接受沒有交接邊的 trace。
+        # Keep the original oracle intact; ablated traces must have no handoff edges.
         result["checks"]["trace_edges"] = not result["trace_edges"]
         result["checks"]["trace_next_attributes"] = all(
             not row.get("email.next_queue_id")
@@ -1066,7 +1068,7 @@ def ablate_message_ids(
     entry_hops: set[Hop],
     keep_entrypoint: bool,
 ) -> tuple[dict[str, list[LogEntry]], list[LogEntry]]:
-    """建立獨立消融輸入；入口種子只包含原本具有 Message-ID 的紀錄。"""
+    """Build separate ablation input, seeding only entry records with Message-ID evidence."""
     expected = {}
     seeds = []
     for message_id, logs in groups.items():
@@ -1092,7 +1094,7 @@ def benchmark_membership(
     raw_delays: dict[str, RawDelays],
     production_groups: dict[str, list[LogEntry]],
 ) -> dict[str, Any]:
-    """重新分組混合日誌，驗證入口傳播、跨批次 mapping 與無種子對照。"""
+    """Regroup mixed logs to test entry propagation, cross-batch mappings, and no-seed controls."""
     entry_hops = {
         received_hops(raw_message)[0][0]
         for copies in mailbox_messages.values()
@@ -1114,14 +1116,14 @@ def benchmark_membership(
             production_groups, entry_hops, keep_entrypoint
         )
         logs = [log for group in expected_groups.values() for log in group]
-        # 反向輸入要求分組程式完成多輪傳播，不能依賴日誌順序。
+        # Reversed input requires propagation across passes independent of log order.
         logs.sort(key=lambda log: log.datetime)
         if mode == "entrypoint-only-reversed":
             logs.reverse()
         queue_mapping = {}
         seed_groups = {}
         if mode == "cached-entrypoint":
-            # 第一批次只讀取入口 Message-ID，不預先建立下游 mapping。
+            # The first batch reads only entry Message-IDs, without downstream mappings.
             seed_groups = group_logs_by_message_id(seeds, queue_mapping)
         initial_mapping_count = len(queue_mapping)
         grouped = group_logs_by_message_id(logs, queue_mapping)
@@ -1164,7 +1166,7 @@ def benchmark_membership(
                     raw_delays[item.message_id],
                     span_graphs.get(item.message_id),
                 )
-                # 同時驗證每筆紀錄的歸屬，避免拓樸相同卻混入其他郵件。
+                # Verify every record's membership to detect contamination despite matching topology.
                 result["checks"]["log_membership"] = Counter(
                     id(log) for log in grouped.get(item.message_id, [])
                 ) == Counter(

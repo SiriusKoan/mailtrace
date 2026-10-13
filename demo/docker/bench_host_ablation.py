@@ -26,6 +26,15 @@ from typing import NamedTuple
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+from demo.docker.bench_handoff_correctness import (  # noqa: E402
+    Edge,
+    normalize_host,
+)
+from demo.docker.bench_random_missing_logs import (  # noqa: E402
+    generate_handoff_edges,
+    handoff_edge_recall,
+)
+
 from mailtrace.config import load_config  # noqa: E402
 from mailtrace.tracing.delay_parser import (  # noqa: E402
     DelayInfo,
@@ -69,11 +78,12 @@ class TraceClassCounts(NamedTuple):
 
 
 class RecallSummary(NamedTuple):
-    """Mean retained structure recall for one dropped host."""
+    """Recall of retained structure and handoff edges after host removal."""
 
     retained_span_recall_mean: float
     retained_stage_recall_mean: float
     retained_edge_recall_mean: float
+    retained_handoff_edge_recall_mean: float
 
 
 class HostAblationResult(NamedTuple):
@@ -258,6 +268,8 @@ def classify_for_host(
     dropped_host: str,
     full_signatures: TraceSignatures,
     partial_signatures: TraceSignatures,
+    full_handoff_edges: dict[str, set[Edge]],
+    partial_handoff_edges: dict[str, set[Edge]],
 ) -> HostAblationResult:
     """Classify all traces after dropping one host."""
     unchanged = 0
@@ -295,6 +307,17 @@ def classify_for_host(
             recall(edge_set(projected), edge_set(partial_for_recall))
         )
 
+    normalized_dropped_host = normalize_host(dropped_host)
+    retained_handoff_edges = {
+        message_id: {
+            (source, target)
+            for source, target in edges
+            if source[0] != normalized_dropped_host
+            and target[0] != normalized_dropped_host
+        }
+        for message_id, edges in full_handoff_edges.items()
+    }
+
     return HostAblationResult(
         dropped_host=dropped_host,
         counts=TraceClassCounts(
@@ -313,6 +336,9 @@ def classify_for_host(
             ),
             retained_edge_recall_mean=(
                 statistics.mean(edge_recalls) if edge_recalls else 0.0
+            ),
+            retained_handoff_edge_recall_mean=handoff_edge_recall(
+                retained_handoff_edges, partial_handoff_edges
             ),
         ),
     )
@@ -380,6 +406,9 @@ def result_to_json(result: HostAblationResult) -> dict[str, int | float | str]:
         "retained_edge_recall_mean": round(
             recalls.retained_edge_recall_mean, 5
         ),
+        "retained_handoff_edge_recall_mean": round(
+            recalls.retained_handoff_edge_recall_mean, 5
+        ),
     }
 
 
@@ -395,6 +424,7 @@ def print_table(results: list[HostAblationResult]) -> None:
         "span_recall",
         "stage_recall",
         "edge_recall",
+        "handoff_edge_recall",
     ]
     rows = []
     for result in results:
@@ -409,6 +439,7 @@ def print_table(results: list[HostAblationResult]) -> None:
                 f"{result.recalls.retained_span_recall_mean:.5f}",
                 f"{result.recalls.retained_stage_recall_mean:.5f}",
                 f"{result.recalls.retained_edge_recall_mean:.5f}",
+                f"{result.recalls.retained_handoff_edge_recall_mean:.5f}",
             ]
         )
 
@@ -529,6 +560,7 @@ def main() -> int:
     if not full_signatures:
         print("ERROR: no baseline traces generated", file=sys.stderr)
         return 1
+    full_handoff_edges = generate_handoff_edges(logs)
 
     all_hosts = sorted({log.hostname for log in logs})
     selected_hosts = args.hosts if args.hosts is not None else all_hosts
@@ -543,11 +575,14 @@ def main() -> int:
     for dropped_host in selected_hosts:
         partial_logs = [log for log in logs if log.hostname != dropped_host]
         partial_signatures = generate_trace_signatures(partial_logs)
+        partial_handoff_edges = generate_handoff_edges(partial_logs)
         results.append(
             classify_for_host(
                 dropped_host=dropped_host,
                 full_signatures=full_signatures,
                 partial_signatures=partial_signatures,
+                full_handoff_edges=full_handoff_edges,
+                partial_handoff_edges=partial_handoff_edges,
             )
         )
 

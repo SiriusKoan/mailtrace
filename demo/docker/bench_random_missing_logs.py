@@ -25,6 +25,11 @@ from typing import NamedTuple
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+from demo.docker.bench_handoff_correctness import (  # noqa: E402
+    Edge,
+    export_span_graphs,
+)
+
 from mailtrace.config import load_config  # noqa: E402
 from mailtrace.tracing.delay_parser import (  # noqa: E402
     DelayInfo,
@@ -90,6 +95,7 @@ class RatioSummary(NamedTuple):
     span_recall_mean: float
     delay_recall_mean: float
     edge_recall_mean: float
+    handoff_edge_recall_mean: float
 
 
 def resolve_path(path: str) -> Path:
@@ -133,6 +139,25 @@ def generate_trace_signatures(logs) -> TraceSignatures:
             signatures[message_id] = host_signatures
 
     return signatures
+
+
+def generate_handoff_edges(logs) -> dict[str, set[Edge]]:
+    """Extract directed queue-hop handoff edges from production spans."""
+    _, graphs = export_span_graphs(group_logs_by_message_id(logs))
+    return {message_id: graph[1] for message_id, graph in graphs.items()}
+
+
+def handoff_edge_recall(
+    full_edges: dict[str, set[Edge]],
+    partial_edges: dict[str, set[Edge]],
+) -> float:
+    """Weight recall by baseline edges, including edges of missing traces."""
+    expected = sum(len(edges) for edges in full_edges.values())
+    retained = sum(
+        len(edges & partial_edges.get(message_id, set()))
+        for message_id, edges in full_edges.items()
+    )
+    return retained / expected if expected else 1.0
 
 
 def filter_logs_by_message_ids(logs, message_ids: set[str]):
@@ -306,6 +331,9 @@ def summarise_ratio(
         span_recall_mean=statistics.mean(row["span_recall"] for row in rows),
         delay_recall_mean=statistics.mean(row["delay_recall"] for row in rows),
         edge_recall_mean=statistics.mean(row["edge_recall"] for row in rows),
+        handoff_edge_recall_mean=statistics.mean(
+            row["handoff_edge_recall"] for row in rows
+        ),
     )
 
 
@@ -323,6 +351,7 @@ def summary_to_json(summary: RatioSummary) -> dict[str, int | float]:
         "span_recall_mean": round(summary.span_recall_mean, 5),
         "delay_recall_mean": round(summary.delay_recall_mean, 5),
         "edge_recall_mean": round(summary.edge_recall_mean, 5),
+        "handoff_edge_recall_mean": round(summary.handoff_edge_recall_mean, 5),
     }
 
 
@@ -340,6 +369,7 @@ def print_table(summaries: list[RatioSummary]) -> None:
         "span_recall",
         "delay_recall",
         "edge_recall",
+        "handoff_edge_recall",
     ]
     rows = [
         [
@@ -354,6 +384,7 @@ def print_table(summaries: list[RatioSummary]) -> None:
             f"{summary.span_recall_mean:.5f}",
             f"{summary.delay_recall_mean:.5f}",
             f"{summary.edge_recall_mean:.5f}",
+            f"{summary.handoff_edge_recall_mean:.5f}",
         ]
         for summary in summaries
     ]
@@ -425,6 +456,7 @@ def main() -> int:
         if not full_signatures:
             print("ERROR: no baseline traces generated", file=sys.stderr)
             return 1
+        full_handoff_edges = generate_handoff_edges(logs)
 
         print(
             f"Trial {trial}/{args.trials}: "
@@ -437,6 +469,7 @@ def main() -> int:
                 logs, missing_ratio, rng
             )
             partial_signatures = generate_trace_signatures(partial_logs)
+            partial_handoff_edges = generate_handoff_edges(partial_logs)
             result = compare_signatures(full_signatures, partial_signatures)
             expected = float(result.expected)
             rows_by_ratio[missing_ratio].append(
@@ -454,6 +487,9 @@ def main() -> int:
                     "span_recall": result.span_recall,
                     "delay_recall": result.stage_recall,
                     "edge_recall": result.edge_recall,
+                    "handoff_edge_recall": handoff_edge_recall(
+                        full_handoff_edges, partial_handoff_edges
+                    ),
                 }
             )
 
