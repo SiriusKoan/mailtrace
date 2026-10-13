@@ -1414,6 +1414,45 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
 
 class LogEventParsingTest(unittest.TestCase):
+    def test_opensearch_parser_preserves_long_handoff_queue_ids(self) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(
+                facility="",
+                hostname="host.name",
+                message="message",
+                timestamp="@timestamp",
+                service="appname",
+            )
+        )
+        queue_id = "3Pt2mN2VXxznjll"
+        cases = [
+            (
+                "postfix/smtp",
+                f"C3CD21F3E90: status=sent (250 OK queued as {queue_id})",
+            ),
+            (
+                "postfix/virtual",
+                f"C3CD21F3E90: status=sent (forwarded as {queue_id})",
+            ),
+            (
+                "exim4",
+                "2026-09-26 21:14:57.804 1xASEz-000010-1B "
+                f'=> single@1.example.com C="250 queued as {queue_id}"',
+            ),
+        ]
+        for service, message in cases:
+            with self.subTest(service=service):
+                entry = parser.parse_with_enrichment(
+                    {
+                        "@timestamp": "2026-09-26T13:14:57Z",
+                        "host": {"name": "mail.example.com"},
+                        "appname": service,
+                        "message": message,
+                    }
+                )
+                self.assertEqual(entry.queued_as, queue_id)
+                self.assertEqual(extract_next_mail_id(entry), queue_id)
+
     def test_opensearch_parser_enriches_postfix_to_exim_relay(self) -> None:
         parser = OpensearchParser(
             OpenSearchMappingConfig(

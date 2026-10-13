@@ -7,6 +7,10 @@ uv sync --all-groups
 docker compose -f demo/docker/docker-compose.yml up -d --build
 ```
 
+All Postfix services enable `enable_long_queue_ids = yes` to avoid queue ID
+reuse during benchmark runs. Rebuild the mail images to apply this setting to
+existing containers.
+
 Main services and entrypoints:
 
 | Service | Hostname | Host port |

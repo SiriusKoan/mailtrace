@@ -390,11 +390,9 @@ class OpensearchParser(LogParser):
         - Postfix → Exim: status=sent (250 OK id=1vs9hh-00005v-2k)
         """
         # Try Postfix queued or forwarded format.
-        queued_match = re.search(
-            r"(?:queued as|forwarded as) ([A-F0-9]+)", message_content
-        )
+        queued_match = _QUEUED_AS_RE.search(message_content)
         if queued_match:
-            queue_id = queued_match.group(1)
+            queue_id = queued_match.group("id")
             if check_mail_id_valid(queue_id):
                 return queue_id
 

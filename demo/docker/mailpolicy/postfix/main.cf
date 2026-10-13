@@ -2,6 +2,7 @@
 
 # See http://www.postfix.org/COMPATIBILITY_README.html
 compatibility_level = 3.9
+enable_long_queue_ids = yes
 
 # Which domain that locally-originated mail appears to come from.
 # Debian policy suggests to read this value from /etc/mailname.
