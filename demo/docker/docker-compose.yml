@@ -85,6 +85,8 @@ services:
     build:
       context: .
       dockerfile: ./mailer/Dockerfile
+    environment:
+      MAILTRACE_RELAY_DELAY_SECONDS: ${MAILTRACE_RELAY_DELAY_SECONDS:-0}
     ports:
       - "20025:25"
       - "22223:22"
@@ -102,6 +104,8 @@ services:
     build:
       context: .
       dockerfile: ./mailer/Dockerfile
+    environment:
+      MAILTRACE_RELAY_DELAY_SECONDS: ${MAILTRACE_RELAY_DELAY_SECONDS:-0}
     ports:
       - "20026:25"
       - "22228:22"
@@ -119,6 +123,8 @@ services:
     build:
       context: .
       dockerfile: ./mailer/Dockerfile
+    environment:
+      MAILTRACE_RELAY_DELAY_SECONDS: ${MAILTRACE_RELAY_DELAY_SECONDS:-0}
     ports:
       - "20027:25"
       - "22229:22"

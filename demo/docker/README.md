@@ -254,6 +254,35 @@ uv run python demo/docker/bench_daemon_correctness.py \
   --go-back-values 0 3 5 10 30
 ```
 
+To spread a message's logs across polling rounds, add an outbound SMTP delay to
+all three Exim mailers after starting the demo stack:
+
+```shell
+MAILTRACE_RELAY_DELAY_SECONDS=40 \
+docker compose -f demo/docker/docker-compose.yml \
+  up -d --build mailer1 mailer2 mailer3
+
+uv run python demo/docker/bench_daemon_correctness.py \
+  --size 10 --runs 1 --wait 100 \
+  --params 10,0,30 10,5,30
+```
+
+`MAILTRACE_RELAY_DELAY_SECONDS` accepts non-negative integer seconds and defaults
+to `0`, which disables the delay. Exim accepts each message immediately, then its
+[`transport_filter`](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-generic_options_for_transports.html)
+waits before streaming the unchanged message to the mailpolicy. Single routes
+cross one delayed mailer; team aliases cross two, so a 40-second setting adds
+about 40 or 80 seconds to end-to-end delivery. Increase the benchmark's `--wait`
+to cover the longest route, otherwise its baseline can exclude late delivery
+logs. Recreate the mailers with the variable set to `0` to disable the delay.
+
+`go_back_seconds` overlaps log query windows to recover records indexed after
+their timestamps. `hold_rounds` keeps a message buffered until that many polling
+rounds pass without new logs. Holding cannot recover records missed by queries.
+A look-back long enough to contain a whole fast route can also reconstruct it
+with zero hold. A 40-second gap exceeds a 30-second look-back and exercises the
+need to keep earlier records buffered until later delivery logs arrive.
+
 ### Handoff correctness
 
 `bench_handoff_correctness.py` sends 16 fixed routing scenarios covering MX
