@@ -10,8 +10,11 @@ baseline traces, kept in memory for comparison with daemon traces from Tempo.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
+import os
+import re
 import shutil
 import signal
 import statistics
@@ -21,9 +24,11 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from contextlib import ExitStack, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
+from uuid import uuid4
 
 import yaml
 from google.protobuf.json_format import MessageToDict
@@ -34,6 +39,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
+
+from demo.docker.daemon_benchmark_stack import DemoStack  # noqa: E402
 
 from mailtrace.config import load_config  # noqa: E402
 from mailtrace.tracing import otel  # noqa: E402
@@ -187,9 +194,7 @@ def start_production_daemon(
 ) -> subprocess.Popen:
     """Start the normal CLI tracing daemon."""
     cmd = [
-        "uv",
-        "run",
-        "python",
+        sys.executable,
         "-m",
         "mailtrace",
         "tracing",
@@ -198,38 +203,38 @@ def start_production_daemon(
         "--otel-endpoint",
         otel_endpoint,
     ]
-    log_file = log_path.open("w", encoding="utf-8")
-    return subprocess.Popen(
-        cmd,
-        cwd=_PROJECT_ROOT,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    with log_path.open("w", encoding="utf-8") as log_file:
+        return subprocess.Popen(
+            cmd,
+            cwd=_PROJECT_ROOT,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
 
 
 def stop_process(proc: subprocess.Popen, timeout: int = 10) -> None:
     """Terminate a process group."""
-    if proc.poll() is not None:
-        return
-    try:
-        proc.send_signal(signal.SIGINT)
-        proc.wait(timeout=timeout)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    proc.terminate()
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=timeout)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            if sig == signal.SIGKILL:
+                raise
 
 
-def send_emails(script: Path, n: int) -> None:
+def send_emails(script: Path, n: int, run_prefix: str) -> None:
     """Run the demo email sender."""
     proc = subprocess.run(
         ["bash", str(script), str(n)],
+        env=dict(os.environ, MAILTRACE_RUN_PREFIX=run_prefix),
         capture_output=True,
         text=True,
     )
@@ -405,6 +410,127 @@ def compare_signatures(
     )
 
 
+def completed_rounds(log_path: Path, after: datetime) -> int:
+    """Count successful daemon queries using the daemon's local log timezone."""
+    count = 0
+    for line in log_path.read_text().splitlines():
+        if re.search(r"Found \d+ log entries from index", line):
+            stamp = datetime.strptime(
+                line[:23], "%Y-%m-%d %H:%M:%S,%f"
+            ).astimezone(UTC)
+            count += stamp >= after
+    return count
+
+
+def wait_for_rounds(
+    proc, log_path: Path, after: datetime, required: int, timeout: int
+) -> None:
+    """Require observed successful queries instead of estimating elapsed rounds."""
+    deadline = time.monotonic() + timeout
+    while completed_rounds(log_path, after) < required:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"Production daemon exited with {proc.returncode}"
+            )
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Daemon did not complete {required} required queries"
+            )
+        time.sleep(0.25)
+
+
+def delivery_audit(grouped, message_ids, relay_delay_seconds=0):
+    messages = []
+    pending = []
+    for message_id in sorted(message_ids):
+        logs = grouped.get(message_id, [])
+        sender = re.search(
+            r"sender-(?:mx|mailer)-[123]-(single|team)@sender\.test",
+            " ".join(log.message for log in logs),
+        )
+        expected = {"user1@delivery.example.com"}
+        if sender and sender.group(1) == "team":
+            expected.add("user2@delivery.example.com")
+        delivered = set()
+        exim_queues = {}
+        postfix_queues = {}
+        for log in logs:
+            if (
+                log.hostname.startswith("mailbox")
+                and log.service == "postfix/lmtp"
+                and "status=sent" in log.message
+            ):
+                recipient = re.search(r"to=<([^>]+)>", log.message)
+                if recipient:
+                    delivered.add(recipient.group(1))
+            if log.service in ("exim", "exim4") and log.mail_id:
+                exim_queues.setdefault((log.hostname, log.mail_id), []).append(
+                    log.message
+                )
+            if log.service.startswith("postfix/") and log.mail_id:
+                postfix_queues.setdefault(
+                    (log.hostname, log.mail_id), []
+                ).append(log)
+        incomplete_postfix = [
+            list(queue)
+            for queue, records in postfix_queues.items()
+            if not any("status=sent" in log.message for log in records)
+            or not any(
+                log.service == "postfix/qmgr" and log.message == "removed"
+                for log in records
+            )
+        ]
+        incomplete = []
+        delays = []
+        for queue, records in exim_queues.items():
+            values = [
+                float(match.group(1))
+                for record in records
+                if " => " in record
+                if (match := re.search(r"\bDT=([\d.]+)s?", record))
+            ]
+            if (
+                not values
+                or min(values) < relay_delay_seconds
+                or not any(" <= " in record for record in records)
+                or not any(
+                    "Completed" in record and "QT=" in record
+                    for record in records
+                )
+            ):
+                incomplete.append(list(queue))
+            delays.extend(values)
+        complete = bool(
+            sender
+            and exim_queues
+            and postfix_queues
+            and not incomplete
+            and not incomplete_postfix
+            and expected <= delivered
+        )
+        item = {
+            "message_id": message_id,
+            "complete": complete,
+            "expected_recipients": sorted(expected),
+            "delivered_recipients": sorted(delivered),
+            "completed_exim_queues": len(exim_queues) - len(incomplete),
+            "incomplete_exim_queues": incomplete,
+            "completed_postfix_queues": len(postfix_queues)
+            - len(incomplete_postfix),
+            "incomplete_postfix_queues": incomplete_postfix,
+            "min_delivery_seconds": min(delays) if delays else None,
+            "max_delivery_seconds": max(delays) if delays else None,
+        }
+        messages.append(item)
+        if not complete:
+            pending.append(message_id)
+    return {
+        "verified": not pending,
+        "messages": messages,
+        "pending_message_ids": pending,
+    }
+
+
 def run_one(
     base_config_path: Path,
     script_path: Path,
@@ -416,6 +542,7 @@ def run_one(
     otel_endpoint: str,
     params: ParamSet,
     artifact_dir: Path | None = None,
+    relay_delay_seconds: int = 0,
 ) -> RunResult:
     """Run one sidecar correctness experiment."""
     config_path = write_temp_config(base_config_path, params, temp_dir)
@@ -430,29 +557,90 @@ def run_one(
     proc = start_production_daemon(config_path, otel_endpoint, log_path)
     run_start = time.perf_counter()
     try:
+        wait_for_rounds(
+            proc, log_path, datetime.min.replace(tzinfo=UTC), 1, 180
+        )
+        daemon_ready_at = datetime.now(UTC)
         time.sleep(daemon_start_wait)
+        run_prefix = f"mailtrace-daemon-{uuid4().hex}"
+        message_ids = {
+            f"{run_prefix}-{number}@daemon-benchmark.test"
+            for number in range(1, size + 1)
+        }
+        if artifact_dir is not None:
+            write_json(
+                artifact_dir / "traffic_manifest.json",
+                {"message_ids": sorted(message_ids)},
+            )
         traffic_start = datetime.now(UTC)
-        send_emails(script_path, size)
+        send_emails(script_path, size, run_prefix)
         traffic_end = datetime.now(UTC)
 
-        settle_wait = (
-            wait_seconds
-            + params.sleep_seconds * (params.hold_rounds + 2)
-            + params.go_back_seconds
-        )
-        time.sleep(settle_wait)
-        result_end = datetime.now(UTC)
-
-        if proc.poll() is not None:
-            tail = log_path.read_text(encoding="utf-8")[-1200:]
-            raise RuntimeError(
-                f"production daemon exited with {proc.returncode}\n{tail}"
+        if artifact_dir is not None:
+            write_json(
+                artifact_dir / "readiness.json",
+                {
+                    "daemon_ready_at": daemon_ready_at.isoformat(),
+                    "traffic_start": traffic_start.isoformat(),
+                    "verified": daemon_ready_at < traffic_start,
+                },
             )
-
+        time.sleep(wait_seconds)
         config = load_config(str(config_path))
-        expected_end = traffic_end + timedelta(seconds=wait_seconds + 10)
-        logs = query_all_logs(config, traffic_start, expected_end)
-        expected = build_expected_signatures(group_logs_by_message_id(logs))
+        deadline = time.monotonic() + 900
+        while True:
+            expected_end = datetime.now(UTC)
+            logs = query_all_logs(config, traffic_start, expected_end)
+            grouped = {
+                mid: entries
+                for mid, entries in group_logs_by_message_id(logs).items()
+                if mid in message_ids
+            }
+            audit = delivery_audit(grouped, message_ids, relay_delay_seconds)
+            logs = [log for entries in grouped.values() for log in entries]
+            if artifact_dir is not None:
+                write_json(
+                    artifact_dir / "logs.json", [vars(log) for log in logs]
+                )
+                write_json(artifact_dir / "input_completion.json", audit)
+            if audit["verified"]:
+                break
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"Production daemon exited with {proc.returncode}"
+                )
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Incomplete delivery logs for {audit['pending_message_ids']}"
+                )
+            time.sleep(5)
+        input_ready_at = datetime.now(UTC)
+        anchor = input_ready_at + timedelta(seconds=params.go_back_seconds)
+        required_rounds = params.hold_rounds + 2
+        wait_for_rounds(
+            proc,
+            log_path,
+            anchor,
+            required_rounds,
+            max(600, params.sleep_seconds * required_rounds * 6),
+        )
+        result_end = datetime.now(UTC)
+        if artifact_dir is not None:
+            write_json(
+                artifact_dir / "observation.json",
+                {
+                    "input_ready_at": input_ready_at.isoformat(),
+                    "anchor": anchor.isoformat(),
+                    "required_rounds": required_rounds,
+                    "completed_rounds": completed_rounds(log_path, anchor),
+                    "verified": True,
+                },
+            )
+        expected = build_expected_signatures(grouped)
+        if set(expected) != message_ids:
+            raise RuntimeError(
+                "The complete-log baseline does not contain every sent message"
+            )
 
         traces = fetch_tempo_traces(
             tempo_url=tempo_url,
@@ -511,6 +699,8 @@ def run_one(
                     "traffic_end": traffic_end.isoformat(),
                     "result_end": result_end.isoformat(),
                     "expected_end": expected_end.isoformat(),
+                    "daemon_ready_at": daemon_ready_at.isoformat(),
+                    "input_ready_at": input_ready_at.isoformat(),
                 },
             )
         return result
@@ -714,6 +904,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon-start-wait", type=int, default=5)
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument(
+        "--reset-environment",
+        action="store_true",
+        help="Build the demo images, then clean and recreate the demo stack for every repeat",
+    )
+    parser.add_argument(
+        "--relay-delay-seconds",
+        type=int,
+        default=0,
+        help="Outbound SMTP delay for the managed demo stack",
+    )
+    parser.add_argument(
         "--output-dir",
         help="Save per-run signatures, Tempo traces, logs, and aggregate results",
     )
@@ -754,14 +955,32 @@ def resolve_path(path: str) -> Path:
 
 def main() -> int:
     """Run sidecar daemon correctness benchmark."""
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.size <= 0 or args.runs <= 0 or args.sleep_seconds <= 0:
+        parser.error("size, runs, and sleep-seconds must be positive")
+    if (
+        min(
+            args.wait,
+            args.daemon_start_wait,
+            args.relay_delay_seconds,
+            *args.hold_values,
+            *args.go_back_values,
+        )
+        < 0
+    ):
+        parser.error(
+            "waits, delays, hold values, and go-back values must be non-negative"
+        )
+    if args.relay_delay_seconds and not args.reset_environment:
+        parser.error("--relay-delay-seconds requires --reset-environment")
     logging.basicConfig(level=logging.WARNING)
 
     config_path = resolve_path(args.config)
     script_path = resolve_path(args.script)
     output_dir = resolve_path(args.output_dir) if args.output_dir else None
     if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=False)
     temp_dir = Path(tempfile.mkdtemp(prefix="mailtrace-daemon-bench-"))
     param_sets = args.params or build_param_grid(
         sleep_seconds=args.sleep_seconds,
@@ -769,9 +988,33 @@ def main() -> int:
         go_back_values=args.go_back_values,
     )
 
+    resources = ExitStack()
+    results = []
+    records = []
+    aggregated_results = []
     try:
-        results = []
-        aggregated_results = []
+        environment = None
+        if args.reset_environment:
+            lock = resources.enter_context(
+                (
+                    Path(tempfile.gettempdir())
+                    / "mailtrace-daemon-benchmark.lock"
+                ).open("a")
+            )
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError(
+                    "Another daemon benchmark owns the demo stack"
+                )
+            environment = DemoStack(
+                Path(__file__).with_name("docker-compose.yml"),
+                (output_dir or temp_dir) / "environment",
+                load_config(str(config_path)),
+                args.tempo_url,
+                args.relay_delay_seconds,
+            )
+            environment.prepare()
         for params in param_sets:
             repeated_results = []
             print(
@@ -785,30 +1028,55 @@ def main() -> int:
                     f"  run {run_index}/{args.runs}",
                     flush=True,
                 )
-                result = run_one(
-                    base_config_path=config_path,
-                    script_path=script_path,
-                    temp_dir=temp_dir,
-                    size=args.size,
-                    wait_seconds=args.wait,
-                    daemon_start_wait=args.daemon_start_wait,
-                    tempo_url=args.tempo_url,
-                    otel_endpoint=args.otel_endpoint,
-                    params=params,
-                    artifact_dir=(
-                        output_dir
-                        / (
-                            f"sleep{params.sleep_seconds}_"
-                            f"hold{params.hold_rounds}_"
-                            f"goback{params.go_back_seconds}"
-                        )
-                        / f"run-{run_index:02d}"
-                        if output_dir is not None
-                        else None
-                    ),
+                relative = (
+                    Path(
+                        f"sleep{params.sleep_seconds}_hold{params.hold_rounds}_goback{params.go_back_seconds}"
+                    )
+                    / f"run-{run_index:02d}"
                 )
+                directory = (output_dir or temp_dir) / relative
+                scope = (
+                    environment.run(
+                        (output_dir or temp_dir) / "environment" / relative
+                    )
+                    if environment
+                    else nullcontext()
+                )
+                with scope:
+                    result = run_one(
+                        base_config_path=config_path,
+                        script_path=script_path,
+                        temp_dir=temp_dir,
+                        size=args.size,
+                        wait_seconds=args.wait,
+                        daemon_start_wait=args.daemon_start_wait,
+                        tempo_url=args.tempo_url,
+                        otel_endpoint=args.otel_endpoint,
+                        params=params,
+                        artifact_dir=directory,
+                        relay_delay_seconds=args.relay_delay_seconds,
+                    )
                 results.append(result)
                 repeated_results.append(result)
+                records.append(
+                    {
+                        **result_to_json(result),
+                        "sleep_seconds": params.sleep_seconds,
+                        "run": run_index,
+                        "duration_seconds": result.duration,
+                        "artifact_dir": str(relative),
+                    }
+                )
+                if output_dir is not None:
+                    write_json(output_dir / "runs.json", records)
+                    write_json(
+                        output_dir / "status.json",
+                        {
+                            "state": "running",
+                            "completed_runs": len(records),
+                            "total_runs": len(param_sets) * args.runs,
+                        },
+                    )
             aggregated = aggregate_results(params, repeated_results)
             aggregated_results.append(aggregated)
             if output_dir is not None:
@@ -847,8 +1115,30 @@ def main() -> int:
         else:
             print("Complete results:")
             print_aggregated_table(aggregated_results)
+        if output_dir is not None:
+            write_json(
+                output_dir / "status.json",
+                {
+                    "state": "completed",
+                    "completed_runs": len(records),
+                    "total_runs": len(param_sets) * args.runs,
+                },
+            )
         return 0
+    except BaseException as error:
+        if output_dir is not None:
+            write_json(
+                output_dir / "status.json",
+                {
+                    "state": "failed",
+                    "completed_runs": len(records),
+                    "total_runs": len(param_sets) * args.runs,
+                    "error": str(error) or type(error).__name__,
+                },
+            )
+        raise
     finally:
+        resources.close()
         if args.keep_temp:
             print(f"Temp dir: {temp_dir}")
         else:

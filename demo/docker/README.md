@@ -151,8 +151,9 @@ automatically uses both Compose files.
 
 ## Benchmark scripts
 
-Except for `bench_resource_rates.py`, which manages its own isolated Compose
-stack, these commands expect the Docker demo environment to be running.
+These commands expect the Docker demo environment to be running, except for
+`bench_resource_rates.py` and daemon correctness with `--reset-environment`,
+which manage their own Compose lifecycle.
 
 ### Tracing performance and structure
 
@@ -244,15 +245,36 @@ parameter set finishes, it prints the exact-match rate's mean and sample
 standard deviation, then prints the complete aggregate table after all sets
 finish.
 
-This example evaluates the full combination of the listed hold-round and
-look-back values, running each parameter set ten times:
+Start the complete 28-setting experiment directly from this script:
 
 ```shell
-uv run python demo/docker/bench_daemon_correctness.py \
-  --runs 10 \
+uv run --group tracing python demo/docker/bench_daemon_correctness.py \
+  --reset-environment \
+  --relay-delay-seconds 40 \
+  --sleep-seconds 10 \
   --hold-values 0 1 2 3 4 5 10 \
-  --go-back-values 0 3 5 10 30
+  --go-back-values 0 3 5 10 \
+  --runs 10 --size 10 --wait 100 \
+  --output-dir "results/daemon-correctness-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
+
+`--reset-environment` takes ownership of the demo's `docker` Compose project.
+It builds the mail images once, pins all eleven service images, and starts a
+fresh OpenSearch, Tempo, and mail stack for each repeat of ten emails. Before
+and after every repeat it removes the project's containers, networks, and
+volumes. Cleanup must succeed before the next repeat starts. Container memory
+limits are disabled; raw logs, signatures, traces, and cleanup records remain
+in the output directory. The output directory must be new, so this command
+always starts from the first repeat and does not reuse previous results.
+
+The daemon must complete its first successful query before sending begins.
+Each repeat has a unique Message-ID prefix, and its baseline includes only
+those messages. After the minimum `--wait` interval, the script waits up to
+15 minutes for all recipient deliveries and queue completion records, then
+observes `hold_rounds + 2` successful queries after the look-back interval.
+Zero correctness scores are retained without retries.
+
+Without `--reset-environment`, the script uses an already running demo stack.
 
 To spread a message's logs across polling rounds, add an outbound SMTP delay to
 all three Exim mailers after starting the demo stack:
