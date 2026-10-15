@@ -572,6 +572,11 @@ def run_one(
                 artifact_dir / "traffic_manifest.json",
                 {"message_ids": sorted(message_ids)},
             )
+        print(
+            f"Daemon ready; sending {size} messages...",
+            file=sys.stderr,
+            flush=True,
+        )
         traffic_start = datetime.now(UTC)
         send_emails(script_path, size, run_prefix)
         traffic_end = datetime.now(UTC)
@@ -585,6 +590,11 @@ def run_one(
                     "verified": daemon_ready_at < traffic_start,
                 },
             )
+        print(
+            f"Waiting at least {wait_seconds} seconds for delivery logs...",
+            file=sys.stderr,
+            flush=True,
+        )
         time.sleep(wait_seconds)
         config = load_config(str(config_path))
         deadline = time.monotonic() + 900
@@ -617,6 +627,11 @@ def run_one(
         input_ready_at = datetime.now(UTC)
         anchor = input_ready_at + timedelta(seconds=params.go_back_seconds)
         required_rounds = params.hold_rounds + 2
+        print(
+            f"All {size} deliveries are complete; observing {required_rounds} queries...",
+            file=sys.stderr,
+            flush=True,
+        )
         wait_for_rounds(
             proc,
             log_path,
@@ -992,7 +1007,23 @@ def main() -> int:
     results = []
     records = []
     aggregated_results = []
+    current = None
+
+    def update_status(state, **details):
+        if output_dir is not None:
+            data = {
+                "state": state,
+                "completed_runs": len(records),
+                "total_runs": len(param_sets) * args.runs,
+                "updated_at": datetime.now(UTC).isoformat(),
+                **details,
+            }
+            if current is not None:
+                data["current"] = current
+            write_json(output_dir / "status.json", data)
+
     try:
+        update_status("preparing_environment")
         environment = None
         if args.reset_environment:
             lock = resources.enter_context(
@@ -1014,6 +1045,7 @@ def main() -> int:
                 args.tempo_url,
                 args.relay_delay_seconds,
             )
+            print("Preparing demo images...", file=sys.stderr, flush=True)
             environment.prepare()
         for params in param_sets:
             repeated_results = []
@@ -1035,6 +1067,10 @@ def main() -> int:
                     / f"run-{run_index:02d}"
                 )
                 directory = (output_dir or temp_dir) / relative
+                current = {**params._asdict(), "run": run_index}
+                update_status(
+                    "starting_environment" if environment else "running"
+                )
                 scope = (
                     environment.run(
                         (output_dir or temp_dir) / "environment" / relative
@@ -1043,6 +1079,7 @@ def main() -> int:
                     else nullcontext()
                 )
                 with scope:
+                    update_status("running")
                     result = run_one(
                         base_config_path=config_path,
                         script_path=script_path,
@@ -1055,6 +1092,12 @@ def main() -> int:
                         params=params,
                         artifact_dir=directory,
                         relay_delay_seconds=args.relay_delay_seconds,
+                    )
+                    update_status("cleaning_environment")
+                    print(
+                        "Scoring complete; cleaning demo resources...",
+                        file=sys.stderr,
+                        flush=True,
                     )
                 results.append(result)
                 repeated_results.append(result)
@@ -1069,14 +1112,7 @@ def main() -> int:
                 )
                 if output_dir is not None:
                     write_json(output_dir / "runs.json", records)
-                    write_json(
-                        output_dir / "status.json",
-                        {
-                            "state": "running",
-                            "completed_runs": len(records),
-                            "total_runs": len(param_sets) * args.runs,
-                        },
-                    )
+                update_status("running")
             aggregated = aggregate_results(params, repeated_results)
             aggregated_results.append(aggregated)
             if output_dir is not None:
@@ -1115,27 +1151,18 @@ def main() -> int:
         else:
             print("Complete results:")
             print_aggregated_table(aggregated_results)
-        if output_dir is not None:
-            write_json(
-                output_dir / "status.json",
-                {
-                    "state": "completed",
-                    "completed_runs": len(records),
-                    "total_runs": len(param_sets) * args.runs,
-                },
-            )
+        update_status("completed")
         return 0
+    except KeyboardInterrupt:
+        update_status("interrupted", error="KeyboardInterrupt")
+        print(
+            "Interrupted; completed results are retained.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 130
     except BaseException as error:
-        if output_dir is not None:
-            write_json(
-                output_dir / "status.json",
-                {
-                    "state": "failed",
-                    "completed_runs": len(records),
-                    "total_runs": len(param_sets) * args.runs,
-                    "error": str(error) or type(error).__name__,
-                },
-            )
+        update_status("failed", error=str(error) or type(error).__name__)
         raise
     finally:
         resources.close()

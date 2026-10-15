@@ -272,7 +272,11 @@ Each repeat has a unique Message-ID prefix, and its baseline includes only
 those messages. After the minimum `--wait` interval, the script waits up to
 15 minutes for all recipient deliveries and queue completion records, then
 observes `hold_rounds + 2` successful queries after the look-back interval.
-Zero correctness scores are retained without retries.
+Zero correctness scores are retained without retries. `status.json` records
+preparation, startup, measurement, and cleanup stages from the beginning.
+Expected connection errors while OpenSearch starts are retried without stack
+trace spam. Ctrl+C records an `interrupted` state and finishes cleanup; further
+Ctrl+C signals during cleanup do not skip resource removal.
 
 Without `--reset-environment`, the script uses an already running demo stack.
 

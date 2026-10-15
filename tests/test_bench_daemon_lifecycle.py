@@ -19,6 +19,15 @@ from mailtrace.models import LogEntry
 
 
 class ManagedLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = patch.object(
+            bench.tempfile, "gettempdir", return_value=directory.name
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_direct_cli_rebuilds_each_repeat_and_retains_zero_scores(self):
         events = []
         stack = Mock()
@@ -99,6 +108,40 @@ class ManagedLifecycleTest(unittest.TestCase):
             self.assertEqual(measure.call_count, 1)
             status = json.loads((output / "status.json").read_text())
             self.assertEqual(status["state"], "failed")
+
+    def test_keyboard_interrupt_records_cancellation_after_cleanup(self):
+        stack = Mock()
+        events = []
+
+        @contextlib.contextmanager
+        def environment(directory):
+            try:
+                yield
+            finally:
+                events.append("cleanup")
+
+        stack.run.side_effect = environment
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "results"
+            argv = [
+                "bench_daemon_correctness.py",
+                "--reset-environment",
+                "--params",
+                "10,0,0",
+                "--output-dir",
+                str(output),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(bench, "DemoStack", return_value=stack),
+                patch.object(bench, "run_one", side_effect=KeyboardInterrupt),
+            ):
+                self.assertEqual(bench.main(), 130)
+            self.assertEqual(events, ["cleanup"])
+            self.assertEqual(
+                json.loads((output / "status.json").read_text())["state"],
+                "interrupted",
+            )
 
     def test_daemon_shutdown_signals_the_entire_process_group(self):
         process = Mock(pid=531)
@@ -310,6 +353,63 @@ class StackCleanupTest(unittest.TestCase):
                         pass
             self.assertEqual(len(starts), 2)
             self.assertFalse(any(state.values()))
+
+    def test_log_capture_interrupt_still_runs_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stack = DemoStack(
+                Path("compose.yml"),
+                Path(temporary),
+                SimpleNamespace(opensearch_config=None),
+                "http://tempo",
+                40,
+            )
+            with (
+                patch.object(stack, "start"),
+                patch.object(stack, "cleanup") as cleanup,
+                patch.object(stack, "command", side_effect=KeyboardInterrupt),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    with stack.run(Path(temporary)):
+                        pass
+            self.assertEqual(cleanup.call_count, 2)
+
+    def test_sigint_during_cleanup_does_not_leave_resources(self):
+        handler = signal.getsignal(signal.SIGINT)
+        with tempfile.TemporaryDirectory() as temporary:
+            stack = DemoStack(
+                Path("compose.yml"),
+                Path(temporary),
+                SimpleNamespace(opensearch_config=None),
+                "http://tempo",
+                40,
+            )
+
+            def command(*args, **kwargs):
+                signal.raise_signal(signal.SIGINT)
+                return ""
+
+            with (
+                patch.object(
+                    stack,
+                    "resources",
+                    return_value={
+                        "containers": [],
+                        "networks": [],
+                        "volumes": [],
+                    },
+                ),
+                patch.object(stack, "command", side_effect=command),
+            ):
+                try:
+                    stack.cleanup(Path(temporary))
+                except KeyboardInterrupt:
+                    self.fail("SIGINT skipped cleanup completion")
+            self.assertTrue(
+                json.loads((Path(temporary) / "cleanup.json").read_text())[
+                    "verified"
+                ]
+            )
+        self.assertEqual(signal.getsignal(signal.SIGINT), handler)
 
     def test_residual_resources_block_the_next_start(self):
         with tempfile.TemporaryDirectory() as temporary:

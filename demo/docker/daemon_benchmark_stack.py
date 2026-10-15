@@ -1,7 +1,9 @@
 """Own the demo Compose stack for one daemon benchmark repeat at a time."""
 
 import json
+import logging
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -26,6 +28,16 @@ SERVICES = (
     "tempo",
 )
 PROJECT = "docker"
+
+
+@contextmanager
+def finish_cleanup():
+    """Finish bounded cleanup commands even when Ctrl+C is pressed again."""
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 class DemoStack:
@@ -138,57 +150,68 @@ class DemoStack:
         return result
 
     def cleanup(self, directory):
-        directory.mkdir(parents=True, exist_ok=True)
-        errors = []
-        for attempt in range(3):
-            try:
-                before = self.resources()
-                if before["containers"]:
-                    self.command(
-                        ["docker", "rm", "-f", "-v", *before["containers"]],
+        with finish_cleanup():
+            directory.mkdir(parents=True, exist_ok=True)
+            errors = []
+            for attempt in range(3):
+                try:
+                    before = self.resources()
+                    if before["containers"]:
+                        self.command(
+                            [
+                                "docker",
+                                "rm",
+                                "-f",
+                                "-v",
+                                *before["containers"],
+                            ],
+                            timeout=30,
+                        )
+                    output = self.command(
+                        [
+                            *self.compose,
+                            "down",
+                            "--volumes",
+                            "--remove-orphans",
+                            "--timeout",
+                            "5",
+                        ],
                         timeout=30,
                     )
-                output = self.command(
-                    [
-                        *self.compose,
-                        "down",
-                        "--volumes",
-                        "--remove-orphans",
-                        "--timeout",
-                        "5",
-                    ],
-                    timeout=30,
-                )
-                (directory / "compose-down.log").write_text(output)
-                after = self.resources()
-                if any(after.values()):
-                    raise RuntimeError(f"Experiment resources remain: {after}")
-                (directory / "cleanup.json").write_text(
-                    json.dumps(
-                        {
-                            "verified": True,
-                            "before": before,
-                            "after": after,
-                            "previous_errors": errors,
-                        },
-                        indent=2,
+                    (directory / "compose-down.log").write_text(output)
+                    after = self.resources()
+                    if any(after.values()):
+                        raise RuntimeError(
+                            f"Experiment resources remain: {after}"
+                        )
+                    (directory / "cleanup.json").write_text(
+                        json.dumps(
+                            {
+                                "verified": True,
+                                "before": before,
+                                "after": after,
+                                "previous_errors": errors,
+                            },
+                            indent=2,
+                        )
                     )
-                )
-                return
-            except (
-                OSError,
-                subprocess.SubprocessError,
-                RuntimeError,
-            ) as error:
-                errors.append(str(error))
-                (directory / "cleanup.json").write_text(
-                    json.dumps({"verified": False, "errors": errors}, indent=2)
-                )
-                if attempt == 2:
-                    raise RuntimeError(
-                        "Demo cleanup failed; the next repeat must not start"
-                    ) from error
-                time.sleep(2)
+                    return
+                except (
+                    OSError,
+                    subprocess.SubprocessError,
+                    RuntimeError,
+                ) as error:
+                    errors.append(str(error))
+                    (directory / "cleanup.json").write_text(
+                        json.dumps(
+                            {"verified": False, "errors": errors}, indent=2
+                        )
+                    )
+                    if attempt == 2:
+                        raise RuntimeError(
+                            "Demo cleanup failed; the next repeat must not start"
+                        ) from error
+                    time.sleep(2)
 
     def start(self, directory):
         output = self.command(
@@ -213,6 +236,15 @@ class DemoStack:
             verify_certs=cfg.verify_certs,
             ssl_show_warn=False,
             timeout=3,
+            max_retries=0,
+        )
+        logger = logging.getLogger("opensearch")
+        previous_level = logger.level
+        logger.setLevel(logging.ERROR)
+        print(
+            "Waiting for OpenSearch readiness (up to 600 seconds)...",
+            file=sys.stderr,
+            flush=True,
         )
         try:
             deadline = time.monotonic() + 600
@@ -241,7 +273,13 @@ class DemoStack:
                     },
                 )
         finally:
+            logger.setLevel(previous_level)
             client.close()
+        print(
+            "OpenSearch is ready; starting mail services and Tempo...",
+            file=sys.stderr,
+            flush=True,
+        )
         output = self.command(
             [
                 *self.compose,
@@ -311,12 +349,14 @@ class DemoStack:
             self.start(directory)
             yield
         finally:
-            try:
-                output = self.command(
-                    [*self.compose, "logs", "--no-color", "--tail", "200"],
-                    timeout=10,
-                )
-                (directory / "compose.log").write_text(output)
-            except (OSError, subprocess.SubprocessError):
-                pass
-            self.cleanup(directory / "after")
+            with finish_cleanup():
+                try:
+                    output = self.command(
+                        [*self.compose, "logs", "--no-color", "--tail", "200"],
+                        timeout=10,
+                    )
+                    (directory / "compose.log").write_text(output)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                finally:
+                    self.cleanup(directory / "after")
