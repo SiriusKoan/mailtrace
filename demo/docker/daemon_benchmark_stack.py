@@ -12,6 +12,7 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
+from demo.docker.daemon_benchmark_progress import host_resources, write_json
 from opensearchpy import OpenSearch
 
 SERVICES = (
@@ -44,6 +45,7 @@ class DemoStack:
     def __init__(
         self, compose_file, directory, config, tempo_url, relay_delay_seconds
     ):
+        self.on_phase = lambda name: None
         self.directory = Path(directory)
         self.config = config.opensearch_config
         self.tempo_url = tempo_url.rstrip("/")
@@ -77,8 +79,14 @@ class DemoStack:
             timeout=timeout,
         ).stdout
 
-    def prepare(self):
+    def prepare(self, resume=False):
         self.directory.mkdir(parents=True, exist_ok=True)
+        pinned = self.directory / "compose.json"
+        if resume and pinned.exists():
+            data = json.loads(pinned.read_text())
+            for service in data["services"].values():
+                self.command(["docker", "image", "inspect", service["image"]])
+            return
         data = json.loads(
             self.command([*self.original, "config", "--format", "json"])
         )
@@ -146,7 +154,7 @@ class DemoStack:
             "networks": ["docker", "network", "ls", "-q", "--filter", label],
             "volumes": ["docker", "volume", "ls", "-q", "--filter", label],
         }.items():
-            result[kind] = self.command(command, timeout=15).split()
+            result[kind] = self.command(command, timeout=30).split()
         return result
 
     def cleanup(self, directory):
@@ -155,30 +163,47 @@ class DemoStack:
             errors = []
             for attempt in range(3):
                 try:
-                    before = self.resources()
-                    if before["containers"]:
-                        self.command(
+                    before = {}
+                    try:
+                        before = self.resources()
+                    except (OSError, subprocess.SubprocessError) as error:
+                        errors.append(f"Inventory before cleanup: {error}")
+                    if before.get("containers"):
+                        try:
+                            self.command(
+                                [
+                                    "docker",
+                                    "rm",
+                                    "-f",
+                                    "-v",
+                                    *before["containers"],
+                                ],
+                                timeout=60,
+                            )
+                        except (OSError, subprocess.SubprocessError) as error:
+                            errors.append(f"Force removal: {error}")
+                    # Compose teardown must still run when inventory times out.
+                    try:
+                        output = self.command(
                             [
-                                "docker",
-                                "rm",
-                                "-f",
-                                "-v",
-                                *before["containers"],
+                                *(
+                                    self.compose
+                                    if (
+                                        self.directory / "compose.json"
+                                    ).exists()
+                                    else self.original
+                                ),
+                                "down",
+                                "--volumes",
+                                "--remove-orphans",
+                                "--timeout",
+                                "5",
                             ],
-                            timeout=30,
+                            timeout=60,
                         )
-                    output = self.command(
-                        [
-                            *self.compose,
-                            "down",
-                            "--volumes",
-                            "--remove-orphans",
-                            "--timeout",
-                            "5",
-                        ],
-                        timeout=30,
-                    )
-                    (directory / "compose-down.log").write_text(output)
+                        (directory / "compose-down.log").write_text(output)
+                    except (OSError, subprocess.SubprocessError) as error:
+                        errors.append(f"Compose teardown: {error}")
                     after = self.resources()
                     if any(after.values()):
                         raise RuntimeError(
@@ -213,7 +238,57 @@ class DemoStack:
                         ) from error
                     time.sleep(2)
 
+    def wait_for_host(self, directory):
+        self.on_phase("waiting_for_host")
+        deadline = time.monotonic() + 900
+        healthy = 0
+        while True:
+            sample = host_resources()
+            memory = sample.get("memory_kib", {})
+            available = memory.get("MemAvailable", 0)
+            minimum = min(3 * 1024 * 1024, memory.get("MemTotal", 0) // 10)
+            pressure = {}
+            for name in ("memory", "io"):
+                lines = sample.get(name + "_pressure", "").splitlines()
+                full = next(
+                    (line for line in lines if line.startswith("full ")), ""
+                )
+                pressure[name] = float(
+                    dict(item.split("=") for item in full.split()[1:]).get(
+                        "avg10", 0
+                    )
+                )
+            ready = (
+                available >= minimum
+                and pressure["memory"] < 5
+                and pressure["io"] < 20
+            )
+            healthy = healthy + 1 if ready else 0
+            write_json(
+                directory / "host-readiness.json",
+                {
+                    "verified": healthy >= 2,
+                    "resources": sample,
+                    "minimum_available_kib": minimum,
+                },
+            )
+            if healthy >= 2:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "Shared host remains under memory or I/O pressure; resume after resources recover"
+                )
+            if healthy == 0:
+                print(
+                    "Waiting for shared-host memory and I/O pressure to recover...",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(5)
+
     def start(self, directory):
+        self.wait_for_host(directory)
+        self.on_phase("starting_opensearch")
         output = self.command(
             [
                 *self.compose,
@@ -280,6 +355,7 @@ class DemoStack:
             file=sys.stderr,
             flush=True,
         )
+        self.on_phase("starting_mail_services")
         output = self.command(
             [
                 *self.compose,
@@ -345,9 +421,13 @@ class DemoStack:
     def run(self, directory):
         directory = Path(directory)
         self.cleanup(directory / "before")
+        original_error = None
         try:
             self.start(directory)
             yield
+        except BaseException as error:
+            original_error = error
+            raise
         finally:
             with finish_cleanup():
                 try:
@@ -359,4 +439,16 @@ class DemoStack:
                 except (OSError, subprocess.SubprocessError):
                     pass
                 finally:
-                    self.cleanup(directory / "after")
+                    try:
+                        self.cleanup(directory / "after")
+                    except BaseException as cleanup_error:
+                        if original_error is None:
+                            raise
+                        original_error.add_note(
+                            f"Cleanup also failed: {cleanup_error}"
+                        )
+                        print(
+                            f"Cleanup also failed: {cleanup_error}",
+                            file=sys.stderr,
+                            flush=True,
+                        )

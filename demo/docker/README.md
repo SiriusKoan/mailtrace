@@ -240,10 +240,10 @@ uv run python demo/docker/bench_host_ablation.py \
 polling-parameter set, sends test messages, and builds baseline traces from
 complete OpenSearch logs in one production `export_traces` call. Baseline spans
 are kept in memory and are not written to Tempo. The script reads daemon traces
-from Tempo and compares host sets and delay-stage names and order. After each
-parameter set finishes, it prints the exact-match rate's mean and sample
-standard deviation, then prints the complete aggregate table after all sets
-finish.
+from Tempo and compares host sets and delay-stage names and order. Every
+committed repeat prints its exact, malformed, and missing counts. `runs.json`
+and `aggregate.json` expose partial results, including each setting's current
+sample count, mean exact-match percentage, and sample standard deviation.
 
 Start the complete 28-setting experiment directly from this script:
 
@@ -264,19 +264,68 @@ fresh OpenSearch, Tempo, and mail stack for each repeat of ten emails. Before
 and after every repeat it removes the project's containers, networks, and
 volumes. Cleanup must succeed before the next repeat starts. Container memory
 limits are disabled; raw logs, signatures, traces, and cleanup records remain
-in the output directory. The output directory must be new, so this command
-always starts from the first repeat and does not reuse previous results.
+in the output directory. Fresh runs require a new directory. The script writes
+`progress.json` before setup and updates it at least every five seconds while
+the process can run, including the active phase, work plan, attempts, committed
+results, and Linux memory/I/O pressure. `status.json` is a compact view of the
+same state. Updates use atomic replacement, so concurrent readers see complete
+JSON and process crashes retain the last committed snapshot. Power-loss
+durability is not claimed.
+
+Resume an interrupted, failed, or abruptly terminated run with this single
+command, using its existing output directory:
+
+```shell
+uv run --group tracing python demo/docker/bench_daemon_correctness.py \
+  --resume results/EXPERIMENT/progress.json
+```
+
+Inspect live progress and partial measured results:
+
+```shell
+watch -n 5 cat results/EXPERIMENT/status.json
+cat results/EXPERIMENT/aggregate.json
+```
+
+Resume validates the implementation (including uncommitted source changes),
+configuration, dependencies, workload plan, seeds, pinned environment
+definition, and hashes of committed artifacts before resetting resources. It keeps the original run
+ID and results, skips committed repeats, stops identified orphaned daemons,
+then cleans and recreates the demo stack before replaying unfinished work.
+It reuses the saved image IDs and stops if a pinned image is unavailable.
+A completed compatible run performs no reset or measurement. Changed or
+corrupt experiments are rejected and require a separate fresh run; output
+from older versions without a compatibility manifest remains available but
+cannot be resumed. Only the active, uncommitted repeat may need replaying;
+there are no automatic retries or duplicate committed results. Each replay
+uses a separate attempt directory and retains earlier diagnostics.
+
+Route selection uses `--seed` (default `0`) plus the repeat number, so every
+parameter setting receives the same route choices for corresponding repeats.
+Message IDs remain unique per attempt. Container CPU quotas and image IDs are
+recorded; Docker RAM and swap limits remain disabled. Each measurement uses
+a cold stack, excluding image preparation and environment reset from its
+reported duration. Shared-host caches and other workloads remain outside the
+experiment's control. Before starting containers, the script waits up to
+15 minutes for available memory and Linux pressure metrics to recover; it
+does not change host settings or remove unrelated resources. Infrastructure
+failures stop the batch and remain visible rather than becoming zero scores.
 
 The daemon must complete its first successful query before sending begins.
 Each repeat has a unique Message-ID prefix, and its baseline includes only
 those messages. After the minimum `--wait` interval, the script waits up to
 15 minutes for all recipient deliveries and queue completion records, then
 observes `hold_rounds + 2` successful queries after the look-back interval.
-Zero correctness scores are retained without retries. `status.json` records
-preparation, startup, measurement, and cleanup stages from the beginning.
-Expected connection errors while OpenSearch starts are retried without stack
+Zero correctness scores are retained without retries. Expected connection errors while OpenSearch starts are retried without stack
 trace spam. Ctrl+C records an `interrupted` state and finishes cleanup; further
 Ctrl+C signals during cleanup do not skip resource removal.
+
+Recovery validation used two repeats of two messages with a 40-second relay
+delay: SIGKILL during the second repeat, explicit resume from the saved
+`running` checkpoint, and an uninterrupted run with matching seeds. The first
+commit stayed unchanged, the orphan daemon stopped, cleanup left no demo
+resources, and an explicitly separate Compose-project sentinel survived.
+All four committed raw-log baselines matched their saved scoring artifacts.
 
 Without `--reset-environment`, the script uses an already running demo stack.
 

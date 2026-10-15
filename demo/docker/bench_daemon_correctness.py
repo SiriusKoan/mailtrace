@@ -40,6 +40,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+from demo.docker.daemon_benchmark_progress import (  # noqa: E402
+    Progress,
+    compatibility_manifest,
+    digest,
+    write_json,
+)
 from demo.docker.daemon_benchmark_stack import DemoStack  # noqa: E402
 
 from mailtrace.config import load_config  # noqa: E402
@@ -230,11 +236,81 @@ def stop_process(proc: subprocess.Popen, timeout: int = 10) -> None:
                 raise
 
 
-def send_emails(script: Path, n: int, run_prefix: str) -> None:
+def process_identity(pid):
+    """Check PID reuse before touching an orphaned benchmark daemon."""
+    try:
+        proc = Path(f"/proc/{pid}")
+        fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if fields[0] == "Z":
+            return None
+        return {
+            "pid": int(pid),
+            "start_ticks": fields[19],
+            "command": (proc / "cmdline")
+            .read_bytes()
+            .decode()
+            .rstrip("\0")
+            .split("\0"),
+        }
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def recover_daemons(progress):
+    """Stop only identified children of uncommitted attempts before reset."""
+    for unit in progress.data["units"]:
+        if unit["state"] == "completed":
+            continue
+        for attempt in unit["attempts"]:
+            path = (
+                progress.output
+                / attempt["artifact_dir"]
+                / "daemon-process.json"
+            ).resolve()
+            if not path.is_relative_to(progress.output.resolve()):
+                raise ValueError(
+                    "Attempt artifacts escape the experiment output"
+                )
+            if not path.exists():
+                continue
+            identity = json.loads(path.read_text())
+            pid = identity["pid"]
+            if process_identity(pid) != identity:
+                continue
+            if (
+                identity["command"][1:4] != ["-m", "mailtrace", "tracing"]
+                or os.getpgid(pid) != pid
+            ):
+                raise RuntimeError(
+                    "Recorded daemon ownership could not be verified"
+                )
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(pid, sig)
+                except ProcessLookupError:
+                    break
+                deadline = time.monotonic() + 5
+                while (
+                    process_identity(pid) == identity
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.1)
+                if process_identity(pid) != identity:
+                    break
+            else:
+                raise RuntimeError(
+                    f"Orphaned benchmark daemon {pid} did not stop"
+                )
+
+
+def send_emails(script: Path, n: int, run_prefix: str, seed=None) -> None:
     """Run the demo email sender."""
+    env = dict(os.environ, MAILTRACE_RUN_PREFIX=run_prefix)
+    if seed is not None:
+        env["MAILTRACE_SEED"] = str(seed)
     proc = subprocess.run(
         ["bash", str(script), str(n)],
-        env=dict(os.environ, MAILTRACE_RUN_PREFIX=run_prefix),
+        env=env,
         capture_output=True,
         text=True,
     )
@@ -543,8 +619,12 @@ def run_one(
     params: ParamSet,
     artifact_dir: Path | None = None,
     relay_delay_seconds: int = 0,
+    seed=None,
+    progress=None,
 ) -> RunResult:
     """Run one sidecar correctness experiment."""
+    phase = progress or (lambda name: None)
+    phase("daemon_startup")
     config_path = write_temp_config(base_config_path, params, temp_dir)
     log_path = temp_dir / (
         f"daemon_sleep{params.sleep_seconds}_hold{params.hold_rounds}_"
@@ -557,6 +637,9 @@ def run_one(
     proc = start_production_daemon(config_path, otel_endpoint, log_path)
     run_start = time.perf_counter()
     try:
+        identity = process_identity(proc.pid)
+        if artifact_dir is not None and identity:
+            write_json(artifact_dir / "daemon-process.json", identity)
         wait_for_rounds(
             proc, log_path, datetime.min.replace(tzinfo=UTC), 1, 180
         )
@@ -570,15 +653,19 @@ def run_one(
         if artifact_dir is not None:
             write_json(
                 artifact_dir / "traffic_manifest.json",
-                {"message_ids": sorted(message_ids)},
+                {"message_ids": sorted(message_ids), "seed": seed},
             )
         print(
             f"Daemon ready; sending {size} messages...",
             file=sys.stderr,
             flush=True,
         )
+        phase("sending_messages")
         traffic_start = datetime.now(UTC)
-        send_emails(script_path, size, run_prefix)
+        if seed is None:
+            send_emails(script_path, size, run_prefix)
+        else:
+            send_emails(script_path, size, run_prefix, seed)
         traffic_end = datetime.now(UTC)
 
         if artifact_dir is not None:
@@ -595,6 +682,7 @@ def run_one(
             file=sys.stderr,
             flush=True,
         )
+        phase("waiting_for_deliveries")
         time.sleep(wait_seconds)
         config = load_config(str(config_path))
         deadline = time.monotonic() + 900
@@ -632,6 +720,7 @@ def run_one(
             file=sys.stderr,
             flush=True,
         )
+        phase("observing_queries")
         wait_for_rounds(
             proc,
             log_path,
@@ -651,6 +740,7 @@ def run_one(
                     "verified": True,
                 },
             )
+        phase("scoring")
         expected = build_expected_signatures(grouped)
         if set(expected) != message_ids:
             raise RuntimeError(
@@ -732,14 +822,6 @@ def signatures_to_json(signatures: TraceSignatures) -> dict[str, Any]:
         }
         for message_id, hosts in signatures.items()
     }
-
-
-def write_json(path: Path, value: Any) -> None:
-    """Save each completed run so interruptions retain earlier results."""
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n",
-        encoding="utf-8",
-    )
 
 
 def print_table(results: list[RunResult]) -> None:
@@ -935,6 +1017,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
+        "--resume",
+        metavar="PROGRESS_JSON",
+        help="Resume a compatible checkpoint without rerunning committed repeats",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base seed for repeatable delivery route selection",
+    )
+    parser.add_argument(
         "--sleep-seconds", type=int, default=DEFAULT_SLEEP_SECONDS
     )
     parser.add_argument(
@@ -968,10 +1061,74 @@ def resolve_path(path: str) -> Path:
     return resolved.resolve()
 
 
+def publish_partial(progress):
+    """Derive every summary from the same committed repeats."""
+    records = progress.records()
+    write_json(progress.output / "runs.json", records)
+    grouped = {}
+    for row in records:
+        params = ParamSet(row["sleep_seconds"], row["hold"], row["go_back"])
+        grouped.setdefault(params, []).append(
+            RunResult(
+                params,
+                row["expected"],
+                row["generated"],
+                row["exact"],
+                row["malformed"],
+                row["missing"],
+                row["exact"] / row["expected"],
+                row["duration_seconds"],
+            )
+        )
+    aggregates = [
+        aggregate_results(params, rows) for params, rows in grouped.items()
+    ]
+    write_json(
+        progress.output / "aggregate.json",
+        [aggregated_result_to_json(row) for row in aggregates],
+    )
+    return aggregates
+
+
 def main() -> int:
-    """Run sidecar daemon correctness benchmark."""
+    """Run or explicitly resume one checkpointed daemon experiment."""
     parser = build_parser()
     args = parser.parse_args()
+    saved = None
+    if args.resume:
+        if any(
+            token.startswith("--")
+            and token.split("=", 1)[0]
+            not in ("--resume", "--json", "--keep-temp")
+            for token in sys.argv[1:]
+        ):
+            parser.error(
+                "--resume restores experiment options; only --json and --keep-temp may be supplied"
+            )
+        checkpoint = resolve_path(args.resume)
+        if checkpoint.name != "progress.json":
+            parser.error("--resume requires the experiment's progress.json")
+        saved = json.loads(checkpoint.read_text())
+        try:
+            options = saved["manifest"]["options"]
+            args = argparse.Namespace(**{**vars(args), **options})
+        except (KeyError, TypeError) as error:
+            raise ValueError(
+                "Invalid checkpoint; legacy output without a manifest cannot be resumed"
+            ) from error
+        output_dir = checkpoint.parent
+    else:
+        output_dir = (
+            resolve_path(args.output_dir)
+            if args.output_dir
+            else _PROJECT_ROOT
+            / "results"
+            / (
+                "daemon-correctness-"
+                + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ-")
+                + uuid4().hex[:8]
+            )
+        )
     if args.size <= 0 or args.runs <= 0 or args.sleep_seconds <= 0:
         parser.error("size, runs, and sleep-seconds must be positive")
     if (
@@ -979,52 +1136,75 @@ def main() -> int:
             args.wait,
             args.daemon_start_wait,
             args.relay_delay_seconds,
+            args.seed,
             *args.hold_values,
             *args.go_back_values,
         )
         < 0
     ):
         parser.error(
-            "waits, delays, hold values, and go-back values must be non-negative"
+            "waits, delays, seed, hold values, and go-back values must be non-negative"
         )
     if args.relay_delay_seconds and not args.reset_environment:
         parser.error("--relay-delay-seconds requires --reset-environment")
     logging.basicConfig(level=logging.WARNING)
-
     config_path = resolve_path(args.config)
     script_path = resolve_path(args.script)
-    output_dir = resolve_path(args.output_dir) if args.output_dir else None
-    if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=False)
-    temp_dir = Path(tempfile.mkdtemp(prefix="mailtrace-daemon-bench-"))
-    param_sets = args.params or build_param_grid(
-        sleep_seconds=args.sleep_seconds,
-        hold_values=args.hold_values,
-        go_back_values=args.go_back_values,
+    param_sets = (
+        [ParamSet(*p) for p in args.params]
+        if args.params
+        else build_param_grid(
+            args.sleep_seconds, args.hold_values, args.go_back_values
+        )
     )
-
+    if len(param_sets) != len(set(param_sets)):
+        parser.error("parameter sets must be unique")
+    options = {
+        key: value
+        for key, value in vars(args).items()
+        if key not in ("resume", "output_dir", "keep_temp", "json")
+    }
+    options.update(config=str(config_path), script=str(script_path))
+    options = json.loads(json.dumps(options))
+    plan = [
+        {
+            "id": f"sleep{p.sleep_seconds}_hold{p.hold_rounds}_goback{p.go_back_seconds}/run-{i:02d}",
+            "params": p._asdict(),
+            "run": i,
+            "seed": (args.seed + i) % 32768,
+        }
+        for p in param_sets
+        for i in range(1, args.runs + 1)
+    ]
+    manifest = compatibility_manifest(_PROJECT_ROOT, options)
+    if not saved:
+        output_dir.mkdir(parents=True, exist_ok=False)
     resources = ExitStack()
-    results = []
-    records = []
-    aggregated_results = []
-    current = None
-
-    def update_status(state, **details):
-        if output_dir is not None:
-            data = {
-                "state": state,
-                "completed_runs": len(records),
-                "total_runs": len(param_sets) * args.runs,
-                "updated_at": datetime.now(UTC).isoformat(),
-                **details,
-            }
-            if current is not None:
-                data["current"] = current
-            write_json(output_dir / "status.json", data)
-
+    progress = None
+    temp_dir = None
     try:
-        update_status("preparing_environment")
-        environment = None
+        # Serialize checkpoint writers even when using an externally managed stack.
+        lock = resources.enter_context(
+            (output_dir / "progress.lock").open("a")
+        )
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another process owns this checkpoint")
+        if args.resume:
+            saved = json.loads((output_dir / "progress.json").read_text())
+        progress = Progress(output_dir, manifest, plan, saved)
+        if saved and all(
+            u["state"] == "completed" for u in progress.data["units"]
+        ):
+            if saved["state"] != "completed":
+                publish_partial(progress)
+                progress.finish("completed")
+            print(
+                "All repeats are already committed; no environment changes.",
+                flush=True,
+            )
+            return 0
         if args.reset_environment:
             lock = resources.enter_context(
                 (
@@ -1038,138 +1218,131 @@ def main() -> int:
                 raise RuntimeError(
                     "Another daemon benchmark owns the demo stack"
                 )
+        progress.start()
+        publish_partial(progress)
+        print(
+            f"Progress: {output_dir / 'progress.json'}",
+            file=sys.stderr,
+            flush=True,
+        )
+        temp_dir = Path(tempfile.mkdtemp(prefix="mailtrace-daemon-bench-"))
+        recover_daemons(progress)
+        environment = None
+        if args.reset_environment:
             environment = DemoStack(
                 Path(__file__).with_name("docker-compose.yml"),
-                (output_dir or temp_dir) / "environment",
+                output_dir / "environment",
                 load_config(str(config_path)),
                 args.tempo_url,
                 args.relay_delay_seconds,
             )
+            environment.on_phase = progress.phase
+            environment_directory = output_dir / "environment"
+            environment_directory.mkdir(parents=True, exist_ok=True)
+            progress.phase("recovering_environment")
+            environment.cleanup(
+                environment_directory
+                / (
+                    "resume-cleanup-"
+                    + datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+                )
+            )
+            progress.phase("preparing_environment")
             print("Preparing demo images...", file=sys.stderr, flush=True)
-            environment.prepare()
-        for params in param_sets:
-            repeated_results = []
+            environment.prepare(resume=bool(saved))
+            pinned = environment_directory / "compose.json"
+            if pinned.is_file():
+                progress.data["environment_sha256"] = digest(pinned)
+                progress.publish()
+        for unit in progress.data["units"]:
+            if unit["state"] == "completed":
+                continue
+            relative = progress.begin(unit)
+            params = ParamSet(**unit["params"])
             print(
-                f"Running sleep={params.sleep_seconds}, "
-                f"hold={params.hold_rounds}, "
-                f"go_back={params.go_back_seconds}",
+                f"Running {unit['id']} (attempt {len(unit['attempts'])})",
                 flush=True,
             )
-            for run_index in range(1, args.runs + 1):
+            progress.phase(
+                "starting_environment" if environment else "running"
+            )
+            scope = (
+                environment.run(output_dir / "environment" / relative)
+                if environment
+                else nullcontext()
+            )
+            with scope:
+                result = run_one(
+                    base_config_path=config_path,
+                    script_path=script_path,
+                    temp_dir=temp_dir,
+                    size=args.size,
+                    wait_seconds=(
+                        max(args.wait, 100) if environment else args.wait
+                    ),
+                    daemon_start_wait=args.daemon_start_wait,
+                    tempo_url=args.tempo_url,
+                    otel_endpoint=args.otel_endpoint,
+                    params=params,
+                    artifact_dir=output_dir / relative,
+                    relay_delay_seconds=args.relay_delay_seconds,
+                    seed=unit["seed"],
+                    progress=progress.phase,
+                )
+                progress.phase("cleaning_environment")
                 print(
-                    f"  run {run_index}/{args.runs}",
+                    "Scoring complete; cleaning demo resources...",
+                    file=sys.stderr,
                     flush=True,
                 )
-                relative = (
-                    Path(
-                        f"sleep{params.sleep_seconds}_hold{params.hold_rounds}_goback{params.go_back_seconds}"
-                    )
-                    / f"run-{run_index:02d}"
-                )
-                directory = (output_dir or temp_dir) / relative
-                current = {**params._asdict(), "run": run_index}
-                update_status(
-                    "starting_environment" if environment else "running"
-                )
-                scope = (
-                    environment.run(
-                        (output_dir or temp_dir) / "environment" / relative
-                    )
-                    if environment
-                    else nullcontext()
-                )
-                with scope:
-                    update_status("running")
-                    result = run_one(
-                        base_config_path=config_path,
-                        script_path=script_path,
-                        temp_dir=temp_dir,
-                        size=args.size,
-                        wait_seconds=args.wait,
-                        daemon_start_wait=args.daemon_start_wait,
-                        tempo_url=args.tempo_url,
-                        otel_endpoint=args.otel_endpoint,
-                        params=params,
-                        artifact_dir=directory,
-                        relay_delay_seconds=args.relay_delay_seconds,
-                    )
-                    update_status("cleaning_environment")
-                    print(
-                        "Scoring complete; cleaning demo resources...",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                results.append(result)
-                repeated_results.append(result)
-                records.append(
-                    {
-                        **result_to_json(result),
-                        "sleep_seconds": params.sleep_seconds,
-                        "run": run_index,
-                        "duration_seconds": result.duration,
-                        "artifact_dir": str(relative),
-                    }
-                )
-                if output_dir is not None:
-                    write_json(output_dir / "runs.json", records)
-                update_status("running")
-            aggregated = aggregate_results(params, repeated_results)
-            aggregated_results.append(aggregated)
-            if output_dir is not None:
-                write_json(
-                    output_dir / "aggregate.json",
-                    [
-                        aggregated_result_to_json(result)
-                        for result in aggregated_results
-                    ],
-                )
-            if not args.json:
-                print()
-                print("Completed parameter set:")
-                print_aggregated_table([aggregated])
-                print()
-
-        print()
+            record = {
+                **result_to_json(result),
+                "sleep_seconds": params.sleep_seconds,
+                "run": unit["run"],
+                "duration_seconds": result.duration,
+                "artifact_dir": str(relative),
+            }
+            progress.complete(unit, record)
+            aggregates = publish_partial(progress)
+            print(
+                f"Committed {len(progress.records())}/{len(plan)} repeats: exact={result.exact}/{result.expected}, malformed={result.malformed}, missing={result.missing}",
+                flush=True,
+            )
+        aggregates = publish_partial(progress)
+        progress.finish("completed")
         if args.json:
-            if args.runs > 1:
-                print(
-                    json.dumps(
-                        [
-                            aggregated_result_to_json(result)
-                            for result in aggregated_results
-                        ],
-                        ensure_ascii=False,
-                    )
-                )
-            else:
-                print(
-                    json.dumps(
-                        [result_to_json(result) for result in results],
-                        ensure_ascii=False,
-                    )
-                )
+            print(
+                json.dumps(
+                    [aggregated_result_to_json(row) for row in aggregates],
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         else:
-            print("Complete results:")
-            print_aggregated_table(aggregated_results)
-        update_status("completed")
+            print_aggregated_table(aggregates)
         return 0
-    except KeyboardInterrupt:
-        update_status("interrupted", error="KeyboardInterrupt")
+    except KeyboardInterrupt as error:
+        if progress and progress.thread:
+            progress.finish("interrupted", error)
         print(
-            "Interrupted; completed results are retained.",
+            "Interrupted; committed results are retained. Resume using progress.json.",
             file=sys.stderr,
             flush=True,
         )
         return 130
     except BaseException as error:
-        update_status("failed", error=str(error) or type(error).__name__)
+        if progress and progress.thread:
+            progress.finish("failed", error)
         raise
     finally:
+        if progress:
+            progress.close()
         resources.close()
-        if args.keep_temp:
-            print(f"Temp dir: {temp_dir}")
-        else:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        if temp_dir:
+            if args.keep_temp:
+                print(f"Temp dir: {temp_dir}")
+            else:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

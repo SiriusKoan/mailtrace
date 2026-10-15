@@ -31,6 +31,14 @@ NAMES=(
     mailer-3-team
 )
 
+if [ -n "${MAILTRACE_SEED:-}" ]; then
+    if ! [[ "$MAILTRACE_SEED" =~ ^[0-9]+$ ]]; then
+        echo "Error: MAILTRACE_SEED must be a non-negative integer" >&2
+        exit 1
+    fi
+    RANDOM=$MAILTRACE_SEED
+fi
+
 SUCCESS_COUNT=0
 FAIL_COUNT=0
 

@@ -39,11 +39,38 @@ class ManagedLifecycleTest(unittest.TestCase):
                 yield
             finally:
                 events.append("cleanup")
+                (directory / "after").mkdir(parents=True)
+                (directory / "after/cleanup.json").write_text(
+                    json.dumps(
+                        {
+                            "verified": True,
+                            "after": {
+                                "containers": [],
+                                "networks": [],
+                                "volumes": [],
+                            },
+                        }
+                    )
+                )
 
         stack.run.side_effect = environment
 
         def measure(**kwargs):
             events.append("measure")
+            directory = kwargs["artifact_dir"]
+            directory.mkdir(parents=True)
+            for name in (
+                "result.json",
+                "logs.json",
+                "signatures.json",
+                "tempo_traces.json",
+                "traffic_manifest.json",
+                "readiness.json",
+                "input_completion.json",
+                "observation.json",
+                "daemon.log",
+            ):
+                (directory / name).write_text("{}")
             return bench.RunResult(kwargs["params"], 10, 10, 0, 10, 0, 0, 1.0)
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -410,6 +437,57 @@ class StackCleanupTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(signal.getsignal(signal.SIGINT), handler)
+
+    def test_inventory_timeout_does_not_skip_compose_down(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stack = DemoStack(
+                Path("compose.yml"),
+                Path(temporary),
+                SimpleNamespace(opensearch_config=None),
+                "http://tempo",
+                40,
+            )
+            with (
+                patch.object(
+                    stack,
+                    "resources",
+                    side_effect=subprocess.TimeoutExpired(
+                        ["docker", "ps"], 15
+                    ),
+                ),
+                patch.object(stack, "command", return_value="") as command,
+                patch("time.sleep"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    stack.cleanup(Path(temporary))
+            self.assertTrue(
+                any("down" in call.args[0] for call in command.call_args_list),
+                "Inventory timeouts skipped every teardown attempt",
+            )
+
+    def test_cleanup_error_preserves_original_measurement_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            stack = DemoStack(
+                Path("compose.yml"),
+                Path(temporary),
+                SimpleNamespace(opensearch_config=None),
+                "http://tempo",
+                40,
+            )
+            with (
+                patch.object(
+                    stack,
+                    "cleanup",
+                    side_effect=[None, RuntimeError("cleanup unavailable")],
+                ),
+                patch.object(stack, "start"),
+                patch.object(stack, "command", return_value=""),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "required queries"):
+                    with stack.run(Path(temporary)):
+                        raise TimeoutError(
+                            "Daemon did not complete required queries"
+                        )
 
     def test_residual_resources_block_the_next_start(self):
         with tempfile.TemporaryDirectory() as temporary:
