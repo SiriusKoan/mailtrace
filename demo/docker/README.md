@@ -254,7 +254,7 @@ uv run --group tracing python demo/docker/bench_daemon_correctness.py \
   --sleep-seconds 10 \
   --hold-values 0 1 2 3 4 5 10 \
   --go-back-values 0 3 5 10 \
-  --runs 10 --size 10 --wait 100 \
+  --runs 10 --size 10 \
   --output-dir "results/daemon-correctness-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
@@ -314,9 +314,10 @@ failures stop the batch and remain visible rather than becoming zero scores.
 The daemon must complete its first successful query before sending begins.
 Each repeat has a unique Message-ID prefix, and its baseline includes only
 those messages.
-每次寄信結束後，程式先等待 `--wait` 指定的秒數，`--reset-environment` 也使用相同設定。
-之後最多等待 15 分鐘，確認所有收件者的投遞紀錄及佇列完成紀錄齊全，
-再從回溯時間結束後觀察 `hold_rounds + 2` 次成功查詢。
+After each send completes, the benchmark immediately queries delivery logs,
+waiting up to 15 minutes for complete delivery and queue completion records
+for all recipients. After the lookback period ends, it then observes
+`hold_rounds + 2` successful queries.
 Zero correctness scores are retained without retries. Expected connection errors while OpenSearch starts are retried without stack
 trace spam. Ctrl+C records an `interrupted` state and finishes cleanup; further
 Ctrl+C signals during cleanup do not skip resource removal.
@@ -339,7 +340,7 @@ docker compose -f demo/docker/docker-compose.yml \
   up -d --build mailer1 mailer2 mailer3
 
 uv run python demo/docker/bench_daemon_correctness.py \
-  --size 10 --runs 1 --wait 100 \
+  --size 10 --runs 1 \
   --params 10,0,30 10,5,30
 ```
 
@@ -348,9 +349,10 @@ to `0`, which disables the delay. Exim accepts each message immediately, then it
 [`transport_filter`](https://www.exim.org/exim-html-current/doc/html/spec_html/ch-generic_options_for_transports.html)
 waits before streaming the unchanged message to the mailpolicy. Single routes
 cross one delayed mailer; team aliases cross two, so a 40-second setting adds
-about 40 or 80 seconds to end-to-end delivery. Increase the benchmark's `--wait`
-to cover the longest route, otherwise its baseline can exclude late delivery
-logs. Recreate the mailers with the variable set to `0` to disable the delay.
+about 40 or 80 seconds to end-to-end delivery.
+The benchmark waits for delivery and queue completion records, so no separate
+fixed wait time is required. Recreate the mailers with the environment variable
+set to `0` to disable the delay.
 
 `go_back_seconds` overlaps log query windows to recover records indexed after
 their timestamps. `hold_rounds` keeps a message buffered until that many polling

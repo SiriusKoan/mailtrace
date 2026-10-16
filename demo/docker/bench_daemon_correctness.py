@@ -61,7 +61,6 @@ DEFAULT_SCRIPT = "demo/docker/send_bulk_emails.sh"
 DEFAULT_TEMPO_URL = "http://localhost:3200"
 DEFAULT_OTEL_ENDPOINT = "http://localhost:14317"
 DEFAULT_SIZE = 10
-DEFAULT_WAIT = 15
 DEFAULT_SLEEP_SECONDS = 10
 DEFAULT_HOLD_VALUES = [0, 1, 2, 5, 10]
 DEFAULT_GO_BACK_VALUES = [0, 3, 5, 10, 30, 60]
@@ -612,7 +611,6 @@ def run_one(
     script_path: Path,
     temp_dir: Path,
     size: int,
-    wait_seconds: int,
     daemon_start_wait: int,
     tempo_url: str,
     otel_endpoint: str,
@@ -678,12 +676,11 @@ def run_one(
                 },
             )
         print(
-            f"Waiting at least {wait_seconds} seconds for delivery logs...",
+            "Waiting for complete delivery logs...",
             file=sys.stderr,
             flush=True,
         )
         phase("waiting_for_deliveries")
-        time.sleep(wait_seconds)
         config = load_config(str(config_path))
         deadline = time.monotonic() + 900
         while True:
@@ -996,7 +993,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tempo-url", default=DEFAULT_TEMPO_URL)
     parser.add_argument("--otel-endpoint", default=DEFAULT_OTEL_ENDPOINT)
     parser.add_argument("--size", type=int, default=DEFAULT_SIZE)
-    parser.add_argument("--wait", type=int, default=DEFAULT_WAIT)
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--daemon-start-wait", type=int, default=5)
     parser.add_argument("--keep-temp", action="store_true")
@@ -1133,7 +1129,6 @@ def main() -> int:
         parser.error("size, runs, and sleep-seconds must be positive")
     if (
         min(
-            args.wait,
             args.daemon_start_wait,
             args.relay_delay_seconds,
             args.seed,
@@ -1277,7 +1272,6 @@ def main() -> int:
                     script_path=script_path,
                     temp_dir=temp_dir,
                     size=args.size,
-                    wait_seconds=args.wait,
                     daemon_start_wait=args.daemon_start_wait,
                     tempo_url=args.tempo_url,
                     otel_endpoint=args.otel_endpoint,

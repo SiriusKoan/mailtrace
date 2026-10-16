@@ -118,8 +118,8 @@ def create_root_span(
         message_id: The RFC 2822 ``Message-ID`` header value.
         start_time: Absolute start time for the span.
         sender: The email sender address (optional).
-        recipients: 展開前的收件者地址（可選）。
-        expanded_recipients: 展開後的收件者地址（可選）。
+        recipients: Recipient addresses before expansion (optional).
+        expanded_recipients: Recipient addresses after expansion (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
@@ -173,7 +173,7 @@ def create_host_span(
             ``trace.set_span_in_context(parent_span)``).
         message_id: The RFC 2822 ``Message-ID`` header value (optional).
         sender: The email sender address (optional).
-        recipients: 展開前的收件者地址（可選）。
+        recipients: Recipient addresses before expansion (optional).
         queue_id: Queue ID for this host (optional).
         next_host: Next host this host relays the message to (optional).
         explicit_handoff: Incoming queue handoff classification: ``True`` is
@@ -183,7 +183,7 @@ def create_host_span(
         relay_ip: Relay IP address (optional).
         relay_port: Relay port (optional).
         smtp_response_code: SMTP response code (optional).
-        expanded_recipients: 展開後的收件者地址（可選）。
+        expanded_recipients: Recipient addresses after expansion (optional).
 
     Returns:
         A live (not-yet-ended) SDK :class:`~opentelemetry.sdk.trace.Span`.
@@ -233,7 +233,7 @@ def create_delivery_span(
     transport: Optional[str] = None,
     expanded_recipients: Optional[list[str]] = None,
 ) -> trace.Span:
-    """建立投遞 span，分別記錄原始收件者與展開地址。"""
+    """Create a delivery span with original and expanded recipient addresses."""
     tracer = _get_tracer(hostname, host_name=hostname)
     attributes = {}
     if recipients is not None:

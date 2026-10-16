@@ -347,7 +347,7 @@ class MembershipAblationTest(unittest.TestCase):
         self.entry_hops = set()
         for number in (1, 2):
             message_id = f"case-{number}@test.example"
-            # 相同 queue ID 在不同 host 上屬於不同郵件。
+            # The same queue ID on different hosts belongs to different messages.
             host = f"mx{number}.example.com"
             exim_host = f"mailer{number}.example.com"
             exim_queue = f"1ABCDE-00000{number}-01"

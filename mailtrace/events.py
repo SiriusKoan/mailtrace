@@ -45,7 +45,7 @@ def extract_smtp_status_class(
 def extract_smtp_status_codes(
     message: str, smtp_code: int | str | None = None
 ) -> tuple[int | None, str | None]:
-    """提取 SMTP reply code 與 enhanced status code。"""
+    """Extract the SMTP reply code and enhanced status code."""
     enhanced_match = _ENHANCED_STATUS_RE.search(message)
     enhanced_status_code = enhanced_match.group(1) if enhanced_match else None
 

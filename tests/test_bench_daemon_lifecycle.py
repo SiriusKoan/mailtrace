@@ -282,7 +282,9 @@ class MeasurementBoundaryTest(unittest.TestCase):
 
         def daemon(config, endpoint, path):
             path.write_text("")
-            return Mock()
+            process = Mock()
+            process.poll.return_value = None
+            return process
 
         def wait(*args):
             events.append("query-boundary")
@@ -299,13 +301,15 @@ class MeasurementBoundaryTest(unittest.TestCase):
             patch.object(bench, "stop_process"),
             patch.object(bench, "wait_for_rounds", side_effect=wait),
             patch.object(bench, "completed_rounds", return_value=2),
-            patch.object(bench.time, "sleep"),
+            patch.object(bench.time, "sleep") as sleep,
             patch.object(
                 bench,
                 "send_emails",
                 side_effect=lambda *args: events.append("send"),
             ),
-            patch.object(bench, "query_all_logs", return_value=logs),
+            patch.object(
+                bench, "query_all_logs", side_effect=[[], logs]
+            ) as query,
             patch.object(
                 bench, "build_expected_signatures", return_value=expected
             ) as baseline,
@@ -317,7 +321,6 @@ class MeasurementBoundaryTest(unittest.TestCase):
                 Path(temporary),
                 1,
                 0,
-                0,
                 "http://tempo",
                 "http://otel",
                 bench.ParamSet(10, 0, 0),
@@ -327,6 +330,11 @@ class MeasurementBoundaryTest(unittest.TestCase):
             self.assertEqual(result.missing, 1)
             self.assertEqual(
                 events, ["query-boundary", "send", "query-boundary"]
+            )
+            self.assertEqual(query.call_count, 2)
+            self.assertEqual(
+                sleep.call_args_list,
+                [unittest.mock.call(0), unittest.mock.call(5)],
             )
             self.assertEqual(set(baseline.call_args.args[0]), {message_id})
 
