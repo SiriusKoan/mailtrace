@@ -313,9 +313,10 @@ failures stop the batch and remain visible rather than becoming zero scores.
 
 The daemon must complete its first successful query before sending begins.
 Each repeat has a unique Message-ID prefix, and its baseline includes only
-those messages. After the minimum `--wait` interval, the script waits up to
-15 minutes for all recipient deliveries and queue completion records, then
-observes `hold_rounds + 2` successful queries after the look-back interval.
+those messages.
+每次寄信結束後，程式先等待 `--wait` 指定的秒數，`--reset-environment` 也使用相同設定。
+之後最多等待 15 分鐘，確認所有收件者的投遞紀錄及佇列完成紀錄齊全，
+再從回溯時間結束後觀察 `hold_rounds + 2` 次成功查詢。
 Zero correctness scores are retained without retries. Expected connection errors while OpenSearch starts are retried without stack
 trace spam. Ctrl+C records an `interrupted` state and finishes cleanup; further
 Ctrl+C signals during cleanup do not skip resource removal.

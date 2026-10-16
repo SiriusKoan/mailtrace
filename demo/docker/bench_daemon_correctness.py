@@ -1277,9 +1277,7 @@ def main() -> int:
                     script_path=script_path,
                     temp_dir=temp_dir,
                     size=args.size,
-                    wait_seconds=(
-                        max(args.wait, 100) if environment else args.wait
-                    ),
+                    wait_seconds=args.wait,
                     daemon_start_wait=args.daemon_start_wait,
                     tempo_url=args.tempo_url,
                     otel_endpoint=args.otel_endpoint,
