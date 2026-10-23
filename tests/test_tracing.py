@@ -37,6 +37,150 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             provider.shutdown()
         otel._providers.clear()
 
+    def test_mixed_opensearch_schemas_preserve_intermediate_hop(self) -> None:
+        message_id = (
+            "463774273.21799814.1792727926020" "@97a56716-7760-467e-7f78-8002"
+        )
+        rows = [
+            (
+                "11:58:52.900",
+                "csmx2.cs.nctu.edu.tw",
+                "postfix/cleanup",
+                f"28BAD600B1: message-id=<{message_id}>",
+            ),
+            (
+                "11:58:53.000",
+                "csmx2.cs.nctu.edu.tw",
+                "postfix/smtp",
+                "28BAD600B1: to=<WUUYANG@cs.nctu.edu.tw>, "
+                "relay=maillist1.cc.cs.nctu.edu.tw[10.1.9.81]:25, "
+                "delay=1.1, delays=1/0/0.03/0, dsn=2.0.0, "
+                "status=sent (250 2.0.0 Ok: queued as 2234D2A0006)",
+            ),
+            (
+                "11:58:53.138",
+                "maillist1",
+                "postfix/smtpd",
+                "2234D2A0006: client=csmx2.cc.cs.nctu.edu.tw[10.1.0.112]",
+            ),
+            (
+                "11:58:53.139",
+                "maillist1",
+                "postfix/cleanup",
+                f"2234D2A0006: message-id=<{message_id}>",
+            ),
+            (
+                "11:58:53.140",
+                "maillist1",
+                "postfix/qmgr",
+                "2234D2A0006: from=<cmtw-no-reply@dbs.com>, "
+                "size=48016, nrcpt=1 (queue active)",
+            ),
+            (
+                "11:58:53.224",
+                "maillist1",
+                "postfix/smtp",
+                "2234D2A0006: to=<WUUYANG@cs.nctu.edu.tw>, "
+                "relay=maildirect10.cc.cs.nctu.edu.tw[10.1.9.35]:25, "
+                "delay=0.09, delays=0/0/0.03/0.05, dsn=2.0.0, "
+                "status=sent (250 2.0.0 Ok: queued as 3680E9FBAF)",
+            ),
+            (
+                "11:58:53.224",
+                "maillist1",
+                "postfix/qmgr",
+                "2234D2A0006: removed",
+            ),
+            (
+                "11:58:52.790",
+                "maildirect10",
+                "postfix/cleanup",
+                f"3680E9FBAF: message-id=<{message_id}>",
+            ),
+            (
+                "11:58:53.000",
+                "maildirect10",
+                "postfix/lmtp",
+                "3680E9FBAF: to=<WUUYANG@cs.nctu.edu.tw>, "
+                "delay=0.21, delays=0.05/0/0.01/0.15, dsn=2.0.0, "
+                "status=sent (250 2.0.0 Ok)",
+            ),
+        ]
+        sources = []
+        for timestamp, hostname, service, message in rows:
+            source = {
+                "@timestamp": f"2026-10-23T{timestamp}+08:00",
+                "host": {"name": hostname},
+                "message": message,
+            }
+            if hostname == "maillist1":
+                source["log"] = {"syslog": {"appname": service}}
+            else:
+                source["appname"] = service
+            sources.append(source)
+
+        exporter = InMemorySpanExporter()
+        generator = object.__new__(EmailTracesGenerator)
+        for service_field in ("appname", "log.syslog.appname"):
+            with self.subTest(service_field=service_field):
+                parser = OpensearchParser(
+                    OpenSearchMappingConfig(service=service_field)
+                )
+                logs = [
+                    parser.parse_with_enrichment(source) for source in sources
+                ]
+                exporter.clear()
+                with patch.object(otel, "_exporter", exporter):
+                    generator._export_traces(
+                        query.group_logs_by_message_id(logs)
+                    )
+                    otel.flush_traces()
+
+                finished = exporter.get_finished_spans()
+                hosts = {
+                    span.attributes["email.queue_id"]: span
+                    for span in finished
+                    if span.attributes and "email.queue_id" in span.attributes
+                }
+                self.assertEqual(
+                    {
+                        (span.name, queue_id)
+                        for queue_id, span in hosts.items()
+                    },
+                    {
+                        ("csmx2.cs.nctu.edu.tw", "28BAD600B1"),
+                        ("maillist1", "2234D2A0006"),
+                        ("maildirect10", "3680E9FBAF"),
+                    },
+                )
+                for upstream, downstream in (
+                    ("28BAD600B1", "2234D2A0006"),
+                    ("2234D2A0006", "3680E9FBAF"),
+                ):
+                    delivery = next(
+                        span
+                        for span in finished
+                        if span.name == "delivery"
+                        and span.parent
+                        and span.parent.span_id
+                        == hosts[upstream].context.span_id
+                    )
+                    transmission = next(
+                        span
+                        for span in finished
+                        if span.name == "transmission"
+                        and span.parent
+                        and span.parent.span_id == delivery.context.span_id
+                    )
+                    self.assertEqual(
+                        hosts[downstream].parent.span_id,
+                        transmission.context.span_id,
+                    )
+                    self.assertEqual(
+                        hosts[downstream].attributes["email.handoff"],
+                        "explicit",
+                    )
+
     def test_postfix_host_span_contains_minimum_duration_stage(self) -> None:
         completion_time = datetime.fromisoformat(
             "2026-01-08T22:55:08.952580+08:00"
@@ -1414,6 +1558,45 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
 
 class LogEventParsingTest(unittest.TestCase):
+
+    def test_configured_service_overrides_collector_fallbacks(self) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(service="collector.service")
+        )
+        message = "2234D2A0006: message-id=<message@example.com>"
+        entry = parser.parse(
+            {
+                "@timestamp": "2026-10-23T03:58:53Z",
+                "host": {"name": "mailhost"},
+                "collector": {"service": "dovecot"},
+                "appname": "postfix/cleanup",
+                "log": {"syslog": {"appname": "postfix/smtp"}},
+                "message": message,
+            }
+        )
+
+        self.assertEqual(entry.service, "dovecot")
+        self.assertIsNone(entry.mail_id)
+        self.assertEqual(entry.message, message)
+
+    def test_empty_service_falls_back_to_syslog_exim(self) -> None:
+        parser = OpensearchParser(OpenSearchMappingConfig(service="appname"))
+        entry = parser.parse(
+            {
+                "@timestamp": "2026-09-26T13:14:57Z",
+                "host": {"name": "mailhost"},
+                "appname": "",
+                "log": {"syslog": {"appname": "exim4"}},
+                "message": (
+                    "2026-09-26 21:14:57.804 1xASEz-000010-1B "
+                    "<= sender@example.com"
+                ),
+            }
+        )
+
+        self.assertEqual(entry.service, "exim4")
+        self.assertEqual(entry.mail_id, "1xASEz-000010-1B")
+
     def test_opensearch_parser_preserves_long_handoff_queue_ids(self) -> None:
         parser = OpensearchParser(
             OpenSearchMappingConfig(

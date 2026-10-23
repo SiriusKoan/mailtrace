@@ -379,6 +379,14 @@ class OpensearchParser(LogParser):
         field_path = getattr(self.mapping, field, None)
         return _get_nested_value(log, field_path) if field_path else None
 
+    def _get_service(self, log: dict) -> str | None:
+        """Prefer the configured field, then syslog and Vector service fields."""
+        return (
+            self._get_mapped_value("service", log)
+            or _get_nested_value(log, "log.syslog.appname")
+            or _get_nested_value(log, "appname")
+        )
+
     def _extract_queued_as_from_message(
         self, message_content: str
     ) -> str | None:
@@ -405,7 +413,9 @@ class OpensearchParser(LogParser):
 
         return None
 
-    def _extract_mail_id(self, log: dict, message_content: str) -> str | None:
+    def _extract_mail_id(
+        self, log: dict, message_content: str, service: str | None
+    ) -> str | None:
         """Extract mail ID from structured field or message content."""
         # Try structured field first (queueid)
         mail_id = self._get_validated_mail_id(log, "queueid")
@@ -418,7 +428,6 @@ class OpensearchParser(LogParser):
             if mail_id:
                 return mail_id
 
-        service = self._get_mapped_value("service", log)
         service = service.lower() if isinstance(service, str) else ""
 
         if "exim" in service:
@@ -447,7 +456,8 @@ class OpensearchParser(LogParser):
             LogEntry: The parsed log entry
         """
         message_content = _get_nested_value(log, self.mapping.message) or ""
-        mail_id = self._extract_mail_id(log, message_content)
+        service = self._get_service(log)
+        mail_id = self._extract_mail_id(log, message_content, service)
 
         # Strip mail_id prefix from message if present
         message = (
@@ -470,7 +480,7 @@ class OpensearchParser(LogParser):
         return LogEntry(
             datetime=_get_nested_value(log, self.mapping.timestamp),
             hostname=_get_nested_value(log, self.mapping.hostname),
-            service=_get_nested_value(log, self.mapping.service),
+            service=service,
             mail_id=mail_id,
             message=message,
             # Structured fields (may be None, will be enriched from message)
