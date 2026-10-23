@@ -121,65 +121,53 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
-        for service_field in ("appname", "log.syslog.appname"):
-            with self.subTest(service_field=service_field):
-                parser = OpensearchParser(
-                    OpenSearchMappingConfig(service=service_field)
-                )
-                logs = [
-                    parser.parse_with_enrichment(source) for source in sources
-                ]
-                exporter.clear()
-                with patch.object(otel, "_exporter", exporter):
-                    generator._export_traces(
-                        query.group_logs_by_message_id(logs)
-                    )
-                    otel.flush_traces()
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(service=["appname", "log.syslog.appname"])
+        )
+        logs = [parser.parse_with_enrichment(source) for source in sources]
+        with patch.object(otel, "_exporter", exporter):
+            generator._export_traces(query.group_logs_by_message_id(logs))
+            otel.flush_traces()
 
-                finished = exporter.get_finished_spans()
-                hosts = {
-                    span.attributes["email.queue_id"]: span
-                    for span in finished
-                    if span.attributes and "email.queue_id" in span.attributes
-                }
-                self.assertEqual(
-                    {
-                        (span.name, queue_id)
-                        for queue_id, span in hosts.items()
-                    },
-                    {
-                        ("csmx2.cs.nctu.edu.tw", "28BAD600B1"),
-                        ("maillist1", "2234D2A0006"),
-                        ("maildirect10", "3680E9FBAF"),
-                    },
-                )
-                for upstream, downstream in (
-                    ("28BAD600B1", "2234D2A0006"),
-                    ("2234D2A0006", "3680E9FBAF"),
-                ):
-                    delivery = next(
-                        span
-                        for span in finished
-                        if span.name == "delivery"
-                        and span.parent
-                        and span.parent.span_id
-                        == hosts[upstream].context.span_id
-                    )
-                    transmission = next(
-                        span
-                        for span in finished
-                        if span.name == "transmission"
-                        and span.parent
-                        and span.parent.span_id == delivery.context.span_id
-                    )
-                    self.assertEqual(
-                        hosts[downstream].parent.span_id,
-                        transmission.context.span_id,
-                    )
-                    self.assertEqual(
-                        hosts[downstream].attributes["email.handoff"],
-                        "explicit",
-                    )
+        finished = exporter.get_finished_spans()
+        hosts = {
+            span.attributes["email.queue_id"]: span
+            for span in finished
+            if span.attributes and "email.queue_id" in span.attributes
+        }
+        self.assertEqual(
+            {(span.name, queue_id) for queue_id, span in hosts.items()},
+            {
+                ("csmx2.cs.nctu.edu.tw", "28BAD600B1"),
+                ("maillist1", "2234D2A0006"),
+                ("maildirect10", "3680E9FBAF"),
+            },
+        )
+        for upstream, downstream in (
+            ("28BAD600B1", "2234D2A0006"),
+            ("2234D2A0006", "3680E9FBAF"),
+        ):
+            delivery = next(
+                span
+                for span in finished
+                if span.name == "delivery"
+                and span.parent
+                and span.parent.span_id == hosts[upstream].context.span_id
+            )
+            transmission = next(
+                span
+                for span in finished
+                if span.name == "transmission"
+                and span.parent
+                and span.parent.span_id == delivery.context.span_id
+            )
+            self.assertEqual(
+                hosts[downstream].parent.span_id,
+                transmission.context.span_id,
+            )
+            self.assertEqual(
+                hosts[downstream].attributes["email.handoff"], "explicit"
+            )
 
     def test_postfix_host_span_contains_minimum_duration_stage(self) -> None:
         completion_time = datetime.fromisoformat(
@@ -1559,6 +1547,59 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
 class LogEventParsingTest(unittest.TestCase):
 
+    def test_service_mapping_list_uses_first_nonempty_field(self) -> None:
+        source = {
+            "@timestamp": "2026-10-23T03:58:53Z",
+            "host": {"name": "mailhost"},
+            "collector": {"service": "dovecot", "empty": "", "null": None},
+            "appname": "postfix/cleanup",
+            "message": "2234D2A0006: message-id=<message@example.com>",
+        }
+        for fields, service, queue_id in (
+            (
+                [
+                    "missing",
+                    "collector.empty",
+                    "collector.null",
+                    "collector.service",
+                    "appname",
+                ],
+                "dovecot",
+                None,
+            ),
+            (
+                ["appname", "collector.service"],
+                "postfix/cleanup",
+                "2234D2A0006",
+            ),
+        ):
+            with self.subTest(fields=fields):
+                parser = OpensearchParser(
+                    OpenSearchMappingConfig(service=fields)
+                )
+                entry = parser.parse(source)
+                self.assertEqual(entry.service, service)
+                self.assertEqual(entry.mail_id, queue_id)
+
+    def test_service_mapping_list_ignores_unlisted_fields(self) -> None:
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(service=["collector.service"])
+        )
+        message = "2234D2A0006: message-id=<message@example.com>"
+        entry = parser.parse(
+            {
+                "@timestamp": "2026-10-23T03:58:53Z",
+                "host": {"name": "mailhost"},
+                "appname": "postfix/cleanup",
+                "log": {"syslog": {"appname": "postfix/smtp"}},
+                "message": message,
+            }
+        )
+
+        self.assertIsNone(entry.service)
+        self.assertIsNone(entry.mail_id)
+        self.assertEqual(entry.message, message)
+
     def test_configured_service_overrides_collector_fallbacks(self) -> None:
         parser = OpensearchParser(
             OpenSearchMappingConfig(service="collector.service")
@@ -1580,7 +1621,9 @@ class LogEventParsingTest(unittest.TestCase):
         self.assertEqual(entry.message, message)
 
     def test_empty_service_falls_back_to_syslog_exim(self) -> None:
-        parser = OpensearchParser(OpenSearchMappingConfig(service="appname"))
+        parser = OpensearchParser(
+            OpenSearchMappingConfig(service=["appname", "log.syslog.appname"])
+        )
         entry = parser.parse(
             {
                 "@timestamp": "2026-09-26T13:14:57Z",

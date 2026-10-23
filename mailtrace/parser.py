@@ -380,12 +380,15 @@ class OpensearchParser(LogParser):
         return _get_nested_value(log, field_path) if field_path else None
 
     def _get_service(self, log: dict) -> str | None:
-        """Prefer the configured field, then syslog and Vector service fields."""
-        return (
-            self._get_mapped_value("service", log)
-            or _get_nested_value(log, "log.syslog.appname")
-            or _get_nested_value(log, "appname")
-        )
+        """Use the first nonempty configured service field."""
+        fields = self.mapping.service
+        if isinstance(fields, str):
+            fields = [fields]
+        for field_path in fields:
+            value = _get_nested_value(log, field_path)
+            if value:
+                return value
+        return None
 
     def _extract_queued_as_from_message(
         self, message_content: str

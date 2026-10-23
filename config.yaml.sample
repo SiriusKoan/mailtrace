@@ -43,7 +43,9 @@ opensearch_config:
     hostname: "host.name"
     message: "message"
     timestamp: "@timestamp"
-    service: "log.syslog.appname"
+    service: # First nonempty field wins; a single string is also accepted.
+      - "log.syslog.appname"
+      - "appname"
     queueid: "postfix.queueid.keyword"
     queued_as: "postfix.queued_as.keyword"
     mail_id: "postfix.mail_id.keyword"

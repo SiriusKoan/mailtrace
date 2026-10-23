@@ -369,13 +369,24 @@ def queue_id_from_message(message: str) -> str | None:
     return None
 
 
-def raw_log_from_hit(hit: dict[str, Any], mapping: dict[str, str]) -> RawLog:
+def raw_log_from_hit(hit: dict[str, Any], mapping: dict[str, Any]) -> RawLog:
     """Read an OpenSearch source document using only configured fields."""
     source = hit.get("_source", {})
     message = str(source.get(mapping["message"], ""))
+    service_fields = mapping["service"]
+    if isinstance(service_fields, str):
+        service_fields = [service_fields]
+    service = ""
+    for field_path in service_fields:
+        value = source
+        for key in field_path.split("."):
+            value = value.get(key) if isinstance(value, dict) else None
+        if value:
+            service = str(value)
+            break
     return RawLog(
         hostname=normalize_host(str(source.get(mapping["hostname"], ""))),
-        service=str(source.get(mapping["service"], "")),
+        service=service,
         message=message,
         timestamp=str(source.get(mapping["timestamp"], "")),
         queue_id=queue_id_from_message(message),

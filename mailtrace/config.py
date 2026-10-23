@@ -95,7 +95,7 @@ class OpenSearchMappingConfig:
         hostname: OpenSearch field for host name
         message: OpenSearch field for log message
         timestamp: OpenSearch field for log timestamp
-        service: OpenSearch field for service name
+        service: Service field name or ordered list of candidate field names
         queueid: OpenSearch field for queue ID
         queued_as: OpenSearch field for queued as
         mail_id: OpenSearch field for mail ID
@@ -109,7 +109,9 @@ class OpenSearchMappingConfig:
     hostname: str = "host.name"
     message: str = "message"
     timestamp: str = "@timestamp"
-    service: str = "log.syslog.appname"
+    service: str | list[str] = field(
+        default_factory=lambda: ["log.syslog.appname", "appname"]
+    )
     queueid: str = ""
     queued_as: str = ""
     mail_id: str = ""

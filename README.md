@@ -476,7 +476,9 @@ opensearch_config:
     hostname: "host.name"
     message: "message"
     timestamp: "@timestamp"
-    service: "log.syslog.appname"
+    service:
+      - "log.syslog.appname"
+      - "appname"
 ```
 
 #### OpenSearch Parameters
@@ -499,9 +501,12 @@ The `mapping` section allows you to specify how application fields map to OpenSe
 - `hostname`: OpenSearch field for hostname (default: `"host.name"`).
 - `message`: OpenSearch field for log message (default: `"message"`).
 - `timestamp`: OpenSearch field for log timestamp (default: `"@timestamp"`).
-- `service`: OpenSearch field for service name (default: `"log.syslog.appname"`). The configured field takes precedence. If it is missing or empty, the parser checks `"log.syslog.appname"` and then `"appname"`, so syslog and Vector records can coexist in the same query without losing queue IDs or relay hops.
+- `service`: Service field name or ordered list of candidate field names (default: `["log.syslog.appname", "appname"]`).
+  The parser uses the first nonempty value in the configured order, skipping missing, null, and empty values. A string selects only that field; no unlisted fallback fields are consulted.
 
 This allows mailtrace to work with different OpenSearch index schemas. Customize these mappings based on your actual field names in OpenSearch.
+
+Only `service` accepts a list; all other mapping fields still use a single string.
 
 ### Tracing Configuration
 
