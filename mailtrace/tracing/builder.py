@@ -223,6 +223,56 @@ def _prepare_hops(
     return prepared_hops
 
 
+def _plan_hop_placements(
+    prepared_hops: dict[HopKey, PreparedHop],
+    hop_handoffs: dict[HopKey, list[Handoff]],
+) -> dict[HopKey, HopPlacement]:
+    """Infer same-host placements from local chronology before global ordering."""
+    hops_by_host: dict[str, list[HopKey]] = {}
+    for hop in prepared_hops:
+        hops_by_host.setdefault(hop[0].rstrip(".").lower(), []).append(hop)
+    starts = {
+        hop: min(
+            (
+                datetime.fromisoformat(log.datetime.replace("Z", "+00:00"))
+                for log in prepared.logs
+            ),
+            default=prepared.raw_start,
+        )
+        for hop, prepared in prepared_hops.items()
+    }
+    placements: dict[HopKey, HopPlacement] = {}
+    for host_hops in hops_by_host.values():
+        host_hops.sort(key=lambda hop: (starts[hop], hop))
+        previous_hop = None
+        for hop in host_hops:
+            explicit = hop_handoffs.get(hop)
+            if explicit:
+                placements[hop] = HopPlacement(tuple(explicit), True)
+            else:
+                inherited = (
+                    placements[previous_hop].handoffs
+                    if previous_hop is not None
+                    else ()
+                )
+                # Reject inferred dependencies on this hop or its explicit descendants.
+                pending = [parent for parent, _ in inherited]
+                seen = set()
+                while pending:
+                    parent = pending.pop()
+                    if parent in seen:
+                        continue
+                    seen.add(parent)
+                    pending.extend(p for p, _ in hop_handoffs.get(parent, ()))
+                placements[hop] = (
+                    HopPlacement(inherited, False)
+                    if previous_hop is not None and hop not in seen
+                    else HopPlacement((), None)
+                )
+            previous_hop = hop
+    return placements
+
+
 def _plan_hops(
     message_id: str,
     prepared_hops: dict[HopKey, PreparedHop],
@@ -243,12 +293,10 @@ def _plan_hops(
         for child_hop, (parent_hop, _) in hop_links.items()
     }
 
+    hop_placements = _plan_hop_placements(prepared_hops, hop_handoffs)
     hop_dependencies = {
-        hop: {
-            parent_hop
-            for parent_hop, _ in hop_handoffs.get(hop, ())
-        }
-        for hop in prepared_hops
+        hop: {parent_hop for parent_hop, _ in placement.handoffs}
+        for hop, placement in hop_placements.items()
     }
     pending_hops = list(prepared_hops)
     ordered_hops: list[HopKey] = []
@@ -284,33 +332,8 @@ def _plan_hops(
         pending_hops.remove(next_hop)
         ordered_hops.append(next_hop)
 
-    hop_order = {hop: index for index, hop in enumerate(ordered_hops)}
-    hop_placements: dict[HopKey, HopPlacement] = {}
-    hops_by_host: dict[str, list[HopKey]] = {}
-    for hop in prepared_hops:
-        normalized_host = hop[0].rstrip(".").lower()
-        hops_by_host.setdefault(normalized_host, []).append(hop)
-
-    for host_hops in hops_by_host.values():
-        host_hops.sort(key=hop_order.__getitem__)
-        previous_hop = None
-        for hop in host_hops:
-            explicit_handoffs = hop_handoffs.get(hop)
-            if hop in detached_hops:
-                hop_placements[hop] = HopPlacement((), None)
-            elif explicit_handoffs:
-                hop_placements[hop] = HopPlacement(
-                    handoffs=tuple(explicit_handoffs),
-                    explicit_handoff=True,
-                )
-            elif previous_hop is not None:
-                hop_placements[hop] = HopPlacement(
-                    handoffs=hop_placements[previous_hop].handoffs,
-                    explicit_handoff=False,
-                )
-            else:
-                hop_placements[hop] = HopPlacement((), None)
-            previous_hop = hop
+    for hop in detached_hops:
+        hop_placements[hop] = HopPlacement((), None)
 
     return hop_placements, hop_links, hop_parents, ordered_hops
 
