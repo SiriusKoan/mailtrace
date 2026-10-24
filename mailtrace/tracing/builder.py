@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 
 from opentelemetry import trace
 
+from mailtrace.config import MailingListConfig
 from mailtrace.models import DeliveryStatus
 from mailtrace.parser import LogEntry
 from mailtrace.tracing.delay_parser import (
@@ -15,6 +16,7 @@ from mailtrace.tracing.delay_parser import (
     detect_mta_from_entries,
     get_parser_for_mta,
 )
+from mailtrace.tracing.mailman import infer_mailman_sources
 from mailtrace.tracing.otel import (
     MIN_SPAN_DURATION_SECONDS,
     create_delay_spans,
@@ -28,6 +30,7 @@ from mailtrace.tracing.otel import (
 from mailtrace.tracing.query import (
     HopKey,
     _extract_message_id_from_log,
+    _normalize_hostname,
     build_hop_handoffs,
     group_logs_by_hops,
 )
@@ -226,6 +229,7 @@ def _prepare_hops(
 def _plan_hop_placements(
     prepared_hops: dict[HopKey, PreparedHop],
     hop_handoffs: dict[HopKey, list[Handoff]],
+    mailing_list: MailingListConfig | None = None,
 ) -> dict[HopKey, HopPlacement]:
     """Infer same-host placements from local chronology before global ordering."""
     hops_by_host: dict[str, list[HopKey]] = {}
@@ -242,17 +246,30 @@ def _plan_hop_placements(
         for hop, prepared in prepared_hops.items()
     }
     placements: dict[HopKey, HopPlacement] = {}
-    for host_hops in hops_by_host.values():
+    mailman_hosts = (
+        {_normalize_hostname(host.strip()) for host in mailing_list.mailman}
+        if mailing_list
+        else set()
+    )
+    for host, host_hops in hops_by_host.items():
         host_hops.sort(key=lambda hop: (starts[hop], hop))
+        mailman_sources = (
+            infer_mailman_sources(
+                {hop: prepared_hops[hop].logs for hop in host_hops}, starts
+            )
+            if _normalize_hostname(host) in mailman_hosts
+            else {}
+        )
         previous_hop = None
         for hop in host_hops:
             explicit = hop_handoffs.get(hop)
             if explicit:
                 placements[hop] = HopPlacement(tuple(explicit), True)
             else:
+                inferred_from = mailman_sources.get(hop, previous_hop)
                 inherited = (
-                    placements[previous_hop].handoffs
-                    if previous_hop is not None
+                    placements[inferred_from].handoffs
+                    if inferred_from is not None
                     else ()
                 )
                 # Reject inferred dependencies on this hop or its explicit descendants.
@@ -266,7 +283,7 @@ def _plan_hop_placements(
                     pending.extend(p for p, _ in hop_handoffs.get(parent, ()))
                 placements[hop] = (
                     HopPlacement(inherited, False)
-                    if previous_hop is not None and hop not in seen
+                    if inferred_from is not None and hop not in seen
                     else HopPlacement((), None)
                 )
             previous_hop = hop
@@ -276,6 +293,7 @@ def _plan_hop_placements(
 def _plan_hops(
     message_id: str,
     prepared_hops: dict[HopKey, PreparedHop],
+    mailing_list: MailingListConfig | None = None,
 ) -> tuple[
     dict[HopKey, HopPlacement],
     dict[HopKey, Handoff],
@@ -293,7 +311,9 @@ def _plan_hops(
         for child_hop, (parent_hop, _) in hop_links.items()
     }
 
-    hop_placements = _plan_hop_placements(prepared_hops, hop_handoffs)
+    hop_placements = _plan_hop_placements(
+        prepared_hops, hop_handoffs, mailing_list
+    )
     hop_dependencies = {
         hop: {parent_hop for parent_hop, _ in placement.handoffs}
         for hop, placement in hop_placements.items()
@@ -643,6 +663,7 @@ def _emit_trace(
 
 def export_traces(
     logs_by_message_id: dict[str, list[LogEntry]],
+    mailing_list: MailingListConfig | None = None,
 ) -> int:
     """Build traces for the message-ID groups and return their count."""
     trace_count = 0
@@ -666,7 +687,7 @@ def export_traces(
             hop_links,
             hop_parents,
             ordered_hops,
-        ) = _plan_hops(message_id, prepared_hops)
+        ) = _plan_hops(message_id, prepared_hops, mailing_list)
         hop_offsets, hop_bounds = _calculate_hop_timing(
             ordered_hops,
             prepared_hops,

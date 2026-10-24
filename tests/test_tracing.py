@@ -9,7 +9,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.trace import StatusCode
 
-from mailtrace.config import OpenSearchMappingConfig
+from mailtrace.config import (
+    Config,
+    Method,
+    OpenSearchConfig,
+    OpenSearchMappingConfig,
+    SSHConfig,
+)
 from mailtrace.events import classify_log_entry
 from mailtrace.models import (
     DeliveryStatus,
@@ -31,6 +37,12 @@ from mailtrace.tracing.otel import dt_to_ns
 class EmailTracesGeneratorTest(unittest.TestCase):
     def setUp(self) -> None:
         otel._providers.clear()
+        self.config = Config(
+            method=Method.OPENSEARCH,
+            log_level="INFO",
+            ssh_config=SSHConfig(username="test", private_key="unused"),
+            opensearch_config=OpenSearchConfig(),
+        )
 
     def tearDown(self) -> None:
         for provider in otel._providers.values():
@@ -121,6 +133,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
 
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
         parser = OpensearchParser(
             OpenSearchMappingConfig(service=["appname", "log.syslog.appname"])
         )
@@ -192,6 +205,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
             ),
         ]
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
         exporter = InMemorySpanExporter()
 
         with patch.object(otel, "_exporter", exporter):
@@ -258,6 +272,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"exim@example.com": logs})
@@ -483,6 +498,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         message_id = "late-accumulation@example.com"
         queue_id = "MAILER3Q"
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
         generator._pending = {}
         generator._queue_id_to_message_id = {}
         generator._current_round = 1
@@ -586,6 +602,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"chain@example.com": logs})
@@ -704,6 +721,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         logs = [classify_log_entry(log) for log in logs]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"recipients@example.com": logs})
@@ -806,6 +824,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"shared@example.com": logs})
@@ -902,6 +921,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"inferred@example.com": logs})
@@ -970,6 +990,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"temporary@example.com": logs})
@@ -1033,6 +1054,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"rejected@example.com": logs})
@@ -1114,6 +1136,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         logs = [classify_log_entry(log) for log in logs]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"branches@example.com": logs})
@@ -1168,6 +1191,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"fallback@example.com": logs})
@@ -1252,6 +1276,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"fanout@example.com": logs})
@@ -1385,6 +1410,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"same-destination@example.com": logs})
@@ -1493,6 +1519,7 @@ class EmailTracesGeneratorTest(unittest.TestCase):
         ]
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
 
         with patch.object(otel, "_exporter", exporter):
             generator._export_traces({"cycle@example.com": logs})

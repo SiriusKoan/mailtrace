@@ -7,7 +7,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.trace import StatusCode
 
-from mailtrace.config import OpenSearchMappingConfig
+from mailtrace.config import (
+    Config,
+    Method,
+    OpenSearchConfig,
+    OpenSearchMappingConfig,
+    SSHConfig,
+)
 from mailtrace.models import LogEntry
 from mailtrace.parser import (
     OpensearchParser,
@@ -58,6 +64,12 @@ def _logs() -> list[LogEntry]:
 class BounceTracingTest(unittest.TestCase):
     def setUp(self) -> None:
         otel._providers.clear()
+        self.config = Config(
+            method=Method.OPENSEARCH,
+            log_level="INFO",
+            ssh_config=SSHConfig(username="test", private_key="unused"),
+            opensearch_config=OpenSearchConfig(),
+        )
 
     def tearDown(self) -> None:
         for provider in otel._providers.values():
@@ -157,6 +169,7 @@ class BounceTracingTest(unittest.TestCase):
     ) -> None:
         logs = _logs()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
         generator._pending = {}
         generator._queue_id_to_message_id = {}
         generator._current_round = 0
@@ -225,6 +238,7 @@ class BounceTracingTest(unittest.TestCase):
         logs = _logs()
         exporter = InMemorySpanExporter()
         generator = object.__new__(EmailTracesGenerator)
+        generator.config = self.config
         with patch.object(otel, "_exporter", exporter):
             count = generator._export_traces(
                 query.group_logs_by_message_id(logs)

@@ -319,6 +319,7 @@ The configuration file supports these parameters:
 - `opensearch_config`: Configuration for OpenSearch tracing.
 - `clusters`: Named groups of hosts for high availability scenarios.
 - `domain`: Domain name for hostname resolution (optional).
+- `mailing_list`: Hosts enabled for mailing-list-specific inference (optional).
 
 ### SSH Configuration
 
@@ -528,6 +529,23 @@ tracing:
 - `go_back_seconds`: How far back from the previous query boundary to extend the start of each new query window (default: `10`). This compensates for logs whose syslog timestamp predates their OpenSearch ingest time. Duplicate entries captured by the overlap are automatically discarded. Set to `0` to disable the overlap.
 - `max_trace_age_seconds`: Maximum time to retain a message ID before exporting its buffered logs, even if new logs continue to arrive (default: `86400`).
 - `scroll_batch_size`: Number of OpenSearch hits requested per scroll page (default: `1000`). Increase this to reduce scroll requests for high-volume windows, at the cost of larger responses and higher memory use.
+
+### Mailing List Configuration
+
+```yaml
+mailing_list:
+  mailman: ["maillist1"]
+```
+
+Mailman address inference is disabled by default. Only listed hosts use
+`list-bounces@domain` (including VERP forms) to find an earlier successful
+LMTP delivery to `list@domain` or `list-owner@domain`. The `domain` and
+`lists.domain` forms are accepted. Host matching follows the existing short
+hostname convention and ignores case and a trailing dot.
+
+The latest matching delivery completed before reinjection supplies the upstream
+branch. Tied or missing candidates remain unlinked. Explicit queue-ID handoffs
+always take priority; inferred siblings retain `email.handoff=implicit`.
 
 ### Clusters Configuration
 

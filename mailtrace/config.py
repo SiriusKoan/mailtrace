@@ -193,6 +193,22 @@ class TracingConfig:
 
 
 @dataclass
+class MailingListConfig:
+    """Hosts explicitly enabled for mailing-list-specific inference."""
+
+    mailman: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mailman, list) or any(
+            not isinstance(host, str) or not host.strip()
+            for host in self.mailman
+        ):
+            raise ValueError(
+                "mailing_list.mailman must be a list of nonempty hostnames"
+            )
+
+
+@dataclass
 class Config:
     """Main configuration class for the mail tracing application.
 
@@ -205,6 +221,7 @@ class Config:
         domain: Domain name for hostname resolution
         auto_continue: Whether to automatically continue tracing to next hop without user input
         tracing: Configuration for continuous trace generation
+        mailing_list: Hosts enabled for mailing-list-specific inference
     """
 
     method: Method
@@ -215,6 +232,7 @@ class Config:
     domain: str = ""
     auto_continue: bool = False
     tracing: TracingConfig = field(default_factory=TracingConfig)
+    mailing_list: MailingListConfig = field(default_factory=MailingListConfig)
 
     def __post_init__(self) -> None:
         # Validate log level
@@ -235,6 +253,8 @@ class Config:
             self.opensearch_config = OpenSearchConfig(**self.opensearch_config)
         if isinstance(self.tracing, dict):
             self.tracing = TracingConfig(**self.tracing)
+        if isinstance(self.mailing_list, dict):
+            self.mailing_list = MailingListConfig(**self.mailing_list)
 
     def cluster_to_hosts(self, name: str) -> list[str] | None:
         """Get list of hosts for a given cluster name."""

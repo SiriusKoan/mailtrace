@@ -73,3 +73,6 @@ tracing:
   max_trace_age_seconds: 1800
   # Number of OpenSearch hits requested per scroll page.
   scroll_batch_size: 1000
+# Enable Mailman address inference only on these hosts. Omit to disable.
+mailing_list:
+  mailman: ["maillist1"]

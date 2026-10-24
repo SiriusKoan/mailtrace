@@ -219,7 +219,7 @@ class EmailTracesGenerator:
         self, logs_by_message_id: Dict[str, list[LogEntry]]
     ) -> int:
         """Build and export traces for the provided message-ID groups."""
-        return export_traces(logs_by_message_id)
+        return export_traces(logs_by_message_id, self.config.mailing_list)
 
     def run(self) -> None:
         sleep_seconds = self.config.tracing.sleep_seconds
