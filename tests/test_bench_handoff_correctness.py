@@ -178,6 +178,26 @@ class RawLogTest(unittest.TestCase):
 
         self.assertEqual(queue_id_from_message(message), "1xASEz-000010-1B")
 
+    def test_reads_postfix_short_and_long_queue_ids(self) -> None:
+        for queue_id in ("ABC123", "4jC4nY4v8fznhZN", "4jC4nc392Yznw8J"):
+            with self.subTest(queue_id=queue_id):
+                self.assertEqual(
+                    queue_id_from_message(
+                        f"{queue_id}: message-id=<case@test.example>"
+                    ),
+                    queue_id,
+                )
+
+    def test_does_not_treat_status_text_as_a_queue_id(self) -> None:
+        for message in (
+            "warning: dict_nis_init: NIS domain name not set",
+            "connect from client.example[192.0.2.1]",
+            "message: no queue ID",
+            "NOQUEUE: reject: RCPT from client.example",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(queue_id_from_message(message))
+
     def test_correlates_exim_message_id_without_angle_brackets(self) -> None:
         message_id = "case@test.example"
         logs = [

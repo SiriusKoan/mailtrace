@@ -19,7 +19,7 @@ from email import policy
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from opensearchpy import OpenSearch
@@ -30,7 +30,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from mailtrace.config import load_config  # noqa: E402
+from mailtrace.config import MailingListConfig, load_config  # noqa: E402
 from mailtrace.events import classify_log_entry  # noqa: E402
 from mailtrace.models import LogEntry  # noqa: E402
 from mailtrace.parser import extract_next_mail_id  # noqa: E402
@@ -44,7 +44,11 @@ from mailtrace.tracing.query import (  # noqa: E402
 DEFAULT_CONFIG = "demo/docker/config.yaml"
 DEFAULT_OUTPUT = "demo/docker/bench_handoff_correctness_result.json"
 ALL_USERS = ("user1", "user2")
-POSTFIX_QUEUE_ID_RE = re.compile(r"(?:^|\s)([A-F0-9]{5,}):")
+POSTFIX_QUEUE_ID_RE = re.compile(
+    r"(?:^|\s)([A-F0-9]{5,}|"
+    r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]{10,}z"
+    r"[0-9B-DF-HJ-NP-TV-Zb-df-hj-np-tv-z]+):"
+)
 EXIM_QUEUE_ID_RE = re.compile(
     r"(?:^|\s)([A-Za-z0-9]{6,}-[A-Za-z0-9]{6,}-[A-Za-z0-9]{2})(?=\s)"
 )
@@ -564,6 +568,9 @@ def delay_evidence_complete(
 
 def export_span_graphs(
     logs_by_message_id: dict[str, list[Any]],
+    *,
+    normalize_hostname: Callable[[str], str] = normalize_host,
+    mailing_list: MailingListConfig | None = None,
 ) -> tuple[
     int,
     dict[
@@ -575,7 +582,7 @@ def export_span_graphs(
     exporter = InMemorySpanExporter()
     otel._providers.clear()
     otel._exporter = exporter
-    trace_count = export_traces(logs_by_message_id)
+    trace_count = export_traces(logs_by_message_id, mailing_list)
     otel.flush_traces()
     spans = list(exporter.get_finished_spans())
 
@@ -604,7 +611,7 @@ def export_span_graphs(
             host = span.attributes.get("server.address")
             queue_id = span.attributes.get("email.queue_id")
             if host and queue_id:
-                hop = (normalize_host(str(host)), str(queue_id))
+                hop = (normalize_hostname(str(host)), str(queue_id))
                 host_by_span_id[span.context.span_id] = hop
                 attributes.append({"hop": hop, **dict(span.attributes)})
 
