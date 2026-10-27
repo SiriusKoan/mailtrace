@@ -10,7 +10,7 @@ import unittest
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -20,7 +20,10 @@ from demo.docker import bench_handoff_correctness as oracle  # noqa: E402
 from mailtrace.models import LogEntry  # noqa: E402
 
 DEFAULT_RESULT = "demo/docker/bench_handoff_timestamp_result.json"
+TIMESTAMP_MODEL = "consecutive-same-host-implicit-v1"
 Graph = tuple[set[oracle.Hop], set[oracle.Edge]]
+Node = TypeVar("Node", str, oracle.Hop)
+ComparisonGraph = tuple[set[Node], set[tuple[Node, Node]]]
 
 METRIC_DEFINITIONS = {
     "complete_topology_match_pct": "Messages whose nodes and edges exactly match the oracle.",
@@ -55,21 +58,37 @@ def received_oracle(
     return nodes, edges
 
 
-def timestamp_graph(logs: list[LogEntry]) -> Graph:
-    """Build a linear topology from each queue hop's earliest raw log timestamp."""
+def timestamp_graph(
+    logs: list[LogEntry],
+    *,
+    normalize_hostname: Callable[[str], str] = oracle.normalize_host,
+) -> Graph:
+    """Order raw timestamps and place consecutive same-host queues in parallel."""
     first_seen: dict[oracle.Hop, datetime] = {}
     for log in logs:
         if not log.hostname or not log.mail_id:
             continue
-        hop = (oracle.normalize_host(log.hostname), log.mail_id)
+        hop = (normalize_hostname(log.hostname), log.mail_id)
         timestamp = datetime.fromisoformat(log.datetime.replace("Z", "+00:00"))
         first_seen[hop] = min(first_seen.get(hop, timestamp), timestamp)
     # Break ties by host and queue ID without consulting handoff evidence.
     ordered = sorted(first_seen, key=lambda hop: (first_seen[hop], hop))
-    return set(ordered), set(zip(ordered, ordered[1:]))
+    parents: dict[oracle.Hop, oracle.Hop | None] = {}
+    for index, hop in enumerate(ordered):
+        previous = ordered[index - 1] if index else None
+        parents[hop] = (
+            parents[previous]
+            if previous is not None and previous[0] == hop[0]
+            else previous
+        )
+    return set(ordered), {
+        (parent, hop) for hop, parent in parents.items() if parent is not None
+    }
 
 
-def evaluate_graph(expected: Graph, actual: Graph | None) -> dict[str, Any]:
+def evaluate_graph(
+    expected: ComparisonGraph[Node], actual: ComparisonGraph[Node] | None
+) -> dict[str, Any]:
     """Score predictions against the oracle, counting missing traces as failures."""
     expected_nodes, expected_edges = expected
     nodes, edges = actual if actual is not None else (set(), set())
@@ -168,6 +187,7 @@ def benchmark_comparison(
             "message_count": len(sent),
             "exported_mailtrace_count": trace_count,
             "timestamp_ordering": "earliest_raw_log_timestamp_then_host_queue_id",
+            "timestamp_model": TIMESTAMP_MODEL,
         },
         "metric_definitions": METRIC_DEFINITIONS,
         "comparison": {
