@@ -386,10 +386,14 @@ are scored against it; mailtrace accuracy is calculated from its actual output.
 
 Both methods receive the same logs grouped by Message-ID and queue ID handoffs.
 Mailtrace runs production `export_traces` and reconstructs topology from exported
-spans. Timestamp ordering builds a linear topology from each queue hop's earliest
-raw log timestamp, breaking ties by hostname and queue ID without using handoff
-evidence to determine order. This comparison measures topology reconstruction on
-shared message groups; it does not compare message grouping algorithms.
+spans. Timestamp ordering sorts each queue hop by its earliest raw log timestamp,
+breaking ties by hostname and queue ID. Only consecutive same-host queues share
+a parent, forming implicit parallel branches. A queue that returns to a host
+after an intervening host connects to the preceding timestamp-ordered node.
+The model is identified as `consecutive-same-host-implicit-v1` and does not use
+handoff evidence to build the graph. This comparison measures topology
+reconstruction on shared message groups; it does not compare message grouping
+algorithms.
 
 Nodes are `(hostname, queue ID)` pairs, preserving branches and repeated hosts.
 Complete topology accuracy requires both nodes and edges to exactly match the
